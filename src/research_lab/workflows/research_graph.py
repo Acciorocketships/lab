@@ -36,7 +36,7 @@ _WORKER_MODULES: dict[str, Any] = {
     "reviewer": reviewer,
     "reporter": reporter_mod,
     "skill_writer": skill_writer,
-    "noop": None,
+    "done": None,
 }
 
 
@@ -163,15 +163,16 @@ def execute_worker(
     project_dir: Path,
 ) -> dict[str, Any]:
     """Build packet and call CLI worker (or skip)."""
-    worker = state.get("current_worker", "noop")
+    worker = state.get("current_worker", "planner")
     cyc = int(state.get("cycle_count", 0)) + 1
     task = state.get("current_goal", "continue")
-    if worker in ("noop",):
+    if worker in ("done",):
         return {
             "cycle_count": cyc,
-            "last_action_summary": "noop",
+            "last_action_summary": "done",
             "last_packet_relpath": "",
             "orchestrator_reason": str(state.get("orchestrator_reason", "") or ""),
+            "acceptance_satisfied": True,
         }
     mod = _WORKER_MODULES.get(worker)
     role_hint = (getattr(mod, "SYSTEM_PROMPT", "") if mod else "").strip()
@@ -202,11 +203,6 @@ def execute_worker(
         "last_packet_relpath": relpath,
         "orchestrator_reason": str(state.get("orchestrator_reason", "") or ""),
     }
-
-
-def review_gate(state: ResearchState) -> dict[str, Any]:
-    """Merge gate placeholder."""
-    return {}
 
 
 def update_state(state: ResearchState, *, db_path: Path, researcher_root: Path) -> dict[str, Any]:
@@ -283,15 +279,13 @@ def build_graph(
     g.add_node("sync", n_sync)
     g.add_node("choose", n_choose)
     g.add_node("worker", n_worker)
-    g.add_node("review", review_gate)
     g.add_node("update", n_update)
 
     g.add_edge(START, "ingest")
     g.add_edge("ingest", "sync")
     g.add_edge("sync", "choose")
     g.add_edge("choose", "worker")
-    g.add_edge("worker", "review")
-    g.add_edge("review", "update")
+    g.add_edge("worker", "update")
     g.add_edge("update", END)
 
     return g.compile()
@@ -347,4 +341,6 @@ def run_loop(
             continue
         if mode == "shutdown":
             break
-        app.invoke(_state_from_db(db_path))
+        out = app.invoke(_state_from_db(db_path))
+        if out.get("acceptance_satisfied"):
+            break

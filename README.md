@@ -19,8 +19,8 @@ Two directories:
 ## Pipeline (high level)
 
 1. **Console (Textual)** and **scheduler** share **SQLite** (`control_events`, `system_state`, `run_events`, …).
-2. Each **cycle**, the **LangGraph** in `workflows/research_graph.py` runs: `ingest` → `sync` → `choose` → `worker` → `review` → `update`.
-3. **Choose** calls `orchestrator.decide_orchestrator()` (LLM with structured output, or `noop` if no credentials for the selected backend).
+2. Each **cycle**, the **LangGraph** in `workflows/research_graph.py` runs: `ingest` → `sync` → `choose` → `worker` → `update`.
+3. **Choose** calls `orchestrator.decide_orchestrator()` (LLM with structured output; raises **`OrchestratorCredentialsError`** if there are no credentials for the selected backend).
 4. **Worker** builds a **packet** (`packets.py`), writes `packet.md` and **`worker_output.json`** (CLI stdout/stderr/parsed result) under `data/runtime/memory/episodes/cycle_*/<worker>/`, appends a row to **`memory/episodes/index.md`** (worker, task, orchestrator reason, links), and runs `agents.base.run_worker()` → Claude or Cursor CLI in the **project** directory.
 5. **Memory** — Tier A files under `data/runtime/state/` are the default operating context for the orchestrator and workers (see [Memory system](#memory-system)). Tier A may **link** `memory/extended/*.md` paths; those files are **listed** (absolute paths) in prompts but **not** inlined. The current git branch’s **`memory/branch/<branch>.md`** is appended when set. The orchestrator overwrites **`context_summary.md`** each cycle; worker packets surface it as a separate **Rolling context summary** section (see below).
 6. **Experiments** (`experiments.py`) create `exp_######` folders, metrics JSON, and keep/revert helpers.
@@ -40,6 +40,7 @@ Two directories:
 | Reviewer | Enforces preferences |
 | Reporter | Answers and reports |
 | Skill writer | `memory/skills/` + `skills_index.md` |
+| Done | No worker run — orchestrator signals acceptance criteria / roadmap complete; the scheduler loop exits when **`acceptance_satisfied`** is set |
 
 ## Memory system
 
@@ -117,9 +118,7 @@ Set **`orchestrator_backend`** in **`RunConfig`** (`scripts/run.py`) to **`opena
 
 **`local`**: OpenAI-compatible server (e.g. **Ollama** at **`http://127.0.0.1:11434/v1`**). Set **`openai_base_url`** or **`LOCAL_LLM_BASE_URL`** / **`OPENAI_BASE_URL`**. API key: **`openai_api_key`**, **`OPENAI_API_KEY`**, **`LOCAL_LLM_API_KEY`**, or default **`ollama`**. Example small model: **`qwen3.5:0.8b`** (`ollama pull` then set **`openai_model`** / **`AIRESEARCHER_OPENAI_MODEL`**).
 
-Use **`python scripts/smoke_llm.py`** to verify the LLM path; optional env **`AIRESEARCHER_ORCHESTRATOR_BACKEND`** matches **`orchestrator_backend`**.
-
-Without any credential for the chosen backend, the orchestrator selects **`noop`** (smoke/testing).
+Use **`python scripts/smoke_llm.py`** to verify the LLM path; optional env **`AIRESEARCHER_ORCHESTRATOR_BACKEND`** matches **`orchestrator_backend`**. Without credentials, **`decide_orchestrator()`** raises **`OrchestratorCredentialsError`** (use **`smoke_llm.py`** or configure keys before running the graph).
 
 Install **Claude Code** (`npm i -g @anthropic-ai/claude-code`) or use **Cursor** agent CLI on `PATH`.
 
