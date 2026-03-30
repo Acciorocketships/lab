@@ -189,7 +189,6 @@ class ResearchConsole(App[None]):
             "exit": self._cmd_exit,
             "status": self._cmd_status,
             "help": self._cmd_help,
-            "ask": lambda r=rest: self._cmd_ask(r),
             "backlog": self._cmd_backlog,
             "experiments": self._cmd_experiments,
             "reset": self._cmd_reset,
@@ -262,22 +261,12 @@ class ResearchConsole(App[None]):
             "  [bold]/pause[/]        Pause the agent\n"
             "  [bold]/exit[/]         Pause agent and quit\n"
             "  [bold]/status[/]       Show current agent state\n"
-            "  [bold]/ask[/] <q>      Queue a question\n"
             "  [bold]/backlog[/]      Show recent instructions\n"
             "  [bold]/experiments[/]  Show experiments\n"
             "  [bold]/reset[/]        Clear DB and runtime memory; keep research_idea.md + preferences.md\n"
             "  [bold]/help[/]         This message\n"
             "\n  Plain text is queued as an instruction.\n"
         )
-
-    def _cmd_ask(self, text: str) -> None:
-        log = self.query_one("#activity", RichLog)
-        if not text:
-            log.write("  [dim]Usage: /ask <question>[/]")
-            return
-        db.enqueue_event(self._conn, "question", text)
-        self._conn.commit()
-        log.write(f"  [green]Queued question:[/] {text[:200]}")
 
     def _cmd_backlog(self) -> None:
         log = self.query_one("#activity", RichLog)

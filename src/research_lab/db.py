@@ -52,14 +52,6 @@ CREATE TABLE IF NOT EXISTS instructions (
   created_at REAL NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS questions (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  text TEXT NOT NULL,
-  answer_path TEXT,
-  status TEXT NOT NULL DEFAULT 'pending',
-  created_at REAL NOT NULL
-);
-
 CREATE TABLE IF NOT EXISTS experiments (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   exp_id TEXT NOT NULL UNIQUE,
@@ -223,15 +215,6 @@ def add_instruction(conn: sqlite3.Connection, text: str, status: str = "new") ->
     cur = conn.execute(
         "INSERT INTO instructions (text, status, created_at) VALUES (?, ?, ?)",
         (text, status, time.time()),
-    )
-    return int(cur.lastrowid)
-
-
-def add_question(conn: sqlite3.Connection, text: str) -> int:
-    """Queue a user question."""
-    cur = conn.execute(
-        "INSERT INTO questions (text, answer_path, status, created_at) VALUES (?, NULL, 'pending', ?)",
-        (text, time.time()),
     )
     return int(cur.lastrowid)
 

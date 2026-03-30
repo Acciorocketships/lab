@@ -37,7 +37,6 @@ Once in the console, type `/start` to begin the background agent, `/pause` to pa
 | `/pause` | Pause the agent |
 | `/exit` | Pause the agent and quit the console |
 | `/status` | Show current agent state |
-| `/ask <q>` | Queue a question for the agent |
 | `/backlog` | Show recent instructions |
 | `/branches` | Show branch registry |
 | `/experiments` | Show experiment registry |
@@ -113,7 +112,7 @@ Workers use **Claude Code** (`claude -p`) or **Cursor agent** (`cursor agent -p`
 ## Pipeline (high level)
 
 1. **Console (Textual)** and **scheduler** share **SQLite** (`control_events`, `system_state`, `run_events`, `worker_stream`).
-2. Each **cycle**, the **LangGraph** in `workflows/research_graph.py` runs: `ingest` → `sync` → `choose` → `worker` → `update`.
+2. Each **cycle**, the **LangGraph** in `workflows/research_graph.py` runs: `ingest` → `choose` → `worker` → `update`.
 3. **Choose** calls `orchestrator.decide_orchestrator()` (LLM with structured output).
 4. **Worker** builds a **packet**, writes `packet.md` and `worker_output.json` under `data/runtime/memory/episodes/cycle_*/<worker>/`, and runs `agents.base.run_worker()` → Claude or Cursor CLI.
 5. Worker output is **streamed** line-by-line to the `worker_stream` table; the console displays chunks in real time.

@@ -1,4 +1,4 @@
-"""LangGraph research loop: ingest control events, orchestrate, run workers, checkpoint."""
+"""LangGraph research loop: ingest control events, choose worker, run worker, checkpoint."""
 
 from __future__ import annotations
 
@@ -64,22 +64,9 @@ def ingest_events(state: ResearchState, *, db_path: Path, researcher_root: Path)
                 db.set_control_mode(conn, "shutdown")
             elif kid == "instruction":
                 control.apply_instruction_event(conn, researcher_root, payload)
-            elif kid == "question":
-                if payload:
-                    db.add_question(conn, payload.strip())
             ids.append(int(ev["id"]))
         db.mark_events_consumed(conn, ids)
         conn.commit()
-        st = db.get_system_state(conn)
-        return {"control_mode": st["control_mode"]}
-    finally:
-        conn.close()
-
-
-def sync_control(state: ResearchState, *, db_path: Path) -> dict[str, Any]:
-    """Load control_mode from DB into graph state."""
-    conn = _conn(db_path)
-    try:
         st = db.get_system_state(conn)
         return {"control_mode": st["control_mode"]}
     finally:
@@ -280,9 +267,6 @@ def build_graph(
     def n_ingest(s: ResearchState):
         return ingest_events(s, db_path=db_path, researcher_root=researcher_root)
 
-    def n_sync(s: ResearchState):
-        return sync_control(s, db_path=db_path)
-
     def n_choose(s: ResearchState):
         return choose_action(s, cfg=cfg, researcher_root=researcher_root, db_path=db_path)
 
@@ -294,14 +278,12 @@ def build_graph(
 
     g = StateGraph(ResearchState)
     g.add_node("ingest", n_ingest)
-    g.add_node("sync", n_sync)
     g.add_node("choose", n_choose)
     g.add_node("worker", n_worker)
     g.add_node("update", n_update)
 
     g.add_edge(START, "ingest")
-    g.add_edge("ingest", "sync")
-    g.add_edge("sync", "choose")
+    g.add_edge("ingest", "choose")
     g.add_edge("choose", "worker")
     g.add_edge("worker", "update")
     g.add_edge("update", END)
