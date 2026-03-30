@@ -51,3 +51,31 @@ def test_append_run_event(tmp_path: Path) -> None:
     assert len(rows) == 1
     assert rows[0]["worker"] == "planner"
     assert rows[0]["summary"] == "planner: ok"
+
+
+def test_worker_stream_roundtrip(tmp_path: Path) -> None:
+    """Stream chunks write and read back in order."""
+    p = tmp_path / "t.db"
+    conn = db.connect_db(p)
+    db.append_stream_chunk(conn, cycle=1, worker="planner", chunk="line 1")
+    db.append_stream_chunk(conn, cycle=1, worker="planner", chunk="line 2")
+
+    rows = db.stream_chunks_since(conn, 0)
+    assert len(rows) == 2
+    assert rows[0]["chunk"] == "line 1"
+    assert rows[1]["chunk"] == "line 2"
+
+    rows2 = db.stream_chunks_since(conn, rows[0]["id"])
+    assert len(rows2) == 1
+    assert rows2[0]["chunk"] == "line 2"
+
+
+def test_clear_stream(tmp_path: Path) -> None:
+    p = tmp_path / "t.db"
+    conn = db.connect_db(p)
+    db.append_stream_chunk(conn, cycle=1, worker="a", chunk="x")
+    db.append_stream_chunk(conn, cycle=2, worker="b", chunk="y")
+    db.clear_stream(conn, cycle=1)
+    rows = db.stream_chunks_since(conn, 0)
+    assert len(rows) == 1
+    assert rows[0]["cycle"] == 2

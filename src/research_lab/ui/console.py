@@ -1,129 +1,326 @@
-"""Textual TUI: status pane + command prompt; writes control events to SQLite."""
+"""Redesigned Textual TUI: Claude Code-inspired layout with streaming output."""
 
 from __future__ import annotations
 
+import multiprocessing
 import sqlite3
-import threading
+import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from textual.app import App, ComposeResult
-from textual.containers import Container, Horizontal, Vertical
-from textual.widgets import Footer, Header, Input, RichLog, Static
+from textual.binding import Binding
+from textual.containers import Vertical
+from textual.widgets import Input, RichLog, Static
 
 from research_lab import db
 from research_lab.ui import events
 
+if TYPE_CHECKING:
+    from research_lab.config import RunConfig
+
+CSS = """
+Screen {
+    background: $surface;
+}
+
+#header {
+    height: 1;
+    dock: top;
+    background: $primary-background;
+    color: $text-muted;
+    padding: 0 1;
+}
+
+#activity {
+    min-height: 1;
+}
+
+#statusbar {
+    height: 1;
+    dock: bottom;
+    background: $primary-background;
+    color: $text-muted;
+    padding: 0 1;
+}
+
+#prompt {
+    dock: bottom;
+    height: 1;
+    margin: 0;
+    border: none;
+    background: $surface;
+}
+
+#prompt:focus {
+    border: none;
+}
+"""
+
 
 class ResearchConsole(App[None]):
-    """Async command surface; polls DB for scheduler heartbeats."""
+    """Interactive console with on-demand scheduler lifecycle."""
 
-    BINDINGS = [("ctrl+c", "quit", "Quit")]
+    BINDINGS = [
+        Binding("ctrl+c", "quit", "Quit", show=False),
+    ]
 
-    def __init__(self, db_path: Path) -> None:
+    CSS = CSS
+
+    def __init__(self, db_path: Path, cfg: RunConfig) -> None:
         super().__init__()
         self.db_path = db_path
+        self.cfg = cfg
         self._conn = db.connect_db(db_path)
+        self._scheduler: multiprocessing.Process | None = None
+        self._last_stream_id = 0
+        self._last_run_event_id = 0
+        self._last_cycle = 0
+        self._last_worker = ""
+        self._worker_start: float = 0.0
+        self._project_name = cfg.project_dir.name
+        self._model = cfg.openai_model
 
     def compose(self) -> ComposeResult:
-        yield Header(show_clock=True)
+        yield Static("", id="header")
         with Vertical():
-            yield Static("Initializing…", id="status")
-            yield RichLog(id="log", highlight=True, markup=True)
-            with Horizontal():
-                yield Input(
-                    placeholder="Type instructions as plain text, or /pause /resume /status /help …",
-                    id="cmd",
-                )
-        yield Footer()
+            yield RichLog(id="activity", highlight=False, markup=True, wrap=True, auto_scroll=True)
+        yield Static("", id="statusbar")
+        yield Input(placeholder="> ", id="prompt")
 
     def on_mount(self) -> None:
-        """Start polling thread for status refresh."""
-        self.title = "research-lab"
-        self.sub_title = str(self.db_path)
-        self.set_interval(0.4, self._refresh_status)
+        self._refresh_header()
+        log = self.query_one("#activity", RichLog)
+        log.write("")
+        log.write("  [bold]Welcome to lab.[/] Type [bold]/start[/] to begin, or type an instruction.")
+        log.write("  Type [bold]/help[/] for available commands.\n")
+        self.set_interval(0.3, self._poll)
+
+    def _refresh_header(self) -> None:
+        try:
+            hdr = events.header_line(self._project_name, self._model, self._conn)
+        except sqlite3.OperationalError:
+            hdr = "[bold]lab[/]"
+        self.query_one("#header", Static).update(hdr)
 
     def _refresh_status(self) -> None:
-        """Poll DB and update status widget."""
-        status = self.query_one("#status", Static)
-        log = self.query_one("#log", RichLog)
         try:
-            block = events.format_status_block(self._conn)
-            status.update(block)
+            line = events.status_line(self._conn)
         except sqlite3.OperationalError:
-            log.write("[yellow]waiting for DB…[/]")
+            line = "[dim]waiting for DB...[/]"
+        self.query_one("#statusbar", Static).update(line)
+
+    def _poll(self) -> None:
+        """Periodic poll: update header, status bar, run events, and stream chunks."""
+        self._refresh_header()
+        self._refresh_status()
+        self._poll_run_events()
+        self._poll_stream()
+
+    def _poll_run_events(self) -> None:
+        """Check for new orchestrator / worker lifecycle events."""
+        log = self.query_one("#activity", RichLog)
+        try:
+            rows = list(
+                self._conn.execute(
+                    "SELECT id, ts, cycle, kind, worker, roadmap_step, task, summary "
+                    "FROM run_events WHERE id > ? ORDER BY id ASC LIMIT 50",
+                    (self._last_run_event_id,),
+                )
+            )
+        except sqlite3.OperationalError:
+            return
+
+        for row in rows:
+            self._last_run_event_id = row["id"]
+            kind = row["kind"]
+            cycle = row["cycle"]
+            worker = row["worker"]
+            task = row["task"] or ""
+
+            if kind == "orchestrator":
+                if cycle != self._last_cycle or worker != self._last_worker:
+                    self._last_cycle = cycle
+                    self._last_worker = worker
+                    self._worker_start = time.time()
+                    log.write(events.format_cycle_header(cycle, worker, task))
+            elif kind == "worker":
+                elapsed = time.time() - self._worker_start if self._worker_start else 0
+                ok = "error" not in (row["summary"] or "").lower()
+                log.write(events.format_worker_done(elapsed, ok))
+
+    def _poll_stream(self) -> None:
+        """Read new streaming chunks from the worker_stream table."""
+        log = self.query_one("#activity", RichLog)
+        try:
+            rows = db.stream_chunks_since(self._conn, self._last_stream_id)
+        except sqlite3.OperationalError:
+            return
+        for row in rows:
+            self._last_stream_id = row["id"]
+            line = events.format_stream_chunk(row["chunk"])
+            if line:
+                log.write(line)
+
+    # --- input handling -------------------------------------------------------
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        """Handle one line: plain text queues an instruction; `/name` runs a control command."""
         line = event.value.strip()
         event.input.value = ""
-        log = self.query_one("#log", RichLog)
         if not line:
             return
+
+        log = self.query_one("#activity", RichLog)
+
         if not line.startswith("/"):
             db.enqueue_event(self._conn, "instruction", line)
             self._conn.commit()
-            log.write(f"[green]queued instruction[/]: {line[:200]}")
+            log.write(f"\n  [green]\u276f[/] {line[:200]}")
             return
+
         parts = line.split(maxsplit=1)
         cmd = parts[0].lower().removeprefix("/")
         rest = parts[1] if len(parts) > 1 else ""
-        if cmd == "help":
-            log.write(
-                "[bold]Slash commands:[/] /instruction <text> | /ask <q> | /pause | /resume | "
-                "/shutdown | /status | /backlog | /branches | /experiments | /report | /help — "
-                "lines without a leading / are queued as instructions."
-            )
-            return
-        if cmd == "instruction":
+
+        handler = {
+            "start": self._cmd_start,
+            "pause": self._cmd_pause,
+            "exit": self._cmd_exit,
+            "status": self._cmd_status,
+            "help": self._cmd_help,
+            "ask": lambda r=rest: self._cmd_ask(r),
+            "backlog": self._cmd_backlog,
+            "branches": self._cmd_branches,
+            "experiments": self._cmd_experiments,
+        }.get(cmd)
+
+        if handler:
+            handler()
+        elif cmd == "instruction" and rest:
             db.enqueue_event(self._conn, "instruction", rest)
             self._conn.commit()
-            log.write(f"[green]queued instruction[/]: {rest[:200]}")
+            log.write(f"\n  [green]\u276f[/] {rest[:200]}")
+        else:
+            log.write(f"  [red]Unknown command:[/] /{cmd}")
+
+    def _cmd_start(self) -> None:
+        log = self.query_one("#activity", RichLog)
+        if self._scheduler and self._scheduler.is_alive():
+            log.write("  [dim]Agent is already running.[/]")
             return
-        if cmd == "ask":
-            db.enqueue_event(self._conn, "question", rest)
-            self._conn.commit()
-            log.write(f"[green]queued question[/]: {rest[:200]}")
-            return
-        if cmd == "pause":
-            db.enqueue_event(self._conn, "pause", None)
-            self._conn.commit()
-            log.write("[yellow]pause requested[/]")
-            return
-        if cmd == "resume":
-            db.enqueue_event(self._conn, "resume", None)
-            self._conn.commit()
-            log.write("[green]resume requested[/]")
-            return
-        if cmd == "shutdown":
-            db.enqueue_event(self._conn, "shutdown", None)
-            self._conn.commit()
-            log.write("[red]shutdown requested — exiting UI shortly[/]")
-            threading.Timer(0.8, self.exit).start()
-            return
-        if cmd == "status":
+
+        db.enqueue_event(self._conn, "resume", None)
+        self._conn.commit()
+
+        from research_lab.loop import spawn_scheduler
+        from research_lab.global_config import project_researcher_root
+
+        researcher_root = project_researcher_root(self.cfg.project_dir)
+        self._scheduler = spawn_scheduler(
+            self.db_path, researcher_root, self.cfg.project_dir, self.cfg,
+        )
+        log.write("  [green]Agent started.[/]\n")
+
+    def _cmd_pause(self) -> None:
+        log = self.query_one("#activity", RichLog)
+        db.enqueue_event(self._conn, "pause", None)
+        self._conn.commit()
+        log.write("  [yellow]Agent paused.[/]")
+
+    def _cmd_exit(self) -> None:
+        log = self.query_one("#activity", RichLog)
+        db.enqueue_event(self._conn, "pause", None)
+        self._conn.commit()
+        log.write("  [dim]Shutting down...[/]")
+        self._kill_scheduler()
+        self.set_timer(0.3, self.exit)
+
+    def _cmd_status(self) -> None:
+        log = self.query_one("#activity", RichLog)
+        try:
             st = db.get_system_state(self._conn)
-            log.write(str(dict(st)))
+        except sqlite3.OperationalError:
+            log.write("  [red]DB not ready[/]")
             return
-        if cmd == "backlog":
-            rows = db.list_instructions(self._conn)
-            for r in rows[:20]:
-                log.write(f"{r['id']}: [{r['status']}] {r['text'][:200]}")
+        mode = st.get("control_mode", "?")
+        cycle = st.get("cycle_count", 0)
+        worker = st.get("current_worker", "")
+        task = (st.get("task", "") or "")[:120]
+        roadmap = (st.get("roadmap_step", "") or "")[:60]
+        log.write(
+            f"  [bold]Status[/]  mode={mode}  cycle={cycle}  worker={worker}\n"
+            f"  roadmap: {roadmap}\n"
+            f"  task: {task}"
+        )
+
+    def _cmd_help(self) -> None:
+        log = self.query_one("#activity", RichLog)
+        log.write(
+            "\n  [bold]Commands[/]\n"
+            "  [bold]/start[/]        Start the background agent\n"
+            "  [bold]/pause[/]        Pause the agent\n"
+            "  [bold]/exit[/]         Pause agent and quit\n"
+            "  [bold]/status[/]       Show current agent state\n"
+            "  [bold]/ask[/] <q>      Queue a question\n"
+            "  [bold]/backlog[/]      Show recent instructions\n"
+            "  [bold]/branches[/]     Show branches\n"
+            "  [bold]/experiments[/]  Show experiments\n"
+            "  [bold]/help[/]         This message\n"
+            "\n  Plain text is queued as an instruction.\n"
+        )
+
+    def _cmd_ask(self, text: str) -> None:
+        log = self.query_one("#activity", RichLog)
+        if not text:
+            log.write("  [dim]Usage: /ask <question>[/]")
             return
-        if cmd == "branches":
-            for r in db.list_branches_rows(self._conn)[:30]:
-                log.write(f"{r['name']}: {r['status']}")
+        db.enqueue_event(self._conn, "question", text)
+        self._conn.commit()
+        log.write(f"  [green]Queued question:[/] {text[:200]}")
+
+    def _cmd_backlog(self) -> None:
+        log = self.query_one("#activity", RichLog)
+        rows = db.list_instructions(self._conn)
+        if not rows:
+            log.write("  [dim]No instructions.[/]")
             return
-        if cmd == "experiments":
-            for r in db.list_experiments_rows(self._conn)[:30]:
-                log.write(f"{r['exp_id']}: {r['status']} ({r['branch']})")
+        for r in rows[:15]:
+            log.write(f"  [dim]{r['id']}[/] [{r['status']}] {r['text'][:160]}")
+
+    def _cmd_branches(self) -> None:
+        log = self.query_one("#activity", RichLog)
+        rows = db.list_branches_rows(self._conn)
+        if not rows:
+            log.write("  [dim]No branches.[/]")
             return
-        if cmd == "report":
-            log.write("[dim]report: not implemented yet — use Tier A / memory/extended for notes[/]")
+        for r in rows[:20]:
+            log.write(f"  {r['name']}: {r['status']}")
+
+    def _cmd_experiments(self) -> None:
+        log = self.query_one("#activity", RichLog)
+        rows = db.list_experiments_rows(self._conn)
+        if not rows:
+            log.write("  [dim]No experiments.[/]")
             return
-        log.write(f"[red]unknown command:[/] {cmd}")
+        for r in rows[:20]:
+            log.write(f"  {r['exp_id']}: {r['status']} ({r['branch']})")
+
+    # --- lifecycle ------------------------------------------------------------
+
+    def _kill_scheduler(self) -> None:
+        if self._scheduler and self._scheduler.is_alive():
+            self._scheduler.terminate()
+            self._scheduler.join(timeout=3)
+        self._scheduler = None
+
+    def action_quit(self) -> None:
+        db.enqueue_event(self._conn, "pause", None)
+        self._conn.commit()
+        self._kill_scheduler()
+        self.exit()
 
 
-def run_console(db_path: Path) -> None:
-    """Entry for the TUI process."""
-    app = ResearchConsole(db_path)
+def run_console(db_path: Path, cfg: RunConfig) -> None:
+    """Entry point for the TUI."""
+    app = ResearchConsole(db_path, cfg)
     app.run()

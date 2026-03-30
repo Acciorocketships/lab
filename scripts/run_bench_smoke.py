@@ -1,6 +1,6 @@
-"""One headless LangGraph cycle (ingest→…→update) to verify orchestrator + worker path. Exits; no TUI.
+"""One headless LangGraph cycle for the active bench project (orchestrator real; worker mocked).
 
-Patches the worker CLI so this finishes without Cursor/Claude (orchestrator LLM still runs for real).
+PROJECT_DIR must match scripts/run.py. Exits after one cycle; no TUI, no Cursor/Claude CLI.
 """
 
 from __future__ import annotations
@@ -10,21 +10,20 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
-# Keep in sync with scripts/run.py
-PROJECT_DIR = Path(__file__).resolve().parents[1] / "data" / "bench_rl_project"
-RESEARCHER_ROOT = PROJECT_DIR / ".airesearcher"
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(_REPO_ROOT / "src"))
 
 
 def main() -> None:
-    repo_root = Path(__file__).resolve().parents[1]
-    sys.path.insert(0, str(repo_root / "src"))
     from research_lab.config import RunConfig
     from research_lab import memory
     from research_lab.workflows import research_graph
 
+    project_dir = _REPO_ROOT / "data" / "bench_rl_project"
+    researcher_root = project_dir / ".airesearcher"
     cfg = RunConfig(
-        researcher_root=RESEARCHER_ROOT,
-        project_dir=PROJECT_DIR,
+        researcher_root=researcher_root,
+        project_dir=project_dir,
         research_idea=(
             "Implement tabular Q-learning on Gymnasium FrozenLake-v1 (4x4), compare to a random "
             "policy baseline, and document hyperparameters plus trained vs random mean success rate "
@@ -35,17 +34,19 @@ def main() -> None:
             "hyperparameters and a table: trained policy vs random baseline (mean success rate, "
             ">=100 eval episodes each); trained policy strictly outperforms random on success rate."
         ),
-        preferences="gymnasium + numpy only for the learner; reproducible seeds; type hints optional.",
+        preferences=(
+            "gymnasium + numpy only for the learner; reproducible seeds; type hints optional."
+        ),
         orchestrator_backend="openrouter",
         openai_api_key=None,
         openai_base_url=None,
-        openai_model="z-ai/glm-4.5-air:free",
+        openai_model="google/gemini-2.5-flash-lite",
         default_worker_backend="cursor",
     )
-    RESEARCHER_ROOT.mkdir(parents=True, exist_ok=True)
-    PROJECT_DIR.mkdir(parents=True, exist_ok=True)
-    db_path = RESEARCHER_ROOT / "data" / "runtime.db"
-    state = RESEARCHER_ROOT / "data" / "runtime" / "state"
+    researcher_root.mkdir(parents=True, exist_ok=True)
+    project_dir.mkdir(parents=True, exist_ok=True)
+    db_path = researcher_root / "data" / "runtime.db"
+    state = researcher_root / "data" / "runtime" / "state"
     state.mkdir(parents=True, exist_ok=True)
     (state / "research_idea.md").write_text(f"# Research idea\n\n{cfg.research_idea}\n", encoding="utf-8")
     (state / "acceptance_criteria.md").write_text(f"# Acceptance criteria\n\n{cfg.acceptance_criteria}\n", encoding="utf-8")
@@ -53,23 +54,28 @@ def main() -> None:
     (state / "project_brief.md").write_text(
         f"# Project\n\nImplementation directory: `{cfg.project_dir}`\n", encoding="utf-8"
     )
-    memory.ensure_memory_layout(RESEARCHER_ROOT)
+    memory.ensure_memory_layout(researcher_root)
 
     app = research_graph.build_graph(
         cfg,
         db_path=db_path,
-        researcher_root=RESEARCHER_ROOT,
-        project_dir=PROJECT_DIR,
+        researcher_root=researcher_root,
+        project_dir=project_dir,
     )
     st = research_graph._state_from_db(db_path)
 
     def _fake_worker(packet: str, *, backend: str, project_cwd: Path, **kwargs):  # type: ignore[no-untyped-def]
-        return {"ok": True, "parsed": "toy_run: worker skipped (mock)"}
+        return {"ok": True, "parsed": "run_bench_smoke: worker skipped (mock); packet received."}
 
     with patch("research_lab.agents.base.run_worker", side_effect=_fake_worker):
         out = app.invoke(st)
-    print("toy_run: one cycle OK")
-    print(json.dumps({k: out.get(k) for k in ("cycle_count", "current_worker", "roadmap_step", "last_action_summary")}, indent=2))
+    print("run_bench_smoke: one cycle OK")
+    print(
+        json.dumps(
+            {k: out.get(k) for k in ("cycle_count", "current_worker", "roadmap_step", "last_action_summary")},
+            indent=2,
+        )
+    )
 
 
 if __name__ == "__main__":

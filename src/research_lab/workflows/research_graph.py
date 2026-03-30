@@ -8,8 +8,9 @@ from typing import Any
 
 from langgraph.graph import END, START, StateGraph
 
-from research_lab import agents, control, db, memory, orchestrator, packets
+from research_lab import control, db, memory, orchestrator, packets
 from research_lab.agents import (
+    base as agents_base,
     critic as critic_mod,
     debugger,
     executer,
@@ -161,6 +162,7 @@ def execute_worker(
     cfg: RunConfig,
     researcher_root: Path,
     project_dir: Path,
+    db_path: Path | None = None,
 ) -> dict[str, Any]:
     """Build packet and call CLI worker (or skip)."""
     worker = state.get("current_worker", "planner")
@@ -194,7 +196,17 @@ def execute_worker(
     backend = cfg.default_worker_backend
     if backend not in ("claude", "cursor"):
         backend = "cursor"
-    res = agents.base.run_worker(pkt, backend=backend, project_cwd=project_dir)
+
+    on_chunk = None
+    if db_path is not None:
+        stream_conn = _conn(db_path)
+        def on_chunk(chunk: str, _c=stream_conn, _cyc=cyc, _w=worker) -> None:
+            try:
+                db.append_stream_chunk(_c, _cyc, _w, chunk)
+            except Exception:
+                pass
+
+    res = agents_base.run_worker(pkt, backend=backend, project_cwd=project_dir, on_chunk=on_chunk)
     packets.write_worker_output_file(researcher_root, cyc, worker, res)
     summary = str(res.get("parsed", res))
     return {
@@ -269,7 +281,7 @@ def build_graph(
         return choose_action(s, cfg=cfg, researcher_root=researcher_root, db_path=db_path)
 
     def n_worker(s: ResearchState):
-        return execute_worker(s, cfg=cfg, researcher_root=researcher_root, project_dir=project_dir)
+        return execute_worker(s, cfg=cfg, researcher_root=researcher_root, project_dir=project_dir, db_path=db_path)
 
     def n_update(s: ResearchState):
         return update_state(s, db_path=db_path, researcher_root=researcher_root)

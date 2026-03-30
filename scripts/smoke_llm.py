@@ -7,10 +7,10 @@ import sys
 from pathlib import Path
 
 # --- Same session as scripts/run.py / scripts/oauth_login.py -----------------------------------
-PROJECT_DIR = Path(__file__).resolve().parents[1] / "data" / "project_stub"
+PROJECT_DIR = Path(__file__).resolve().parents[1] / "data" / "bench_rl_project"
 RESEARCHER_ROOT = PROJECT_DIR / ".airesearcher"
-# openai | openrouter | local (override: export AIRESEARCHER_ORCHESTRATOR_BACKEND=openrouter)
-ORCHESTRATOR_BACKEND = os.environ.get("AIRESEARCHER_ORCHESTRATOR_BACKEND", "openai")
+# openai | openrouter | local — keep default in sync with scripts/run.py (orchestrator_backend)
+ORCHESTRATOR_BACKEND = os.environ.get("AIRESEARCHER_ORCHESTRATOR_BACKEND", "openrouter")
 OPENAI_MODEL = os.environ.get("AIRESEARCHER_OPENAI_MODEL", "gpt-4o-mini")
 # ----------------------------------------------------------------------------------------------
 

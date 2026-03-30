@@ -102,6 +102,14 @@ CREATE TABLE IF NOT EXISTS stall_signals (
   details TEXT,
   resolved INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS worker_stream (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  cycle INTEGER NOT NULL,
+  worker TEXT NOT NULL,
+  chunk TEXT NOT NULL,
+  ts REAL NOT NULL
+);
 """
 
 
@@ -328,3 +336,33 @@ def list_branches_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
 def list_experiments_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     """Experiment registry."""
     return list(conn.execute("SELECT * FROM experiments ORDER BY id DESC"))
+
+
+# --- worker stream -----------------------------------------------------------
+
+def append_stream_chunk(conn: sqlite3.Connection, cycle: int, worker: str, chunk: str) -> None:
+    """Write one streaming output chunk from a running worker."""
+    conn.execute(
+        "INSERT INTO worker_stream (cycle, worker, chunk, ts) VALUES (?, ?, ?, ?)",
+        (cycle, worker, chunk, time.time()),
+    )
+    conn.commit()
+
+
+def stream_chunks_since(conn: sqlite3.Connection, after_id: int = 0) -> list[sqlite3.Row]:
+    """Return stream chunks with id > after_id, oldest first."""
+    return list(
+        conn.execute(
+            "SELECT id, cycle, worker, chunk, ts FROM worker_stream WHERE id > ? ORDER BY id ASC LIMIT 200",
+            (after_id,),
+        )
+    )
+
+
+def clear_stream(conn: sqlite3.Connection, cycle: int | None = None) -> None:
+    """Delete stream rows, optionally only for a given cycle."""
+    if cycle is not None:
+        conn.execute("DELETE FROM worker_stream WHERE cycle = ?", (cycle,))
+    else:
+        conn.execute("DELETE FROM worker_stream")
+    conn.commit()

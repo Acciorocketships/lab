@@ -1,0 +1,11 @@
+{"sessionId": "ef02ff", "timestamp": 1774835742042, "hypothesisId": "H1", "location": "research_graph.choose_action", "message": "before_decide_orchestrator", "data": {"cycle_count": 0, "pid": 49642}}
+{"sessionId": "ef02ff", "timestamp": 1774835742053, "hypothesisId": "H1", "location": "research_graph.choose_action", "message": "before_decide_orchestrator", "data": {"cycle_count": 0, "pid": 49642}}
+{"sessionId": "ef02ff", "timestamp": 1774835742053, "hypothesisId": "H1", "location": "research_graph.choose_action", "message": "after_decide_orchestrator", "data": {"worker": "done", "roadmap_step": ""}}
+{"sessionId": "ef02ff", "timestamp": 1774835776971, "hypothesisId": "H4", "location": "loop._run_scheduler", "message": "scheduler_child_started", "data": {"pid": 49798, "db_path": "/Users/ryko/Desktop/Work/airesearcher/data/bench_rl_project/.airesearcher/data/runtime.db"}}
+{"sessionId": "ef02ff", "timestamp": 1774835776975, "hypothesisId": "H3", "location": "research_graph.run_loop", "message": "iteration", "data": {"n": 1, "control_mode": "active", "pid": 49798}}
+{"sessionId": "ef02ff", "timestamp": 1774835776975, "hypothesisId": "H5", "location": "research_graph.run_loop", "message": "before_app_invoke", "data": {"n": 1, "pid": 49798}}
+{"sessionId": "ef02ff", "timestamp": 1774835776980, "hypothesisId": "H1", "location": "research_graph.choose_action", "message": "before_decide_orchestrator", "data": {"cycle_count": 1, "pid": 49798}}
+{"sessionId": "ef02ff", "timestamp": 1774835776981, "hypothesisId": "H1", "location": "orchestrator.decide_orchestrator", "message": "before_llm_generate", "data": {"model": "google/gemini-2.5-flash-lite", "pid": 49798}}
+{"sessionId": "ef02ff", "timestamp": 1774835783700, "hypothesisId": "H1", "location": "orchestrator.decide_orchestrator", "message": "after_llm_generate", "data": {"worker": "planner", "pid": 49798}}
+{"sessionId": "ef02ff", "timestamp": 1774835783701, "hypothesisId": "H1", "location": "research_graph.choose_action", "message": "after_decide_orchestrator", "data": {"worker": "planner", "roadmap_step": "Define Project Roadmap"}}
+{"sessionId": "ef02ff", "timestamp": 1774835783706, "hypothesisId": "H2", "location": "research_graph.execute_worker", "message": "before_run_worker", "data": {"worker": "planner", "backend": "cursor", "cycle": 2, "pid": 49798}}
