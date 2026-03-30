@@ -17,7 +17,6 @@ class RunConfig:
     researcher_root: Path
     project_dir: Path
     research_idea: str
-    acceptance_criteria: str
     preferences: str
     orchestrator_backend: str  # openai | openrouter | local
     openai_api_key: str | None
@@ -59,7 +58,6 @@ class RunConfig:
             researcher_root=researcher_root,
             project_dir=project_dir,
             research_idea=pcfg.research_idea,
-            acceptance_criteria=pcfg.acceptance_criteria,
             preferences=pcfg.preferences or gcfg.code_style,
             orchestrator_backend=gcfg.provider,
             openai_api_key=api_key if gcfg.provider != "openrouter" else None,

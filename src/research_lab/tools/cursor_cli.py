@@ -10,8 +10,6 @@ import threading
 from pathlib import Path
 from typing import Any, Callable
 
-_DEFAULT_TIMEOUT = 180
-
 StreamCallback = Callable[[str], None]
 
 
@@ -20,14 +18,18 @@ def available() -> bool:
     return shutil.which("cursor") is not None
 
 
-def _resolve_timeout_sec(explicit: int | None) -> int:
+def _resolve_timeout_sec(explicit: int | None) -> int | None:
+    """Seconds cap for subprocess, or None for no limit (default)."""
     if explicit is not None:
-        return max(1, explicit)
-    raw = os.environ.get("AIRESEARCHER_CURSOR_TIMEOUT_SEC", str(_DEFAULT_TIMEOUT))
+        return None if explicit <= 0 else explicit
+    raw = os.environ.get("AIRESEARCHER_CURSOR_TIMEOUT_SEC")
+    if raw is None or raw.strip() == "":
+        return None
     try:
-        return max(1, int(raw.strip(), 10))
+        n = int(raw.strip(), 10)
     except ValueError:
-        return _DEFAULT_TIMEOUT
+        return None
+    return None if n <= 0 else n
 
 
 def _build_cmd(
@@ -63,7 +65,11 @@ def run_agent_print(
     timeout_sec: int | None = None,
     on_chunk: StreamCallback | None = None,
 ) -> dict[str, Any]:
-    """Run `cursor agent -p` (headless) with optional line-by-line streaming via *on_chunk*."""
+    """Run `cursor agent -p` (headless) with optional line-by-line streaming via *on_chunk*.
+
+    *timeout_sec*: cap in seconds, or ``None`` / ``<= 0`` for no cap (default). Env
+    ``AIRESEARCHER_CURSOR_TIMEOUT_SEC`` applies when *timeout_sec* is omitted.
+    """
     cmd = _build_cmd(prompt, output_format=output_format, trust=trust, force=force, resume=resume)
     if cmd is None:
         return {"ok": False, "error": "cursor CLI not found", "stdout": "", "stderr": ""}
@@ -74,7 +80,7 @@ def run_agent_print(
     return _run_blocking(cmd, cwd=cwd, limit=limit)
 
 
-def _run_blocking(cmd: list[str], *, cwd: Path, limit: int) -> dict[str, Any]:
+def _run_blocking(cmd: list[str], *, cwd: Path, limit: int | None) -> dict[str, Any]:
     try:
         proc = subprocess.run(cmd, cwd=str(cwd), capture_output=True, text=True, timeout=limit)
     except subprocess.TimeoutExpired as e:
@@ -95,7 +101,7 @@ def _run_blocking(cmd: list[str], *, cwd: Path, limit: int) -> dict[str, Any]:
 
 
 def _run_streaming(
-    cmd: list[str], *, cwd: Path, limit: int, on_chunk: StreamCallback,
+    cmd: list[str], *, cwd: Path, limit: int | None, on_chunk: StreamCallback,
 ) -> dict[str, Any]:
     try:
         proc = subprocess.Popen(

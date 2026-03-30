@@ -41,7 +41,7 @@ class GlobalConfig:
             f'backend = "{self.worker_backend}"\n'
             "\n"
             "[preferences]\n"
-            f'code_style = "{_escape_toml(self.code_style)}"\n'
+            f"code_style = {_format_toml_string_value(self.code_style)}\n"
         )
 
     @classmethod
@@ -68,15 +68,13 @@ class ProjectConfig:
     """Persisted in <project>/.airesearcher/config.toml."""
 
     research_idea: str = ""
-    acceptance_criteria: str = ""
     preferences: str = ""
 
     def to_toml(self) -> str:
         return (
             "[project]\n"
-            f'research_idea = "{_escape_toml(self.research_idea)}"\n'
-            f'acceptance_criteria = "{_escape_toml(self.acceptance_criteria)}"\n'
-            f'preferences = "{_escape_toml(self.preferences)}"\n'
+            f"research_idea = {_format_toml_string_value(self.research_idea)}\n"
+            f"preferences = {_format_toml_string_value(self.preferences)}\n"
         )
 
     @classmethod
@@ -84,9 +82,15 @@ class ProjectConfig:
         with open(path, "rb") as f:
             data = tomllib.load(f)
         proj = data.get("project", {})
+        idea = str(proj.get("research_idea", ""))
+        legacy = str(proj.get("acceptance_criteria", ""))
+        if legacy.strip():
+            if idea.strip():
+                idea = f"{idea.rstrip()}\n\n## Success criteria\n\n{legacy.strip()}"
+            else:
+                idea = legacy.strip()
         return cls(
-            research_idea=str(proj.get("research_idea", "")),
-            acceptance_criteria=str(proj.get("acceptance_criteria", "")),
+            research_idea=idea,
             preferences=str(proj.get("preferences", "")),
         )
 
@@ -94,6 +98,17 @@ class ProjectConfig:
 def _escape_toml(s: str) -> str:
     """Escape special chars for a TOML double-quoted string."""
     return s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+
+def _format_toml_string_value(s: str) -> str:
+    """Emit a TOML string value. Use a multiline ``\"\"\"`` block when *s* contains newlines (readable)."""
+    if not s:
+        return '""'
+    if "\n" in s:
+        if '"""' in s:
+            return '"' + _escape_toml(s) + '"'
+        return '"""\n' + s + '"""'
+    return '"' + _escape_toml(s) + '"'
 
 
 def global_config_exists() -> bool:

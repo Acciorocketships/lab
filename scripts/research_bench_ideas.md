@@ -1,6 +1,6 @@
 # Bench ideas for research-lab
 
-Short, verifiable tasks to exercise the orchestrator, workers, memory, and acceptance criteria. Two buckets: **math that requires code**, and **RL that trains in a few minutes** on a typical laptop CPU.
+Short, verifiable tasks to exercise the orchestrator, workers, memory, and the research brief (`research_idea.md`). Two buckets: **math that requires code**, and **RL that trains in a few minutes** on a typical laptop CPU.
 
 ---
 
@@ -38,7 +38,7 @@ Answers should include runnable code (compute, verify, plot, or search), not onl
 14. **Modular exponentiation** — Fast modular exp; verify Fermat’s little theorem for random prime \(p\) and \(a \not\equiv 0 \pmod p\).
 15. **Sieve of Eratosthenes** — Count primes \(\le 10^6\); compare to \(\pi(x)\) approximations in a short table.
 
-### Sample acceptance criteria (math + code)
+### Sample success criteria (math + code)
 
 - Runnable script or notebook path; stdout or JSON with numeric outputs.
 - Two methods compared with max absolute error on fixed inputs, or error vs parameter curve (CSV/plot).

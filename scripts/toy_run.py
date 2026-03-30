@@ -13,6 +13,17 @@ from unittest.mock import patch
 # Keep in sync with scripts/run.py
 PROJECT_DIR = Path(__file__).resolve().parents[1] / "data" / "bench_rl_project"
 RESEARCHER_ROOT = PROJECT_DIR / ".airesearcher"
+_RESEARCH_BRIEF = """\
+Implement tabular Q-learning on Gymnasium FrozenLake-v1 (4x4), compare to a random policy baseline, and document \
+hyperparameters plus trained vs random mean success rate over >=100 eval episodes in SUMMARY.md. See project README \
+for phased deliverables.
+
+## Success criteria
+
+- requirements.txt installs; training and eval entrypoints run
+- SUMMARY.md reports hyperparameters and a table: trained policy vs random baseline (mean success rate, >=100 eval episodes each)
+- trained policy strictly outperforms random on success rate
+"""
 
 
 def main() -> None:
@@ -20,21 +31,13 @@ def main() -> None:
     sys.path.insert(0, str(repo_root / "src"))
     from research_lab.config import RunConfig
     from research_lab import memory
+    from research_lab.runner import seed_tier_a_from_run_config
     from research_lab.workflows import research_graph
 
     cfg = RunConfig(
         researcher_root=RESEARCHER_ROOT,
         project_dir=PROJECT_DIR,
-        research_idea=(
-            "Implement tabular Q-learning on Gymnasium FrozenLake-v1 (4x4), compare to a random "
-            "policy baseline, and document hyperparameters plus trained vs random mean success rate "
-            "over >=100 eval episodes in SUMMARY.md. See project README for phased deliverables."
-        ),
-        acceptance_criteria=(
-            "requirements.txt installs; training and eval entrypoints run; SUMMARY.md reports "
-            "hyperparameters and a table: trained policy vs random baseline (mean success rate, "
-            ">=100 eval episodes each); trained policy strictly outperforms random on success rate."
-        ),
+        research_idea=_RESEARCH_BRIEF,
         preferences="gymnasium + numpy only for the learner; reproducible seeds; type hints optional.",
         orchestrator_backend="openrouter",
         openai_api_key=None,
@@ -45,15 +48,8 @@ def main() -> None:
     RESEARCHER_ROOT.mkdir(parents=True, exist_ok=True)
     PROJECT_DIR.mkdir(parents=True, exist_ok=True)
     db_path = RESEARCHER_ROOT / "data" / "runtime.db"
-    state = RESEARCHER_ROOT / "data" / "runtime" / "state"
-    state.mkdir(parents=True, exist_ok=True)
-    (state / "research_idea.md").write_text(f"# Research idea\n\n{cfg.research_idea}\n", encoding="utf-8")
-    (state / "acceptance_criteria.md").write_text(f"# Acceptance criteria\n\n{cfg.acceptance_criteria}\n", encoding="utf-8")
-    (state / "preferences.md").write_text(f"# Preferences\n\n{cfg.preferences}\n", encoding="utf-8")
-    (state / "project_brief.md").write_text(
-        f"# Project\n\nImplementation directory: `{cfg.project_dir}`\n", encoding="utf-8"
-    )
     memory.ensure_memory_layout(RESEARCHER_ROOT)
+    seed_tier_a_from_run_config(RESEARCHER_ROOT, cfg)
 
     app = research_graph.build_graph(
         cfg,

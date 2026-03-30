@@ -7,6 +7,7 @@ from pathlib import Path
 from research_lab import db, memory
 from research_lab.config import RunConfig
 from research_lab.global_config import (
+    GLOBAL_CONFIG_PATH,
     GLOBAL_DIR,
     GLOBAL_OAUTH_PATH,
     GlobalConfig,
@@ -26,6 +27,21 @@ class LabConfigError(RuntimeError):
 
 
 DEFAULT_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
+
+
+def prompt_multiline_preference(click: object, *, intro: str) -> str:
+    """Open ``$EDITOR`` for multiline text; fall back to a single-line prompt if the editor exits without a save."""
+    c = click
+    c.echo("")
+    c.echo(intro)
+    edited = c.edit("", extension=".txt", require_save=False)
+    if edited is None:
+        edited = c.prompt(
+            "Editor unavailable or cancelled — enter as a single line (or leave blank)",
+            default="",
+            show_default=False,
+        )
+    return (edited or "").strip()
 
 
 def ensure_console_ready(project_dir: Path) -> tuple[Path, RunConfig]:
@@ -98,9 +114,8 @@ def seed_tier_a_from_run_config(researcher_root: Path, cfg: RunConfig) -> None:
     """Write core Tier A markdown files from *cfg* (overwrites if present)."""
     state = researcher_root / "data" / "runtime" / "state"
     state.mkdir(parents=True, exist_ok=True)
-    (state / "research_idea.md").write_text(f"# Research idea\n\n{cfg.research_idea}\n", encoding="utf-8")
-    (state / "acceptance_criteria.md").write_text(
-        f"# Acceptance criteria\n\n{cfg.acceptance_criteria}\n", encoding="utf-8"
+    (state / "research_idea.md").write_text(
+        f"# Research brief\n\n{cfg.research_idea}\n", encoding="utf-8"
     )
     (state / "preferences.md").write_text(f"# Preferences\n\n{cfg.preferences}\n", encoding="utf-8")
     (state / "project_brief.md").write_text(
@@ -145,7 +160,6 @@ def run_oauth_browser_for_global(client_id: str | None = None) -> Path:
         researcher_root=GLOBAL_DIR,
         project_dir=GLOBAL_DIR,
         research_idea="",
-        acceptance_criteria="",
         preferences="",
         orchestrator_backend="openai",
         openai_api_key=None,
@@ -206,9 +220,9 @@ def run_interactive_global_setup() -> Path:
         default="cursor",
     )
 
-    code_style = click.prompt(
-        "Code style preferences (free text, or leave blank)",
-        default="",
+    click.echo("")
+    click.echo(
+        f"Optional: edit code style under [preferences] code_style in {GLOBAL_CONFIG_PATH} when ready."
     )
 
     gcfg = GlobalConfig(
@@ -218,7 +232,7 @@ def run_interactive_global_setup() -> Path:
         api_key=api_key,
         oauth_client_id=oauth_client_id,
         worker_backend=worker_backend,
-        code_style=code_style,
+        code_style="",
     )
     return save_global_config(gcfg)
 

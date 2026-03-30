@@ -11,9 +11,8 @@ from research_lab import helpers
 TIER_A_FILES = [
     "project_brief.md",
     "memory_guide.md",
-    "research_idea.md",
+    "research_idea.md",  # full research brief (goals + success criteria)
     "preferences.md",
-    "acceptance_criteria.md",
     "roadmap.md",
     "immediate_plan.md",
     "status.md",
@@ -73,6 +72,7 @@ def ensure_memory_layout(researcher_root: Path) -> None:
         helpers.ensure_dir(base / sub)
     _migrate_hot_to_extended(researcher_root)
     _migrate_tier_a_legacy_filenames(researcher_root)
+    _migrate_merge_acceptance_criteria_into_research_idea(researcher_root)
     for name in TIER_A_FILES:
         p = state_dir(researcher_root) / name
         if not p.exists():
@@ -219,6 +219,32 @@ def _migrate_tier_a_legacy_filenames(researcher_root: Path) -> None:
         old, new = sd / old_name, sd / new_name
         if old.exists() and not new.exists():
             old.rename(new)
+
+
+def _migrate_merge_acceptance_criteria_into_research_idea(researcher_root: Path) -> None:
+    """Merge legacy ``acceptance_criteria.md`` into ``research_idea.md`` and delete the old file."""
+    sd = state_dir(researcher_root)
+    legacy = sd / "acceptance_criteria.md"
+    if not legacy.is_file():
+        return
+    acc_raw = helpers.read_text(legacy)
+    lines = acc_raw.splitlines()
+    if lines and lines[0].startswith("#"):
+        body = "\n".join(lines[1:]).lstrip("\n").strip()
+    else:
+        body = acc_raw.strip()
+    legacy.unlink()
+    if not body:
+        return
+    idea_path = sd / "research_idea.md"
+    idea = helpers.read_text(idea_path).strip() if idea_path.is_file() else ""
+    if "## Success criteria" in idea:
+        return
+    block = "\n\n## Success criteria\n\n" + body
+    if idea:
+        helpers.write_text(idea_path, idea + block + "\n")
+    else:
+        helpers.write_text(idea_path, f"# Research brief{block}\n")
 
 
 def _default_plan_doc(*, title: str, role: str) -> str:

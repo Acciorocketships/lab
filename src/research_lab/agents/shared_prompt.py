@@ -10,9 +10,8 @@ MEMORY_AND_TIER_A = """**Tier A** (`state/*.md`) and `memory/extended/`: keep th
 **Tier A files** (`state/*.md` — meanings):
 - **`project_brief.md`** — project identity, scope, constraints the repo must respect.
 - **`memory_guide.md`** — how to use tiers, extended, branch files, episodes (normative reference).
-- **`research_idea.md`** — core question or hypothesis under investigation.
+- **`research_idea.md`** — research brief: goals, approach, and implicit success criteria (what “done” means).
 - **`preferences.md`** — operator preferences (tone, tools, citation style, etc.).
-- **`acceptance_criteria.md`** — what “done” means for the effort or phase.
 - **`roadmap.md`** — durable end-to-end plan (phases, milestones); include completed lines; on scope change, retcon the **whole** file into one coherent story.
 - **`immediate_plan.md`** — **only** the current chunk (Cursor-style steps); when the chunk finishes, clear/replace—no stale checklists.
 - **`status.md`** — live snapshot: blockers, current focus, last meaningful change.

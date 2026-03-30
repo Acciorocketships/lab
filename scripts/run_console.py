@@ -21,7 +21,6 @@ def main() -> None:
         researcher_root=RESEARCHER_ROOT,
         project_dir=PROJECT_DIR,
         research_idea="",
-        acceptance_criteria="",
         preferences="",
         orchestrator_backend="openrouter",
         openai_api_key=None,

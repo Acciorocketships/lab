@@ -38,6 +38,20 @@ def test_migrate_legacy_tier_a_filenames(tmp_path: Path) -> None:
     assert (sd / "immediate_plan.md").read_text(encoding="utf-8") == "# legacy goal\n"
 
 
+def test_migrate_acceptance_criteria_into_research_idea(tmp_path: Path) -> None:
+    """Legacy acceptance_criteria.md merges into research_idea.md and is removed."""
+    sd = memory.state_dir(tmp_path)
+    sd.mkdir(parents=True)
+    (sd / "research_idea.md").write_text("# Research brief\n\nGoal text.\n", encoding="utf-8")
+    (sd / "acceptance_criteria.md").write_text("# Acceptance criteria\n\nMust win.\n", encoding="utf-8")
+    memory.ensure_memory_layout(tmp_path)
+    assert not (sd / "acceptance_criteria.md").exists()
+    merged = (sd / "research_idea.md").read_text(encoding="utf-8")
+    assert "Goal text" in merged
+    assert "Must win" in merged
+    assert "## Success criteria" in merged
+
+
 def test_discover_extended_refs(tmp_path: Path) -> None:
     """Tier A text can reference memory/extended/*.md paths."""
     names = memory.discover_extended_filenames_from_text(

@@ -25,7 +25,7 @@ Once in the console, type `/start` to begin the background agent, `/pause` to pa
 
 | Command | Description |
 |---------|-------------|
-| `lab setup` | Interactive wizard: choose model provider, model, credentials (OAuth or API key), worker backend, and code style preferences. Writes `~/.airesearcher/config.toml`. |
+| `lab setup` | Interactive wizard: choose model provider, model, credentials (OAuth or API key), worker backend. Writes `~/.airesearcher/config.toml` (add code style in `[preferences]` yourself if you want). |
 | `lab init` | Initialize the current directory as a research project. Creates `.airesearcher/` with config, memory layout, and seed files. Accepts `--idea` and `--criteria` flags, or prompts interactively. |
 | `lab` | Start the interactive console (requires `lab setup` and `lab init` first). |
 
@@ -90,11 +90,11 @@ Two directories per project:
 
 ### Global (`~/.airesearcher/config.toml`)
 
-Created by `lab setup`. Contains model provider/name, API keys or OAuth client id, worker backend, and code style preferences.
+Created by `lab setup`. Contains model provider/name, API keys or OAuth client id, worker backend. Optional **code style** goes under `[preferences]` as `code_style` — edit the file by hand; multiline values work as TOML `"""..."""` blocks.
 
 ### Per-project (`.airesearcher/config.toml`)
 
-Created by `lab init`. Contains research idea, acceptance criteria, and optional project-specific preference overrides.
+Created by `lab init`. Contains a single **research brief** (`research_idea` in TOML — goals and implicit success criteria in one field) and optional project-specific preference overrides.
 
 ### Model providers
 
@@ -106,8 +106,8 @@ Created by `lab init`. Contains research idea, acceptance criteria, and optional
 
 Workers use **Claude Code** (`claude -p`) or **Cursor agent** (`cursor agent -p`). Choose during `lab setup`.
 
-- **cursor**: Runs `cursor agent -p "<prompt>" --trust`. Timeout via `AIRESEARCHER_CURSOR_TIMEOUT_SEC` (default 180).
-- **claude**: Runs `claude -p --output-format json`. Install with `npm i -g @anthropic-ai/claude-code`.
+- **cursor**: Runs `cursor agent -p "<prompt>" --trust`. No subprocess timeout by default; set `AIRESEARCHER_CURSOR_TIMEOUT_SEC` to cap runtime in seconds if needed.
+- **claude**: Runs `claude -p --output-format json`. Install with `npm i -g @anthropic-ai/claude-code`. No subprocess timeout by default; set `AIRESEARCHER_CLAUDE_TIMEOUT_SEC` to cap runtime in seconds if needed.
 
 ## Pipeline (high level)
 
@@ -132,7 +132,7 @@ Workers use **Claude Code** (`claude -p`) or **Cursor agent** (`cursor agent -p`
 | Reviewer | Enforces preferences |
 | Reporter | Answers and reports |
 | Skill writer | `memory/skills/` + `skills_index.md` |
-| Done | Orchestrator signals acceptance criteria met |
+| Done | Orchestrator signals the brief in `research_idea.md` and `roadmap.md` support completion |
 
 ## Memory system
 

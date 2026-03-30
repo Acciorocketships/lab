@@ -11,7 +11,6 @@ def _base_cfg(tmp_path: Path, **kwargs: object) -> RunConfig:
         "researcher_root": tmp_path,
         "project_dir": tmp_path,
         "research_idea": "x",
-        "acceptance_criteria": "y",
         "preferences": "z",
         "orchestrator_backend": "openai",
         "openai_api_key": None,

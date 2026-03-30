@@ -36,7 +36,7 @@ def test_bootstrap_bench_project_writes_and_merges(tmp_path: Path, monkeypatch) 
     project_dir = tmp_path / "proj"
     project_dir.mkdir()
     gcfg = GlobalConfig(provider="openrouter", model_name="m", api_key="k")
-    pcfg = ProjectConfig(research_idea="idea", acceptance_criteria="crit", preferences="")
+    pcfg = ProjectConfig(research_idea="idea", preferences="")
     db_path, run_cfg = bootstrap_bench_project(project_dir, gcfg=gcfg, pcfg=pcfg)
 
     assert db_path == project_dir / ".airesearcher" / "data" / "runtime.db"
@@ -49,7 +49,7 @@ def test_bootstrap_bench_project_writes_and_merges(tmp_path: Path, monkeypatch) 
 def test_init_project_at_requires_global(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr("research_lab.runner.global_config_exists", lambda: False)
     with pytest.raises(LabConfigError, match="Global config"):
-        init_project_at(tmp_path, ProjectConfig(research_idea="a", acceptance_criteria="b"))
+        init_project_at(tmp_path, ProjectConfig(research_idea="a"))
 
 
 def test_run_console_session_accepts_explicit_config(tmp_path: Path, monkeypatch) -> None:
@@ -61,7 +61,6 @@ def test_run_console_session_accepts_explicit_config(tmp_path: Path, monkeypatch
         researcher_root=rr,
         project_dir=pdir,
         research_idea="x",
-        acceptance_criteria="y",
         preferences="z",
         orchestrator_backend="openrouter",
         openai_api_key=None,

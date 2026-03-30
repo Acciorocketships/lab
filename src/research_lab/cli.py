@@ -6,10 +6,15 @@ from pathlib import Path
 
 import click
 
-from research_lab.global_config import global_config_exists, project_is_initialized
+from research_lab.global_config import (
+    ProjectConfig,
+    global_config_exists,
+    project_is_initialized,
+)
 from research_lab.runner import (
     LabConfigError,
     init_project_at,
+    prompt_multiline_preference,
     run_interactive_global_setup,
     run_lab_console,
 )
@@ -29,15 +34,13 @@ def main(ctx: click.Context) -> None:
 
 @main.command()
 def setup() -> None:
-    """One-time global setup: model provider, credentials, and preferences."""
+    """One-time global setup: model provider, credentials, worker backend."""
     path = run_interactive_global_setup()
     click.echo(f"\nGlobal config saved to {path}")
 
 
 @main.command()
-@click.option("--idea", default=None, help="Research idea (prompted if omitted).")
-@click.option("--criteria", default=None, help="Acceptance criteria (prompted if omitted).")
-def init(idea: str | None, criteria: str | None) -> None:
+def init() -> None:
     """Initialize a project in the current directory."""
     if not global_config_exists():
         click.echo("Error: global config not found. Run `lab setup` first.", err=True)
@@ -52,23 +55,33 @@ def init(idea: str | None, criteria: str | None) -> None:
     else:
         overwrite = False
 
-    if idea is None:
-        idea = click.prompt("Research idea")
-    if criteria is None:
-        criteria = click.prompt("Acceptance criteria")
+    click.echo("")
+    click.echo(
+        "Research brief — goal, approach, and what “done” looks like (all in one place). "
+        "Save and close the editor when done (or cancel for a single-line prompt)."
+    )
+    edited = click.edit("", extension=".md", require_save=False)
+    if edited is None:
+        edited = click.prompt(
+            "Research brief (single line)",
+            default="",
+            show_default=False,
+        )
+    brief = (edited or "").strip()
+    if not brief:
+        click.echo("Error: research brief is required.", err=True)
+        raise SystemExit(1)
 
-    prefs = click.prompt(
-        "Project-specific preferences (blank to use global)",
-        default="",
+    prefs = prompt_multiline_preference(
+        click,
+        intro=(
+            "Project-specific preferences (optional): editor opens — paste multiple lines, or leave empty "
+            "to use global code style only. Save and close when done."
+        ),
     )
 
-    from research_lab.global_config import ProjectConfig
+    pcfg = ProjectConfig(research_idea=brief, preferences=prefs)
 
-    pcfg = ProjectConfig(
-        research_idea=idea,
-        acceptance_criteria=criteria,
-        preferences=prefs,
-    )
     try:
         root = init_project_at(project_dir, pcfg, overwrite=overwrite)
     except LabConfigError as e:

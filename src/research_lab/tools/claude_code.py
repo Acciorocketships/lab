@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import threading
@@ -15,6 +16,20 @@ StreamCallback = Callable[[str], None]
 def available() -> bool:
     """True if `claude` is on PATH."""
     return shutil.which("claude") is not None
+
+
+def _resolve_timeout_sec(explicit: int | None) -> int | None:
+    """Seconds cap for subprocess, or None for no limit (default)."""
+    if explicit is not None:
+        return None if explicit <= 0 else explicit
+    raw = os.environ.get("AIRESEARCHER_CLAUDE_TIMEOUT_SEC")
+    if raw is None or raw.strip() == "":
+        return None
+    try:
+        n = int(raw.strip(), 10)
+    except ValueError:
+        return None
+    return None if n <= 0 else n
 
 
 def _build_cmd(
@@ -47,10 +62,14 @@ def run_print(
     max_turns: int = 25,
     allowed_tools: str | None = None,
     resume_session: str | None = None,
-    timeout_sec: int = 600,
+    timeout_sec: int | None = None,
     on_chunk: StreamCallback | None = None,
 ) -> dict[str, Any]:
-    """Run `claude -p` and parse JSON output when possible."""
+    """Run `claude -p` and parse JSON output when possible.
+
+    *timeout_sec*: cap in seconds, or ``None`` / ``<= 0`` for no cap (default). Env
+    ``AIRESEARCHER_CLAUDE_TIMEOUT_SEC`` applies when *timeout_sec* is omitted.
+    """
     cmd = _build_cmd(
         prompt,
         system_append=system_append,
@@ -61,18 +80,34 @@ def run_print(
     if cmd is None:
         return {"ok": False, "error": "claude CLI not found", "stdout": "", "stderr": ""}
 
+    limit = _resolve_timeout_sec(timeout_sec)
     if on_chunk is not None:
-        return _run_streaming(cmd, cwd=cwd, limit=timeout_sec, on_chunk=on_chunk)
-    return _run_blocking(cmd, cwd=cwd, limit=timeout_sec)
+        return _run_streaming(cmd, cwd=cwd, limit=limit, on_chunk=on_chunk)
+    return _run_blocking(cmd, cwd=cwd, limit=limit)
 
 
-def _run_blocking(cmd: list[str], *, cwd: Path, limit: int) -> dict[str, Any]:
-    proc = subprocess.run(cmd, cwd=str(cwd), capture_output=True, text=True, timeout=limit)
+def _run_blocking(cmd: list[str], *, cwd: Path, limit: int | None) -> dict[str, Any]:
+    try:
+        proc = subprocess.run(cmd, cwd=str(cwd), capture_output=True, text=True, timeout=limit)
+    except subprocess.TimeoutExpired as e:
+        return {
+            "ok": False,
+            "error": f"claude timed out after {limit}s",
+            "exit_code": -1,
+            "stdout": (e.stdout or "").strip() if isinstance(e.stdout, str) else "",
+            "stderr": (e.stderr or "").strip() if isinstance(e.stderr, str) else "",
+            "parsed": {"error": "timeout", "timeout_sec": limit},
+        }
+    except OSError as e:
+        return {
+            "ok": False, "error": f"claude failed to start: {e}",
+            "exit_code": -1, "stdout": "", "stderr": str(e), "parsed": {"error": "os_error"},
+        }
     return _parse_result(proc.returncode, proc.stdout, proc.stderr)
 
 
 def _run_streaming(
-    cmd: list[str], *, cwd: Path, limit: int, on_chunk: StreamCallback,
+    cmd: list[str], *, cwd: Path, limit: int | None, on_chunk: StreamCallback,
 ) -> dict[str, Any]:
     try:
         proc = subprocess.Popen(

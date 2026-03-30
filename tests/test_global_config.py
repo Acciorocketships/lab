@@ -40,17 +40,34 @@ def test_project_config_roundtrip(tmp_path: Path) -> None:
     project_dir.mkdir()
 
     cfg = ProjectConfig(
-        research_idea="Train Q-learning on FrozenLake",
-        acceptance_criteria="Success rate > 90%",
+        research_idea="Train Q-learning on FrozenLake\n\n## Success criteria\n\nSuccess rate > 90%",
         preferences="numpy only",
     )
     save_project_config(project_dir, cfg)
     assert project_is_initialized(project_dir)
 
     loaded = load_project_config(project_dir)
-    assert loaded.research_idea == "Train Q-learning on FrozenLake"
-    assert loaded.acceptance_criteria == "Success rate > 90%"
+    assert loaded.research_idea == "Train Q-learning on FrozenLake\n\n## Success criteria\n\nSuccess rate > 90%"
     assert loaded.preferences == "numpy only"
+
+
+def test_legacy_acceptance_criteria_merged_into_research_idea(tmp_path: Path) -> None:
+    """Old configs with [project].acceptance_criteria merge into research_idea on load."""
+    project_dir = tmp_path / "legacy_proj"
+    project_dir.mkdir()
+    cfg_path = project_dir / ".airesearcher" / "config.toml"
+    cfg_path.parent.mkdir(parents=True)
+    cfg_path.write_text(
+        '[project]\n'
+        'research_idea = "Goal A"\n'
+        'acceptance_criteria = "Must pass tests"\n'
+        'preferences = ""\n',
+        encoding="utf-8",
+    )
+    loaded = load_project_config(project_dir)
+    assert "Goal A" in loaded.research_idea
+    assert "Must pass tests" in loaded.research_idea
+    assert "## Success criteria" in loaded.research_idea
 
 
 def test_project_not_initialized(tmp_path: Path) -> None:
@@ -66,8 +83,7 @@ def test_from_configs_merges_correctly(tmp_path: Path) -> None:
         code_style="type hints",
     )
     pcfg = ProjectConfig(
-        research_idea="Do X",
-        acceptance_criteria="Y works",
+        research_idea="Do X\n\n## Success criteria\n\nY works",
         preferences="",
     )
     project_dir = tmp_path / "proj"
@@ -78,8 +94,7 @@ def test_from_configs_merges_correctly(tmp_path: Path) -> None:
     assert run_cfg.openai_model == "gemini-2.5-flash-lite"
     assert run_cfg.openrouter_api_key == "sk-or"
     assert run_cfg.default_worker_backend == "cursor"
-    assert run_cfg.research_idea == "Do X"
-    assert run_cfg.acceptance_criteria == "Y works"
+    assert run_cfg.research_idea == "Do X\n\n## Success criteria\n\nY works"
     assert run_cfg.preferences == "type hints"
     assert run_cfg.researcher_root == project_dir / ".airesearcher"
 
@@ -88,7 +103,6 @@ def test_from_configs_project_prefs_override_global(tmp_path: Path) -> None:
     gcfg = GlobalConfig(code_style="global style")
     pcfg = ProjectConfig(
         research_idea="x",
-        acceptance_criteria="y",
         preferences="project style",
     )
     project_dir = tmp_path / "proj"
@@ -102,11 +116,21 @@ def test_toml_escaping_roundtrip(tmp_path: Path) -> None:
     project_dir = tmp_path / "proj"
     project_dir.mkdir()
     cfg = ProjectConfig(
-        research_idea='Test "quoted" idea',
-        acceptance_criteria="line1\nline2",
+        research_idea='Test "quoted" idea\n\n## Success criteria\n\nline1\nline2',
         preferences="",
     )
     save_project_config(project_dir, cfg)
     loaded = load_project_config(project_dir)
-    assert loaded.research_idea == 'Test "quoted" idea'
-    assert loaded.acceptance_criteria == "line1\nline2"
+    assert loaded.research_idea == 'Test "quoted" idea\n\n## Success criteria\n\nline1\nline2'
+
+
+def test_global_code_style_multiline_roundtrip(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("research_lab.global_config.GLOBAL_DIR", tmp_path)
+    monkeypatch.setattr("research_lab.global_config.GLOBAL_CONFIG_PATH", tmp_path / "config.toml")
+
+    cfg = GlobalConfig(
+        code_style="Rule A\nRule B\n- use types",
+    )
+    save_global_config(cfg)
+    loaded = load_global_config()
+    assert loaded.code_style == "Rule A\nRule B\n- use types"

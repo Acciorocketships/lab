@@ -25,7 +25,6 @@ def main() -> None:
         researcher_root=RESEARCHER_ROOT,
         project_dir=PROJECT_DIR,
         research_idea="smoke",
-        acceptance_criteria="smoke",
         preferences="smoke",
         orchestrator_backend=ORCHESTRATOR_BACKEND,
         openai_api_key=None,
