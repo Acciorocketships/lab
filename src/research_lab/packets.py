@@ -44,7 +44,6 @@ def build_worker_packet(
             continue
         chunk = tier.get(name, "")
         parts.append(f"### {name}\n{chunk}\n")
-    parts.append(memory.format_extended_refs_for_worker_packet(researcher_root, tier))
     b = (current_branch or "").strip()
     if b:
         bm = memory_extra.read_branch_memory(researcher_root, b)

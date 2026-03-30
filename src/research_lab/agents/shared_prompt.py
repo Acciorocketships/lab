@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-# Paths: `data/runtime/state/` — full list in memory.TIER_A_FILES; `memory_guide.md` is the long-form spec.
+# Paths: `data/runtime/state/` — full list in memory.TIER_A_FILES.
 MEMORY_AND_TIER_A = """**Tier A** (`state/*.md`) and `memory/extended/`: keep them current.
-
-**Long text:** keep Tier A short; park detail in `data/runtime/memory/extended/<name>.md` and cite the path here. Packets do not inline extended bodies—read those paths with tools.
 
 **Tier A files** (`state/*.md` — meanings):
 - **`project_brief.md`** — project identity, scope, constraints the repo must respect.
-- **`memory_guide.md`** — how to use tiers, extended, branch files, episodes (normative reference).
+- **`extended_memory_index.md`** — **you maintain this:** catalog of non–Tier A memory (`memory/extended/`, branches, episodes, experiments) with paths and descriptions. Rules live in this prompt.
 - **`research_idea.md`** — research brief: goals, approach, and implicit success criteria (what “done” means).
 - **`preferences.md`** — operator preferences (tone, tools, citation style, etc.).
 - **`roadmap.md`** — durable end-to-end plan (phases, milestones); include completed lines; on scope change, retcon the **whole** file into one coherent story.
@@ -23,8 +21,6 @@ MEMORY_AND_TIER_A = """**Tier A** (`state/*.md`) and `memory/extended/`: keep th
 
 **Experiments:** link experiment dirs/metrics from Tier A or extended so the next run can find them.
 
-Update memory **in the same run** when your work changes truth—do not assume a later pass fixes it."""
+Update memory **in the same run** when your work changes truth—do not assume a later pass fixes it.
 
-# Back-compat alias
-SHARED_SUBAGENT_SYSTEM = MEMORY_AND_TIER_A
-SUPPLEMENTARY_TIER_A_AND_MEMORY = MEMORY_AND_TIER_A
+**Extended files / catalog:** keep Tier A short; park long notes in `data/runtime/memory/extended/<name>.md` and describe them in **`extended_memory_index.md`** (included in full in every packet with the rest of Tier A). Extended file bodies are **not** inlined—read them with tools when needed."""

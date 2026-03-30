@@ -14,6 +14,7 @@ from textual.containers import Vertical
 from textual.widgets import Input, RichLog, Static
 
 from research_lab import db
+from research_lab.runner import reset_project_preserving_research_idea
 from research_lab.ui import events
 
 if TYPE_CHECKING:
@@ -190,8 +191,8 @@ class ResearchConsole(App[None]):
             "help": self._cmd_help,
             "ask": lambda r=rest: self._cmd_ask(r),
             "backlog": self._cmd_backlog,
-            "branches": self._cmd_branches,
             "experiments": self._cmd_experiments,
+            "reset": self._cmd_reset,
         }.get(cmd)
 
         if handler:
@@ -263,8 +264,8 @@ class ResearchConsole(App[None]):
             "  [bold]/status[/]       Show current agent state\n"
             "  [bold]/ask[/] <q>      Queue a question\n"
             "  [bold]/backlog[/]      Show recent instructions\n"
-            "  [bold]/branches[/]     Show branches\n"
             "  [bold]/experiments[/]  Show experiments\n"
+            "  [bold]/reset[/]        Clear DB and runtime memory; keep research_idea.md + preferences.md\n"
             "  [bold]/help[/]         This message\n"
             "\n  Plain text is queued as an instruction.\n"
         )
@@ -287,15 +288,6 @@ class ResearchConsole(App[None]):
         for r in rows[:15]:
             log.write(f"  [dim]{r['id']}[/] [{r['status']}] {r['text'][:160]}")
 
-    def _cmd_branches(self) -> None:
-        log = self.query_one("#activity", RichLog)
-        rows = db.list_branches_rows(self._conn)
-        if not rows:
-            log.write("  [dim]No branches.[/]")
-            return
-        for r in rows[:20]:
-            log.write(f"  {r['name']}: {r['status']}")
-
     def _cmd_experiments(self) -> None:
         log = self.query_one("#activity", RichLog)
         rows = db.list_experiments_rows(self._conn)
@@ -304,6 +296,27 @@ class ResearchConsole(App[None]):
             return
         for r in rows[:20]:
             log.write(f"  {r['exp_id']}: {r['status']} ({r['branch']})")
+
+    def _cmd_reset(self) -> None:
+        log = self.query_one("#activity", RichLog)
+        self._kill_scheduler()
+        self._conn.close()
+        try:
+            reset_project_preserving_research_idea(self.cfg.project_dir)
+        except Exception as e:
+            self._conn = db.connect_db(self.db_path)
+            log.write(f"  [red]Reset failed:[/] {e}")
+            return
+        self._conn = db.connect_db(self.db_path)
+        self._last_stream_id = 0
+        self._last_run_event_id = 0
+        self._last_cycle = 0
+        self._last_worker = ""
+        self._worker_start = 0.0
+        log.write(
+            "  [green]Reset complete.[/] Kept [bold]research_idea.md[/] and [bold]preferences.md[/]. "
+            "Cleared DB, other Tier A files, episodes, extended, branches, skills, experiments."
+        )
 
     # --- lifecycle ------------------------------------------------------------
 

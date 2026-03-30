@@ -35,6 +35,10 @@ class OrchestratorDecision(BaseModel):
     reason: str = ""
     roadmap_step: str = ""
     context_summary: str = ""
+    worker_kwargs: dict[str, str] = Field(
+        default_factory=dict,
+        description="Optional worker-specific inputs (e.g. {'persona': 'scientist'} for critic)",
+    )
 
 
 _ORCH_JSON_SYSTEM = (
@@ -51,19 +55,26 @@ _ORCH_JSON_SYSTEM = (
     "route to **planner** at the **next** decision—do not defer across **done** or unrelated workers until those items are "
     "merged into `immediate_plan.md` / `roadmap.md` and cleared from `## New` (see shared worker instructions). "
     "Otherwise planner handles user instructions as soon as they appear.\n"
-    "Context includes Tier A summaries, rolling context, last worker output, and paths to memory/extended/*.md; "
-    "extended file bodies are not inlined—workers read them on disk when needed.\n"
+    "Context includes Tier A files (including extended_memory_index.md), rolling context, and last worker output. "
+    "Extended file bodies are not inlined—workers read them on disk when needed.\n"
     "You must output an updated **context_summary**: merge prior summary with the last worker output—keep "
     "project facts, recent tool outcomes, and patterns (e.g. loops); drop stale detail. Use markdown, stay concise.\n"
     "Routing hints: use **researcher** whenever you need more information—web or papers, questions about the "
     "codebase or files, or exploring the repo to answer a question. Use **executer** for one-off tasks: shell commands, "
     "temporary scripts, operational edits to non-code files—not product code changes (that is **implementer**).\n"
+    "**critic** — Use when you want a challenge or sanity-check on direction, approach, or results. "
+    "Set `worker_kwargs` to `{\"persona\": \"<persona>\"}` to assign a critique angle. "
+    "Available personas: **engineer** (maintainability, complexity, tests), **scientist** (methodology, metrics, validity), "
+    "**researcher** (novelty, completeness, related work), **reviewer** (missing baselines, ablations, clarity), "
+    "**manager** (scope, priorities, timeline risk). "
+    "When the project is stuck or looping, use a different persona on each critic run to surface new angles.\n"
     "Respond with JSON only (no markdown fences). One JSON object with exactly these keys: "
-    '"worker", "task", "branch", "reason", "roadmap_step", "context_summary". '
+    '"worker", "task", "branch", "reason", "roadmap_step", "context_summary", "worker_kwargs". '
     "roadmap_step: short label for the active high-level item in roadmap.md. "
     "worker must be one of: planner, researcher, executer, implementer, debugger, "
     "experimenter, critic, reviewer, reporter, skill_writer, done. "
     'Use strings for all values; use empty string for branch if unknown. '
+    "worker_kwargs is an object (default {}); set {\"persona\": \"..\"} when routing to critic. "
     "Do not wrap the answer in a parent key or nested objects."
 )
 

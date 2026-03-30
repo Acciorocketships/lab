@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import sqlite3
-import time
-from typing import Any
 
 from research_lab import db
 
@@ -35,25 +33,6 @@ def header_line(project_name: str, model: str, conn: sqlite3.Connection) -> str:
     st = db.get_system_state(conn)
     mode = st.get("control_mode", "paused")
     return f"[bold]lab[/] \u2500\u2500 {project_name} \u2500\u2500 {model} \u2500\u2500 {mode}"
-
-
-def format_run_event_line(row: sqlite3.Row) -> str:
-    """Format a single run_event row for the activity log."""
-    kind = row["kind"]
-    worker = row["worker"]
-    summary = (row["summary"] or "")[:160]
-    task = (row["task"] or "")[:120]
-
-    if kind == "orchestrator":
-        return f"[bold dim]\u2500\u2500 {worker}[/] [dim]{_short_reason(summary)}[/]"
-    return f"[dim]\u2502[/] {summary[:160]}"
-
-
-def _short_reason(summary: str) -> str:
-    """Extract the reason part from orchestrator summary like 'worker: reason'."""
-    if ": " in summary:
-        return summary.split(": ", 1)[1]
-    return summary
 
 
 def format_cycle_header(cycle: int, worker: str, task: str) -> str:

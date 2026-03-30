@@ -257,3 +257,42 @@ def bootstrap_bench_project(
     seed_tier_a_from_run_config(researcher_root, run_cfg)
     db_path = researcher_root / "data" / "runtime.db"
     return db_path, run_cfg
+
+
+def reset_project_preserving_research_idea(project_dir: Path) -> None:
+    """Clear SQLite runtime data and on-disk memory except ``state/research_idea.md`` and ``preferences.md``.
+
+    Syncs ``[project]`` ``research_idea`` and ``preferences`` in TOML from those files (Markdown body
+    after stripping an optional leading H1).
+    """
+    if not project_is_initialized(project_dir):
+        raise LabConfigError(
+            f"Project not initialized at {project_dir}. Run `lab init` first."
+        )
+    pcfg = load_project_config(project_dir)
+    researcher_root = project_researcher_root(project_dir)
+    sd = memory.state_dir(researcher_root)
+    idea_path = sd / "research_idea.md"
+    if idea_path.is_file():
+        preserved = idea_path.read_text(encoding="utf-8")
+    else:
+        preserved = f"# Research brief\n\n{pcfg.research_idea}\n"
+
+    prefs_path = sd / "preferences.md"
+    if prefs_path.is_file():
+        preserved_prefs = prefs_path.read_text(encoding="utf-8")
+    else:
+        preserved_prefs = f"# Preferences\n\n{pcfg.preferences}\n"
+
+    idea_body = memory.research_idea_body_for_project_config(preserved)
+    prefs_body = memory.research_idea_body_for_project_config(preserved_prefs)
+    save_project_config(project_dir, ProjectConfig(research_idea=idea_body, preferences=prefs_body))
+
+    db_path = researcher_root / "data" / "runtime.db"
+    db.obliterate_runtime_db(db_path)
+    memory.reset_runtime_artifacts(
+        researcher_root,
+        preserved_research_idea_md=preserved,
+        preserved_preferences_md=preserved_prefs,
+    )
+    memory.ensure_memory_layout(researcher_root)

@@ -71,5 +71,5 @@ class RunConfig:
 
 
 def researcher_root_for_project(project_dir: Path) -> Path:
-    """Internal researcher state lives next to the project under study."""
+    """Kept for import compatibility; prefer ``global_config.project_researcher_root``."""
     return project_dir / ".airesearcher"

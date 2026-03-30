@@ -1,4 +1,4 @@
-"""Branch-local memory: one markdown file per active branch (read/write helpers)."""
+"""Branch-local memory: one markdown file per active branch."""
 
 from __future__ import annotations
 
@@ -34,24 +34,3 @@ def read_branch_memory(researcher_root: Path, branch: str) -> str:
     """Return branch markdown or empty string if missing."""
     p = branch_memory_path(researcher_root, branch)
     return helpers.read_text(p, default="")
-
-
-def write_branch_memory(researcher_root: Path, branch: str, body: str) -> None:
-    """Upsert branch-local markdown."""
-    p = branch_memory_path(researcher_root, branch)
-    helpers.write_text(p, body)
-
-
-def ensure_branch_memory(researcher_root: Path, branch: str) -> Path:
-    """Create branch file from template if missing."""
-    p = branch_memory_path(researcher_root, branch)
-    if not p.exists():
-        helpers.write_text(p, default_branch_memory_body(branch))
-    return p
-
-
-def delete_branch_memory(researcher_root: Path, branch: str) -> None:
-    """Remove branch file if it exists."""
-    p = branch_memory_path(researcher_root, branch)
-    if p.exists():
-        p.unlink()

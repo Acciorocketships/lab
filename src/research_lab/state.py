@@ -24,3 +24,4 @@ class ResearchState(TypedDict, total=False):
     last_packet_relpath: str
     acceptance_satisfied: bool
     shutdown_requested: bool
+    worker_kwargs: dict[str, str]

@@ -153,6 +153,7 @@ def choose_action(
         "current_branch": dec.branch or state.get("current_branch", ""),
         "last_action_summary": orch_summary,
         "current_goal": dec.task,
+        "worker_kwargs": dec.worker_kwargs,
     }
 
 
@@ -177,9 +178,14 @@ def execute_worker(
             "acceptance_satisfied": True,
         }
     mod = _WORKER_MODULES.get(worker)
+    worker_kwargs: dict[str, str] = state.get("worker_kwargs") or {}
     role_hint = (getattr(mod, "SYSTEM_PROMPT", "") if mod else "").strip()
+    # Critic: use persona-specific prompt when the orchestrator supplies one.
+    if worker == "critic" and mod is not None:
+        persona = worker_kwargs.get("persona", "")
+        role_hint = critic_mod.critic_prompt(persona).strip()
     extra: dict[str, str] = {}
-    shared = shared_prompt.SHARED_SUBAGENT_SYSTEM.strip()
+    shared = shared_prompt.MEMORY_AND_TIER_A.strip()
     if role_hint:
         extra["Role"] = role_hint
     if shared:
@@ -313,15 +319,16 @@ def _state_from_db(db_path: Path) -> ResearchState:
             "current_branch": st.get("current_branch", ""),
             "current_worker": st.get("current_worker", "") or "planner",
             "cycle_count": int(st.get("cycle_count", 0)),
-            "control_mode": st.get("control_mode", "active"),
-            "pending_instructions": [],
-            "last_action_summary": st.get("last_message", ""),
-            "roadmap_step": st.get("roadmap_step", ""),
-            "orchestrator_task": st.get("task", ""),
-            "orchestrator_reason": "",
-            "acceptance_satisfied": False,
-            "shutdown_requested": False,
-        }
+        "control_mode": st.get("control_mode", "active"),
+        "pending_instructions": [],
+        "last_action_summary": st.get("last_message", ""),
+        "roadmap_step": st.get("roadmap_step", ""),
+        "orchestrator_task": st.get("task", ""),
+        "orchestrator_reason": "",
+        "acceptance_satisfied": False,
+        "shutdown_requested": False,
+        "worker_kwargs": {},
+    }
     finally:
         conn.close()
 

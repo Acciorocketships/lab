@@ -34,10 +34,12 @@ def test_build_packet_budget(tmp_path: Path) -> None:
 
 
 def test_build_worker_packet_extended_not_inlined(tmp_path: Path) -> None:
-    """Linked extended files appear as paths only, not full text."""
+    """Worker packet includes extended_memory_index in Tier A; extended file bodies stay on disk."""
     memory.ensure_memory_layout(tmp_path)
     (memory.extended_dir(tmp_path) / "log.md").write_text("# BIG\n" + "y" * 8000, encoding="utf-8")
-    (memory.state_dir(tmp_path) / "status.md").write_text("Ref: memory/extended/log.md\n", encoding="utf-8")
+    (memory.state_dir(tmp_path) / "extended_memory_index.md").write_text(
+        "Training log: `memory/extended/log.md`\n", encoding="utf-8"
+    )
     text = packets.build_worker_packet(
         worker="researcher",
         researcher_root=tmp_path,
@@ -45,5 +47,5 @@ def test_build_worker_packet_extended_not_inlined(tmp_path: Path) -> None:
         max_chars=100_000,
     )
     assert "yyyy" not in text  # body not pasted
-    assert "Extended memory (on demand)" in text
-    assert str((memory.extended_dir(tmp_path) / "log.md").resolve()) in text
+    assert "### extended_memory_index.md" in text
+    assert "memory/extended/log.md" in text

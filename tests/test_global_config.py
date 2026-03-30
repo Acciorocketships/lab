@@ -51,25 +51,6 @@ def test_project_config_roundtrip(tmp_path: Path) -> None:
     assert loaded.preferences == "numpy only"
 
 
-def test_legacy_acceptance_criteria_merged_into_research_idea(tmp_path: Path) -> None:
-    """Old configs with [project].acceptance_criteria merge into research_idea on load."""
-    project_dir = tmp_path / "legacy_proj"
-    project_dir.mkdir()
-    cfg_path = project_dir / ".airesearcher" / "config.toml"
-    cfg_path.parent.mkdir(parents=True)
-    cfg_path.write_text(
-        '[project]\n'
-        'research_idea = "Goal A"\n'
-        'acceptance_criteria = "Must pass tests"\n'
-        'preferences = ""\n',
-        encoding="utf-8",
-    )
-    loaded = load_project_config(project_dir)
-    assert "Goal A" in loaded.research_idea
-    assert "Must pass tests" in loaded.research_idea
-    assert "## Success criteria" in loaded.research_idea
-
-
 def test_project_not_initialized(tmp_path: Path) -> None:
     assert not project_is_initialized(tmp_path)
 

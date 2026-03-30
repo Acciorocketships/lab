@@ -1,8 +1,8 @@
-"""File-based memory layout, Tier A state, extended refs, and episodes."""
+"""File-based memory layout, Tier A state, and episodes."""
 
 from __future__ import annotations
 
-import re
+import shutil
 from pathlib import Path
 
 from research_lab import helpers
@@ -10,7 +10,7 @@ from research_lab import helpers
 
 TIER_A_FILES = [
     "project_brief.md",
-    "memory_guide.md",
+    "extended_memory_index.md",
     "research_idea.md",  # full research brief (goals + success criteria)
     "preferences.md",
     "roadmap.md",
@@ -22,19 +22,74 @@ TIER_A_FILES = [
     "user_instructions.md",
 ]
 
-# Paths in Tier A text that point at memory/extended/*.md (for discovery only — not auto-inlined).
-_EXTENDED_REF = re.compile(
-    r"(?:data/runtime/)?memory/extended/([A-Za-z0-9][A-Za-z0-9_.-]*\.md)",
-)
-
 
 def state_dir(researcher_root: Path) -> Path:
     """Tier A operating memory directory."""
     return researcher_root / "data" / "runtime" / "state"
 
 
+def research_idea_body_for_project_config(markdown: str) -> str:
+    """Strip a leading Markdown H1 if present; used to sync ``[project].research_idea`` in TOML."""
+    text = markdown.strip()
+    if not text:
+        return ""
+    lines = text.splitlines()
+    if lines and lines[0].lstrip().startswith("#"):
+        return "\n".join(lines[1:]).lstrip("\n").rstrip()
+    return text
+
+
+def experiments_dir(researcher_root: Path) -> Path:
+    """Experiment artifacts under runtime (see also SQLite ``experiments`` table)."""
+    return researcher_root / "data" / "runtime" / "experiments"
+
+
+def _clear_dir_contents(path: Path, *, keep: frozenset[str] = frozenset()) -> None:
+    if not path.exists():
+        return
+    for child in list(path.iterdir()):
+        if child.name in keep:
+            continue
+        if child.is_dir():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
+
+
+def reset_runtime_artifacts(
+    researcher_root: Path,
+    *,
+    preserved_research_idea_md: str,
+    preserved_preferences_md: str,
+) -> None:
+    """Remove episodic memory and Tier A except ``research_idea.md`` and ``preferences.md``."""
+    _clear_dir_contents(extended_dir(researcher_root))
+    _clear_dir_contents(researcher_root / "data" / "runtime" / "memory" / "branch")
+    _clear_dir_contents(episodes_dir(researcher_root), keep=frozenset({"README.md"}))
+    _clear_dir_contents(skills_dir(researcher_root))
+    _clear_dir_contents(experiments_dir(researcher_root))
+
+    sd = state_dir(researcher_root)
+    helpers.ensure_dir(sd)
+    for name in TIER_A_FILES:
+        p = sd / name
+        if name == "research_idea.md":
+            c = preserved_research_idea_md
+            if not c.endswith("\n"):
+                c += "\n"
+            helpers.write_text(p, c)
+        elif name == "preferences.md":
+            c = preserved_preferences_md
+            if not c.endswith("\n"):
+                c += "\n"
+            helpers.write_text(p, c)
+        else:
+            helpers.write_text(p, _default_tier_a_content(name))
+    _ensure_episodes_readme(researcher_root)
+
+
 def extended_dir(researcher_root: Path) -> Path:
-    """Long-form supplementary memory (formerly hot/): logs, experiments, extra context."""
+    """Long-form supplementary memory: logs, experiments, extra context."""
     return researcher_root / "data" / "runtime" / "memory" / "extended"
 
 
@@ -70,33 +125,11 @@ def ensure_memory_layout(researcher_root: Path) -> None:
         "experiments",
     ):
         helpers.ensure_dir(base / sub)
-    _migrate_hot_to_extended(researcher_root)
-    _migrate_tier_a_legacy_filenames(researcher_root)
-    _migrate_merge_acceptance_criteria_into_research_idea(researcher_root)
     for name in TIER_A_FILES:
         p = state_dir(researcher_root) / name
         if not p.exists():
             helpers.write_text(p, _default_tier_a_content(name))
     _ensure_episodes_readme(researcher_root)
-
-
-def _migrate_hot_to_extended(researcher_root: Path) -> None:
-    """Rename legacy memory/hot/ to memory/extended/ and move files."""
-    base = researcher_root / "data" / "runtime" / "memory"
-    hot = base / "hot"
-    ext = base / "extended"
-    if not hot.exists():
-        return
-    helpers.ensure_dir(ext)
-    for p in hot.iterdir():
-        if p.is_file():
-            dest = ext / p.name
-            if not dest.exists():
-                p.rename(dest)
-    try:
-        hot.rmdir()
-    except OSError:
-        pass
 
 
 def _ensure_episodes_readme(researcher_root: Path) -> None:
@@ -120,8 +153,8 @@ def _episodes_readme_text() -> str:
 
 def _default_tier_a_content(name: str) -> str:
     """Seed content for Tier A files."""
-    if name == "memory_guide.md":
-        return _default_memory_guide()
+    if name == "extended_memory_index.md":
+        return _default_extended_memory_index()
     if name == "skills_index.md":
         return _default_skills_index()
     if name == "user_instructions.md":
@@ -159,43 +192,39 @@ def _default_tier_a_content(name: str) -> str:
     return f"# {name.replace('_', ' ').replace('.md', '')}\n\n"
 
 
-def _default_memory_guide() -> str:
-    return """# Memory conventions
+def _default_extended_memory_index() -> str:
+    return """# Extended memory index
 
-## Tier A (`state/*.md`)
+Catalog of material outside Tier A (`state/*.md`). This file is included **in full** in orchestrator and worker context alongside other Tier A files—keep it readable (paths + short descriptions). When you add long notes under `memory/extended/`, describe them here; open those files with your tools when you need the full text. Layout rules are in the shared prompt (`MEMORY_AND_TIER_A` in `agents/shared_prompt.py`).
 
-Keep every file **short and information-dense**. Prefer bullets and pointers over prose. If something is long but still useful (extra analysis, experiment logs, stack traces), put it under `memory/extended/<name>.md` and **link the path here** (e.g. `See details in memory/extended/run_2025_notes.md`). Workers see the link in Tier A and **read that file with their tools** when they need the full text — it is **not** pasted into every packet.
+## `memory/extended/`
 
-## Branch files (`memory/branch/<branch>.md`)
+- *(path + what it contains)*
 
-One file per **active** git branch name (slashes → `__`). It is **not** a second git — it is researcher state about that branch.
 
-Maintain each file with:
+## `memory/branch/`
 
-- **Diverged from**: base commit SHA (or tag) this branch started from.
-- **Purpose**: what this branch tests or explores.
-- **Status and results**: current state and outcomes so far.
+Per active git branch (`/` → `__` in filenames). Optional list of branch files you care about:
 
-**When the branch merges to `main`:** delete its file (so the folder mirrors live branches). Workers may copy notes to `memory/extended/` first if they want a durable log.
+- *(none yet)*
 
-**When a branch is abandoned or the approach failed:** delete the file and append the takeaway to `lessons.md` (not a separate “negative” store). Lifecycle is maintained by **workers** (see `agents/shared_prompt.py`), not by the Python orchestrator.
+## `memory/episodes/`
 
-## Skills (`memory/skills/*.md`)
+Worker runs: see `memory/episodes/index.md` and `memory/episodes/README.md`. Optional pointers to specific cycles:
 
-Reusable procedures and checklists. Maintain `skills_index.md` in Tier A with each skill’s path and a one-line description. The **skill_writer** worker creates/updates skill files and the index.
+- *(none yet)*
 
-## Episodes (`memory/episodes/`)
+## `memory/skills/`
 
-Per worker run: **`index.md`** lists worker (subagent), orchestrator **task**, routing **reason**, and links to each run's **`packet.md`** (input) and **`worker_output.json`** (output). Cycle folders hold the files. See `episodes/README.md`.
+Use **`skills_index.md`** (Tier A) as the canonical table; add cross-links here only if it helps navigation.
 
-## User instructions (`user_instructions.md`)
+## Experiments
 
-The console appends bullets under **`## New`**. Workers must **merge** that content into **`immediate_plan.md`** / **`roadmap.md`**, then **remove** it from **`## New`** (optional **`## In progress`** / **`## Completed`**). Do not leave **`## New`** populated once items are incorporated. The orchestrator prioritizes **planner** when **`## New`** has pending bullets. See `agents/shared_prompt.py`.
+Under `data/runtime/experiments/` — link noteworthy runs here or from Tier A when useful:
 
-## `context_summary.md`
-
-Orchestrator-maintained **rolling summary** for bounded LLM context (see also SQLite `run_events` for the full append-only log).
+- *(none yet)*
 """
+
 
 
 def _default_skills_index() -> str:
@@ -207,44 +236,6 @@ def _default_skills_index() -> str:
         "|------|--------|\n"
         "| *(add rows as you add `memory/skills/*.md`)* | |\n\n"
     )
-
-
-def _migrate_tier_a_legacy_filenames(researcher_root: Path) -> None:
-    """Rename backlog.md / current_goal.md to roadmap.md / immediate_plan.md if present."""
-    sd = state_dir(researcher_root)
-    for old_name, new_name in (
-        ("backlog.md", "roadmap.md"),
-        ("current_goal.md", "immediate_plan.md"),
-    ):
-        old, new = sd / old_name, sd / new_name
-        if old.exists() and not new.exists():
-            old.rename(new)
-
-
-def _migrate_merge_acceptance_criteria_into_research_idea(researcher_root: Path) -> None:
-    """Merge legacy ``acceptance_criteria.md`` into ``research_idea.md`` and delete the old file."""
-    sd = state_dir(researcher_root)
-    legacy = sd / "acceptance_criteria.md"
-    if not legacy.is_file():
-        return
-    acc_raw = helpers.read_text(legacy)
-    lines = acc_raw.splitlines()
-    if lines and lines[0].startswith("#"):
-        body = "\n".join(lines[1:]).lstrip("\n").strip()
-    else:
-        body = acc_raw.strip()
-    legacy.unlink()
-    if not body:
-        return
-    idea_path = sd / "research_idea.md"
-    idea = helpers.read_text(idea_path).strip() if idea_path.is_file() else ""
-    if "## Success criteria" in idea:
-        return
-    block = "\n\n## Success criteria\n\n" + body
-    if idea:
-        helpers.write_text(idea_path, idea + block + "\n")
-    else:
-        helpers.write_text(idea_path, f"# Research brief{block}\n")
 
 
 def _default_plan_doc(*, title: str, role: str) -> str:
@@ -306,7 +297,7 @@ def user_instructions_new_has_pending(researcher_root: Path) -> bool:
     return False
 
 
-def append_lesson(researcher_root: Path, text: str) -> None:
+def append_lesson(researcher_root: Path, text: str) -> None:  # noqa: dead – kept for agent use
     """Append a dated bullet to lessons.md (Tier A)."""
     path = state_dir(researcher_root) / "lessons.md"
     prev = helpers.read_text(path, default="# Lessons\n\n")
@@ -359,78 +350,6 @@ def append_episode_index_entry(
     helpers.write_text(idx, prev.rstrip() + block + "\n")
 
 
-def discover_extended_filenames_from_text(*texts: str) -> list[str]:
-    """Return unique extended/*.md basenames referenced in Tier A (or other) markdown."""
-    seen: list[str] = []
-    found: set[str] = set()
-    for blob in texts:
-        for m in _EXTENDED_REF.finditer(blob or ""):
-            name = m.group(1)
-            if name not in found:
-                found.add(name)
-                seen.append(name)
-    return seen
-
-
-def load_referenced_extended_bundle(researcher_root: Path, tier_bundle: dict[str, str]) -> dict[str, str]:
-    """Load extended markdown files referenced from Tier A text (e.g. for tests or explicit bulk load)."""
-    combined = "\n".join(tier_bundle.values())
-    out: dict[str, str] = {}
-    for name in discover_extended_filenames_from_text(combined):
-        p = extended_dir(researcher_root) / name
-        body = helpers.read_text(p, default="")
-        if body.strip():
-            out[name] = body
-    return out
-
-
-def referenced_extended_absolute_paths(researcher_root: Path, tier_bundle: dict[str, str]) -> list[Path]:
-    """Sorted unique absolute paths to extended files linked from Tier A (file may be missing)."""
-    combined = "\n".join(tier_bundle.values())
-    seen: set[str] = set()
-    out: list[Path] = []
-    for name in discover_extended_filenames_from_text(combined):
-        if name in seen:
-            continue
-        seen.add(name)
-        out.append((extended_dir(researcher_root) / name).resolve())
-    return sorted(out)
-
-
-def format_extended_refs_for_orchestrator(researcher_root: Path, tier_bundle: dict[str, str]) -> str:
-    """Short note for the orchestrator: which extended files Tier A links to (bodies not loaded)."""
-    paths = referenced_extended_absolute_paths(researcher_root, tier_bundle)
-    if not paths:
-        return "referenced_extended_files: (none linked from Tier A)\n"
-    lines = ["referenced_extended_files (paths only; not loaded into this prompt):"]
-    for p in paths:
-        lines.append(f"- {p}")
-    return "\n".join(lines) + "\n"
-
-
-def format_extended_refs_for_worker_packet(researcher_root: Path, tier_bundle: dict[str, str]) -> str:
-    """Markdown for worker packets: researcher root + absolute paths; extended bodies are not inlined."""
-    paths = referenced_extended_absolute_paths(researcher_root, tier_bundle)
-    root = researcher_root.resolve()
-    lines = [
-        "## Extended memory (on demand)",
-        "",
-        "Tier A may reference `memory/extended/*.md`. Those files are **not** copied into this packet. "
-        "When you need the full text, read the paths below with your tools (from the researcher tree).",
-        "",
-        f"**Researcher root:** `{root}`",
-        "",
-    ]
-    if not paths:
-        lines.append("*No `memory/extended/*.md` paths linked from Tier A.*")
-        return "\n".join(lines) + "\n"
-    lines.append("**Referenced files (absolute paths):**")
-    lines.append("")
-    for p in paths:
-        lines.append(f"- `{p}`")
-    return "\n".join(lines) + "\n"
-
-
 def read_context_summary(researcher_root: Path) -> str:
     """Current rolling context file (may be empty before first orchestrator update)."""
     return helpers.read_text(state_dir(researcher_root) / "context_summary.md", default="")
@@ -451,7 +370,7 @@ def format_orchestrator_context(
     last_worker_output: str = "",
     previous_context_summary: str = "",
 ) -> str:
-    """Tier A (truncated), rolling context, last worker output, extended pointers, branch memory."""
+    """Tier A (truncated), rolling context, last worker output, branch memory."""
     from research_lab import memory_extra as mx
 
     parts: list[str] = []
@@ -467,7 +386,6 @@ def format_orchestrator_context(
         if k == "context_summary.md":
             continue
         parts.append(f"{k}:\n{v[:4000]}\n")
-    parts.append(format_extended_refs_for_orchestrator(researcher_root, tier))
     b = (current_branch or "").strip()
     if b:
         bm = mx.read_branch_memory(researcher_root, b)

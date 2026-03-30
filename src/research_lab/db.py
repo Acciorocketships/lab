@@ -5,9 +5,8 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
-from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Generator
+from typing import Any
 
 
 SCHEMA = """
@@ -46,16 +45,6 @@ CREATE TABLE IF NOT EXISTS run_events (
   packet_path TEXT
 );
 
-CREATE TABLE IF NOT EXISTS worker_runs (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  worker_type TEXT NOT NULL,
-  start_time REAL NOT NULL,
-  end_time REAL,
-  exit_code INTEGER,
-  cost REAL,
-  summary TEXT
-);
-
 CREATE TABLE IF NOT EXISTS instructions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   text TEXT NOT NULL,
@@ -71,36 +60,12 @@ CREATE TABLE IF NOT EXISTS questions (
   created_at REAL NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS branches (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  name TEXT NOT NULL UNIQUE,
-  purpose TEXT NOT NULL DEFAULT '',
-  status TEXT NOT NULL DEFAULT 'active',
-  created_at REAL NOT NULL
-);
-
 CREATE TABLE IF NOT EXISTS experiments (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   exp_id TEXT NOT NULL UNIQUE,
   branch TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL DEFAULT 'proposed',
   metrics_path TEXT
-);
-
-CREATE TABLE IF NOT EXISTS heartbeats (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  ts REAL NOT NULL,
-  phase TEXT NOT NULL,
-  worker TEXT NOT NULL,
-  message TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS stall_signals (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  signal_type TEXT NOT NULL,
-  cycle INTEGER NOT NULL,
-  details TEXT,
-  resolved INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS worker_stream (
@@ -113,49 +78,23 @@ CREATE TABLE IF NOT EXISTS worker_stream (
 """
 
 
+def obliterate_runtime_db(db_path: Path) -> None:
+    """Remove the SQLite database file and WAL sidecars so the next :func:`connect_db` creates a fresh DB."""
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    for p in (db_path, Path(str(db_path) + "-wal"), Path(str(db_path) + "-shm")):
+        try:
+            p.unlink()
+        except FileNotFoundError:
+            pass
+
+
 def connect_db(db_path: Path) -> sqlite3.Connection:
     """Open SQLite with WAL; shared across processes for TUI + scheduler."""
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path), check_same_thread=False, timeout=30.0)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
-    _migrate_db(conn)
     return conn
-
-
-def _migrate_db(conn: sqlite3.Connection) -> None:
-    """Upgrade legacy schemas (phase column, run_events table)."""
-    row = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='system_state'").fetchone()
-    if row:
-        cols = {r[1] for r in conn.execute("PRAGMA table_info(system_state)").fetchall()}
-        if "roadmap_step" not in cols:
-            conn.execute("ALTER TABLE system_state ADD COLUMN roadmap_step TEXT NOT NULL DEFAULT ''")
-        if "task" not in cols:
-            conn.execute("ALTER TABLE system_state ADD COLUMN task TEXT NOT NULL DEFAULT ''")
-        if "phase" in cols:
-            conn.execute(
-                "UPDATE system_state SET roadmap_step = phase WHERE id = 1 AND "
-                "(roadmap_step IS NULL OR roadmap_step = '')"
-            )
-            try:
-                conn.execute("ALTER TABLE system_state DROP COLUMN phase")
-            except sqlite3.OperationalError:
-                pass
-    conn.commit()
-
-
-@contextmanager
-def db_session(db_path: Path) -> Generator[sqlite3.Connection, None, None]:
-    """Yield a connection and commit/rollback."""
-    conn = connect_db(db_path)
-    try:
-        yield conn
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
 
 
 def enqueue_event(conn: sqlite3.Connection, kind: str, payload: str | None = None) -> None:
@@ -279,30 +218,6 @@ def recent_run_events(conn: sqlite3.Connection, limit: int = 20) -> list[sqlite3
     )
 
 
-def heartbeat(conn: sqlite3.Connection, phase: str, worker: str, message: str) -> None:
-    """Legacy no-op: heartbeats table may exist; prefer run_events."""
-    del phase, worker, message
-
-
-def latest_heartbeat(conn: sqlite3.Connection) -> dict[str, Any] | None:
-    """Deprecated: use recent_run_events."""
-    rows = recent_run_events(conn, 1)
-    if not rows:
-        return None
-    r = rows[0]
-    return {
-        "ts": r["ts"],
-        "phase": "",
-        "worker": r["worker"],
-        "message": r["summary"],
-    }
-
-
-def recent_heartbeats(conn: sqlite3.Connection, limit: int = 20) -> list[sqlite3.Row]:
-    """Deprecated alias: returns run_events rows."""
-    return recent_run_events(conn, limit)
-
-
 def add_instruction(conn: sqlite3.Connection, text: str, status: str = "new") -> int:
     """Insert user instruction; returns row id."""
     cur = conn.execute(
@@ -326,11 +241,6 @@ def list_instructions(conn: sqlite3.Connection, status: str | None = None) -> li
     if status:
         return list(conn.execute("SELECT * FROM instructions WHERE status = ? ORDER BY id DESC", (status,)))
     return list(conn.execute("SELECT * FROM instructions ORDER BY id DESC"))
-
-
-def list_branches_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
-    """Branch registry."""
-    return list(conn.execute("SELECT * FROM branches ORDER BY id DESC"))
 
 
 def list_experiments_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:

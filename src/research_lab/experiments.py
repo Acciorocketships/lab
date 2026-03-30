@@ -1,10 +1,9 @@
-"""Experiment registry, metric comparison, keep/revert decisions."""
+"""Experiment registry and metric comparison helpers."""
 
 from __future__ import annotations
 
 import time
 from pathlib import Path
-from typing import Any
 
 import sqlite3
 
@@ -29,14 +28,9 @@ def new_experiment_id(conn: sqlite3.Connection, researcher_root: Path) -> str:
     return eid
 
 
-def write_metrics(exp_path: Path, metrics: dict[str, Any]) -> None:
-    """Write metrics.json under experiment folder."""
-    helpers.write_json(exp_path / "metrics.json", metrics)
-
-
 def compare_metrics(
-    baseline: dict[str, Any],
-    candidate: dict[str, Any],
+    baseline: dict,
+    candidate: dict,
     *,
     primary_key: str = "score",
     higher_is_better: bool = True,
@@ -47,13 +41,3 @@ def compare_metrics(
     b = float(baseline[primary_key])
     c = float(candidate[primary_key])
     return c > b if higher_is_better else c < b
-
-
-def decision_keep(exp_path: Path, reason: str) -> None:
-    """Record keep decision."""
-    helpers.write_text(exp_path / "decision.md", f"# Decision: keep\n\n{reason}\n")
-
-
-def decision_revert(exp_path: Path, reason: str) -> None:
-    """Record revert decision."""
-    helpers.write_text(exp_path / "decision.md", f"# Decision: revert\n\n{reason}\n")

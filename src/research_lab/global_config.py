@@ -83,12 +83,6 @@ class ProjectConfig:
             data = tomllib.load(f)
         proj = data.get("project", {})
         idea = str(proj.get("research_idea", ""))
-        legacy = str(proj.get("acceptance_criteria", ""))
-        if legacy.strip():
-            if idea.strip():
-                idea = f"{idea.rstrip()}\n\n## Success criteria\n\n{legacy.strip()}"
-            else:
-                idea = legacy.strip()
         return cls(
             research_idea=idea,
             preferences=str(proj.get("preferences", "")),

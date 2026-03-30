@@ -101,21 +101,3 @@ def generate(
         messages=messages,  # type: ignore[arg-type]
     )
     return completion.choices[0].message.content or ""
-
-
-def generate_json_dict(
-    messages: list[dict[str, str]],
-    *,
-    model: str,
-    base_url: str | None = None,
-    api_key: str | None = None,
-) -> dict[str, Any]:
-    """Request JSON object response (no pydantic parse)."""
-    client = _client(base_url, api_key)
-    completion = client.chat.completions.create(
-        model=model,
-        messages=messages,  # type: ignore[arg-type]
-        response_format={"type": "json_object"},
-    )
-    raw = completion.choices[0].message.content or "{}"
-    return json.loads(raw)

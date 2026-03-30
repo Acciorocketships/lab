@@ -41,6 +41,7 @@ Once in the console, type `/start` to begin the background agent, `/pause` to pa
 | `/backlog` | Show recent instructions |
 | `/branches` | Show branch registry |
 | `/experiments` | Show experiment registry |
+| `/reset` | Clear SQLite and runtime memory (Tier A except `research_idea.md` and `preferences.md`, episodes, extended, branches, skills, experiments); syncs `[project]` brief and preferences in `config.toml` from those files |
 | `/help` | List all commands |
 | plain text | Queue as an instruction to the agent |
 
@@ -139,7 +140,7 @@ Workers use **Claude Code** (`claude -p`) or **Cursor agent** (`cursor agent -p`
 File-based memory lives under the **researcher root** (`<project_dir>/.airesearcher/`). See `src/research_lab/memory.py` for the canonical list of Tier A filenames.
 
 - **A** — `data/runtime/state/*.md` — operating memory (loaded every cycle).
-- **B** — `memory/extended/` — long-form supplementary notes; path-linked from Tier A.
+- **B** — `memory/extended/` — long-form notes; describe them in Tier A `extended_memory_index.md` (included in context with other Tier A files).
 - **C** — `memory/branch/<branch>.md` — one file per active branch.
 - **D** — `memory/episodes/` — per worker run + `index.md`.
 - **E** — `memory/skills/` — reusable procedures; indexed from Tier A `skills_index.md`.
