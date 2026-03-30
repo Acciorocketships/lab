@@ -1,0 +1,49 @@
+"""Tests for context packets."""
+
+from pathlib import Path
+
+from research_lab import memory, packets
+
+
+def test_write_worker_output_file(tmp_path: Path) -> None:
+    """Worker CLI result is stored next to packet.md."""
+    memory.ensure_memory_layout(tmp_path)
+    fake = {"ok": True, "exit_code": 0, "stdout": "hi", "stderr": "", "parsed": {"x": 1}}
+    p = packets.write_worker_output_file(tmp_path, 7, "planner", fake)
+    assert p.name == "worker_output.json"
+    assert p.parent.name == "planner"
+    assert "memory/episodes" in str(p).replace("\\", "/")
+    assert "cycle_000007" in str(p)
+    text = p.read_text(encoding="utf-8")
+    assert '"stdout": "hi"' in text
+    assert '"x": 1' in text
+
+
+def test_build_packet_budget(tmp_path: Path) -> None:
+    """Packet respects rough character budget."""
+    memory.ensure_memory_layout(tmp_path)
+    (memory.state_dir(tmp_path) / "research_idea.md").write_text("x" * 5000, encoding="utf-8")
+    text = packets.build_worker_packet(
+        worker="planner",
+        researcher_root=tmp_path,
+        task="Plan next steps",
+        extra_sections={"Evidence": "short"},
+        max_chars=2000,
+    )
+    assert len(text) <= 2100
+
+
+def test_build_worker_packet_extended_not_inlined(tmp_path: Path) -> None:
+    """Linked extended files appear as paths only, not full text."""
+    memory.ensure_memory_layout(tmp_path)
+    (memory.extended_dir(tmp_path) / "log.md").write_text("# BIG\n" + "y" * 8000, encoding="utf-8")
+    (memory.state_dir(tmp_path) / "status.md").write_text("Ref: memory/extended/log.md\n", encoding="utf-8")
+    text = packets.build_worker_packet(
+        worker="researcher",
+        researcher_root=tmp_path,
+        task="Continue",
+        max_chars=100_000,
+    )
+    assert "yyyy" not in text  # body not pasted
+    assert "Extended memory (on demand)" in text
+    assert str((memory.extended_dir(tmp_path) / "log.md").resolve()) in text

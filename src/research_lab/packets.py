@@ -1,0 +1,97 @@
+"""Context packet assembly for worker CLIs; ranks and trims text to a budget."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+from research_lab import helpers, memory
+from research_lab import memory_extra
+
+# Shared for all CLI workers (long-running commands, hangs).
+_WORKER_RUNTIME_CONDUCT = """## Commands and long-running work
+
+When you run shell commands, builds, tests, servers, or training: **watch the output**. If the process seems stuck (no
+meaningful progress for a long time, or a clear hang), **stop it** (terminate the process), note what you saw, and
+continue with a shorter or safer approach. Prefer timeouts or bounded runs where the tool supports them."""
+
+
+def build_worker_packet(
+    *,
+    worker: str,
+    researcher_root: Path,
+    task: str,
+    extra_sections: dict[str, str] | None = None,
+    max_chars: int = 24000,
+    current_branch: str = "",
+) -> str:
+    """Assemble markdown packet: role header, Tier A, extended path pointers, branch memory, task."""
+    tier = memory.load_tier_a_bundle(researcher_root)
+    roll = memory.read_context_summary(researcher_root).strip()
+    parts: list[str] = [
+        f"# Worker: {worker}\n",
+        "## Objective\n",
+        task.strip() + "\n",
+    ]
+    if roll:
+        parts.append("## Rolling context summary\n")
+        parts.append(roll + "\n")
+    parts.append(_WORKER_RUNTIME_CONDUCT + "\n")
+    parts.append("## Operating context\n")
+    for name in memory.TIER_A_FILES:
+        if name == "context_summary.md":
+            continue
+        chunk = tier.get(name, "")
+        parts.append(f"### {name}\n{chunk}\n")
+    parts.append(memory.format_extended_refs_for_worker_packet(researcher_root, tier))
+    b = (current_branch or "").strip()
+    if b:
+        bm = memory_extra.read_branch_memory(researcher_root, b)
+        if bm.strip():
+            parts.append(f"### Branch memory (`{b}`)\n{bm}\n")
+    if extra_sections:
+        for title, body in extra_sections.items():
+            if body:
+                parts.append(f"## {title}\n{body}\n")
+    text = "\n".join(parts)
+    if len(text) <= max_chars:
+        return text
+    return _trim_packet(text, max_chars)
+
+
+def _trim_packet(text: str, max_chars: int) -> str:
+    """Keep head, truncate middle with notice."""
+    head = text[: max_chars // 2]
+    tail = text[-max_chars // 2 :]
+    return head + "\n\n...[truncated for context budget]...\n\n" + tail
+
+
+def _packet_dir(researcher_root: Path, cycle: int, worker: str) -> Path:
+    return memory.episode_cycle_dir(researcher_root, cycle, worker)
+
+
+def write_packet_file(researcher_root: Path, cycle: int, worker: str, content: str) -> Path:
+    """Persist packet under memory/episodes/cycle_xxx/worker/packet.md."""
+    d = _packet_dir(researcher_root, cycle, worker)
+    helpers.ensure_dir(d)
+    p = d / "packet.md"
+    helpers.write_text(p, content)
+    return p
+
+
+def write_worker_output_file(
+    researcher_root: Path,
+    cycle: int,
+    worker: str,
+    result: dict[str, Any],
+) -> Path:
+    """Persist CLI worker result next to packet.md (stdout, stderr, parsed JSON, exit metadata)."""
+    d = _packet_dir(researcher_root, cycle, worker)
+    helpers.ensure_dir(d)
+    p = d / "worker_output.json"
+    p.write_text(
+        json.dumps(result, indent=2, ensure_ascii=False, default=str) + "\n",
+        encoding="utf-8",
+    )
+    return p
