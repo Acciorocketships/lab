@@ -52,7 +52,7 @@ The `lab` CLI is a thin wrapper. Scripts and tests should call the same function
 |----------|---------|
 | `run_lab_console(project_dir=None)` | Start the console using `~/.airesearcher/` and `<project>/.airesearcher/config.toml` (default project = current working directory). |
 | `ensure_console_ready(project_dir)` | Validate config, merge, prepare DB; returns `(db_path, RunConfig)`. |
-| `run_console_session(db_path, cfg)` | Start the TUI with an explicit `RunConfig` (no TOML). Used by bench scripts and unit tests. |
+| `run_console_session(db_path, cfg)` | Start the TUI with an explicit `RunConfig` (no TOML). Used by `scripts/run.py` and unit tests. |
 | `init_project_at(project_dir, pcfg, overwrite=False)` | Full project init after global setup. |
 | `bootstrap_bench_project(project_dir, gcfg=..., pcfg=...)` | Write global + project TOML and seed memory in one step (e.g. automated tests). |
 | `run_interactive_global_setup()` | Interactive wizard (same as `lab setup`). |
@@ -155,7 +155,6 @@ pytest -q
 ## Scripts (`scripts/`)
 
 - `scripts/run.py` — bench project launcher: builds a `RunConfig` for `data/bench_rl_project` and calls `runner.run_console_session` (same core as `lab`, without TOML).
-- `scripts/run_console.py` — minimal console smoke against the bench paths.
 - `scripts/oauth_login.py` — calls `runner.run_oauth_browser_for_global` (same OAuth path as `lab setup`).
 
 ## Recovery

@@ -95,4 +95,4 @@ Wall-clock is approximate; depends on framework, seeds, and stop condition. “S
 
 *Generated for benching research-lab; edit or prune as needed.*
 
-**Active multi-step bench:** `data/bench_rl_project/` (tabular Q-learning on FrozenLake) — wired in `scripts/run.py`; one-cycle smoke: `python scripts/run_bench_smoke.py`.
+**Active multi-step bench:** `data/bench_rl_project/` (tabular Q-learning on FrozenLake) — launch with `python scripts/run.py`.
