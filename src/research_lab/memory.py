@@ -362,6 +362,24 @@ def write_context_summary(researcher_root: Path, body: str) -> None:
     helpers.write_text(p, body)
 
 
+def _clip_block(text: str, max_chars: int | None) -> str:
+    """Return full text when ``max_chars`` is None, otherwise clip with notice."""
+    if max_chars is None:
+        return text + "\n"
+    if len(text) <= max_chars:
+        return text + "\n"
+    return text[:max_chars] + "\n...[truncated]\n"
+
+
+def _clip_tier_value(text: str, max_chars: int | None) -> str:
+    """Tier A file body clip helper; ``None`` means no clipping."""
+    if max_chars is None:
+        return text
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + "\n...[truncated]\n"
+
+
 def format_orchestrator_context(
     researcher_root: Path,
     *,
@@ -369,28 +387,35 @@ def format_orchestrator_context(
     current_branch: str,
     last_worker_output: str = "",
     previous_context_summary: str = "",
+    prev_summary_max_chars: int | None = None,
+    last_worker_max_chars: int | None = None,
+    tier_file_max_chars: int | None = None,
+    branch_memory_max_chars: int | None = None,
 ) -> str:
-    """Tier A (truncated), rolling context, last worker output, branch memory."""
+    """Tier A, rolling context, last worker output, branch memory.
+
+    Limits are optional. ``None`` means no clipping in app code.
+    """
     from research_lab import memory_extra as mx
 
     parts: list[str] = []
     prev = (previous_context_summary or "").strip()
     if prev:
         parts.append("## Previous context summary (merge and replace with updated context_summary in JSON)\n")
-        parts.append(prev[:8000] + ("\n" if len(prev) <= 8000 else "\n...[truncated]\n"))
+        parts.append(_clip_block(prev, prev_summary_max_chars))
     out = (last_worker_output or "").strip()
     if out:
         parts.append("## Last worker output (incorporate into context_summary)\n")
-        parts.append(out[:12000] + ("\n" if len(out) <= 12000 else "\n...[truncated]\n"))
+        parts.append(_clip_block(out, last_worker_max_chars))
     for k, v in tier.items():
         if k == "context_summary.md":
             continue
-        parts.append(f"{k}:\n{v[:4000]}\n")
+        parts.append(f"{k}:\n{_clip_tier_value(v, tier_file_max_chars)}\n")
     b = (current_branch or "").strip()
     if b:
         bm = mx.read_branch_memory(researcher_root, b)
         if bm.strip():
-            parts.append(f"branch_memory[{b}]:\n{bm[:4000]}\n")
+            parts.append(f"branch_memory[{b}]:\n{_clip_tier_value(bm, branch_memory_max_chars)}\n")
     return "\n".join(parts)
 
 

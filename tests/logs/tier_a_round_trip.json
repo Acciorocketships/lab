@@ -1,0 +1,49 @@
+{
+  "files": 11,
+  "sizes": {
+    "project_brief.md": {
+      "written": 249,
+      "read": 249
+    },
+    "extended_memory_index.md": {
+      "written": 257,
+      "read": 257
+    },
+    "research_idea.md": {
+      "written": 249,
+      "read": 249
+    },
+    "preferences.md": {
+      "written": 247,
+      "read": 247
+    },
+    "roadmap.md": {
+      "written": 243,
+      "read": 243
+    },
+    "immediate_plan.md": {
+      "written": 250,
+      "read": 250
+    },
+    "status.md": {
+      "written": 242,
+      "read": 242
+    },
+    "context_summary.md": {
+      "written": 251,
+      "read": 251
+    },
+    "skills_index.md": {
+      "written": 248,
+      "read": 248
+    },
+    "lessons.md": {
+      "written": 243,
+      "read": 243
+    },
+    "user_instructions.md": {
+      "written": 254,
+      "read": 254
+    }
+  }
+}

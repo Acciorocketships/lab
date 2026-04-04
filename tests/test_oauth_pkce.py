@@ -33,6 +33,7 @@ def test_resolve_prefers_explicit_api_key(tmp_path: Path) -> None:
         openai_base_url=None,
         openai_model="gpt-4o-mini",
         default_worker_backend="cursor",
+        cursor_agent_model="composer-2",
     )
     assert resolve_openai_bearer(cfg) == "sk-test"
     assert oauth_token_file(cfg) == tmp_path / "data" / "oauth_openai_tokens.json"
@@ -50,6 +51,7 @@ def test_auth_openai_issuer_uses_codex_endpoints_not_oidc_discovery(tmp_path: Pa
         openai_base_url=None,
         openai_model="gpt-4o-mini",
         default_worker_backend="cursor",
+        cursor_agent_model="composer-2",
         oauth_issuer="https://auth.openai.com",
         oauth_authorization_endpoint=None,
         oauth_token_endpoint=None,
@@ -71,6 +73,7 @@ def test_existing_codex_token_file_is_upgraded_to_api_bearer(tmp_path: Path, mon
         openai_base_url=None,
         openai_model="gpt-4o-mini",
         default_worker_backend="cursor",
+        cursor_agent_model="composer-2",
         oauth_issuer="https://auth.openai.com",
         oauth_authorization_endpoint=None,
         oauth_token_endpoint=None,

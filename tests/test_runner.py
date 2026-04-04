@@ -70,6 +70,7 @@ def test_run_console_session_accepts_explicit_config(tmp_path: Path, monkeypatch
         openai_base_url=None,
         openai_model="m",
         default_worker_backend="cursor",
+        cursor_agent_model="composer-2",
         openrouter_api_key="k",
     )
     db_path = rr / "data" / "runtime.db"

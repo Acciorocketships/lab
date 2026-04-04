@@ -1,0 +1,6 @@
+{
+  "pkt_len": 24040,
+  "budget": 24000,
+  "header_present": true,
+  "objective_present": true
+}

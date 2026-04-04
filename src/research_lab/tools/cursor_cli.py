@@ -35,6 +35,7 @@ def _resolve_timeout_sec(explicit: int | None) -> int | None:
 def _build_cmd(
     prompt: str,
     *,
+    model: str,
     output_format: str = "json",
     trust: bool = True,
     force: bool = False,
@@ -43,7 +44,7 @@ def _build_cmd(
     exe = shutil.which("cursor")
     if not exe:
         return None
-    cmd: list[str] = [exe, "agent", "-p", prompt]
+    cmd: list[str] = [exe, "agent", "--model", model, "-p", prompt]
     if trust:
         cmd.append("--trust")
     if force:
@@ -57,6 +58,7 @@ def _build_cmd(
 def run_agent_print(
     prompt: str,
     *,
+    model: str,
     cwd: Path,
     output_format: str = "json",
     trust: bool = True,
@@ -65,12 +67,14 @@ def run_agent_print(
     timeout_sec: int | None = None,
     on_chunk: StreamCallback | None = None,
 ) -> dict[str, Any]:
-    """Run `cursor agent -p` (headless) with optional line-by-line streaming via *on_chunk*.
+    """Run `cursor agent --model … -p` (headless) with optional line-by-line streaming via *on_chunk*.
 
     *timeout_sec*: cap in seconds, or ``None`` / ``<= 0`` for no cap (default). Env
     ``AIRESEARCHER_CURSOR_TIMEOUT_SEC`` applies when *timeout_sec* is omitted.
     """
-    cmd = _build_cmd(prompt, output_format=output_format, trust=trust, force=force, resume=resume)
+    cmd = _build_cmd(
+        prompt, model=model, output_format=output_format, trust=trust, force=force, resume=resume
+    )
     if cmd is None:
         return {"ok": False, "error": "cursor CLI not found", "stdout": "", "stderr": ""}
     limit = _resolve_timeout_sec(timeout_sec)

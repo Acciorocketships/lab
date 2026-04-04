@@ -24,6 +24,7 @@ def test_graph_invoke_raises_without_credentials(tmp_path: Path, monkeypatch) ->
         openai_base_url=None,
         openai_model="gpt-4o-mini",
         default_worker_backend="cursor",
+        cursor_agent_model="composer-2",
     )
     memory.ensure_memory_layout(tmp_path)
     (tmp_path / "p").mkdir()
@@ -70,6 +71,7 @@ def test_graph_invoke_done_sets_acceptance(tmp_path: Path, monkeypatch) -> None:
         openai_base_url=None,
         openai_model="gpt-4o-mini",
         default_worker_backend="cursor",
+        cursor_agent_model="composer-2",
     )
     memory.ensure_memory_layout(tmp_path)
     (tmp_path / "p").mkdir()

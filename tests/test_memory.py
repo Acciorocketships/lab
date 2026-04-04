@@ -39,6 +39,26 @@ def test_format_orchestrator_context_extended_bodies_not_inlined(tmp_path: Path)
     assert "memory/extended/extra.md" in ctx
 
 
+def test_format_orchestrator_context_no_limits_by_default(tmp_path: Path) -> None:
+    """Default helper behavior keeps full text; no app-level clipping unless requested."""
+    memory.ensure_memory_layout(tmp_path)
+    long_summary = "S" * 9000
+    long_worker = "W" * 13000
+    (memory.state_dir(tmp_path) / "roadmap.md").write_text("R" * 5000, encoding="utf-8")
+    tier = memory.load_tier_a_bundle(tmp_path)
+    ctx = memory.format_orchestrator_context(
+        tmp_path,
+        tier=tier,
+        current_branch="",
+        last_worker_output=long_worker,
+        previous_context_summary=long_summary,
+    )
+    assert "S" * 8500 in ctx
+    assert "W" * 12050 in ctx
+    assert "R" * 4500 in ctx
+    assert "...[truncated]" not in ctx
+
+
 def test_user_instructions_new_has_pending(tmp_path: Path) -> None:
     memory.ensure_memory_layout(tmp_path)
     assert not memory.user_instructions_new_has_pending(tmp_path)

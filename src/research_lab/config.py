@@ -23,6 +23,7 @@ class RunConfig:
     openai_base_url: str | None
     openai_model: str
     default_worker_backend: str  # claude | cursor
+    cursor_agent_model: str
     oauth_client_id: str | None = "app_EMoamEEZ73f0CkXaXp7hrann"
     oauth_client_secret: str | None = None
     oauth_redirect_uri: str = "http://localhost:1455/auth/callback"
@@ -36,6 +37,14 @@ class RunConfig:
     oauth_token_path: Path | None = None
     oauth_extra_authorize_params: dict[str, str] = field(default_factory=dict)
     openrouter_api_key: str | None = None
+    # Context limits are optional. ``None`` means "do not truncate in app code";
+    # the upstream model/provider is then responsible for enforcing its own limit.
+    orchestrator_input_max_chars: int | None = None
+    orchestrator_prev_summary_max_chars: int | None = None
+    orchestrator_last_worker_max_chars: int | None = None
+    orchestrator_tier_file_max_chars: int | None = None
+    orchestrator_branch_memory_max_chars: int | None = None
+    worker_packet_max_chars: int | None = None
 
     @classmethod
     def from_configs(
@@ -64,6 +73,7 @@ class RunConfig:
             openai_base_url=gcfg.base_url or None,
             openai_model=gcfg.model_name,
             default_worker_backend=gcfg.worker_backend,
+            cursor_agent_model=gcfg.cursor_agent_model,
             oauth_client_id=gcfg.oauth_client_id or None,
             oauth_token_path=GLOBAL_OAUTH_PATH,
             openrouter_api_key=openrouter_key,

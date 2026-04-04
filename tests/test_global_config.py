@@ -24,6 +24,7 @@ def test_global_config_roundtrip(tmp_path: Path, monkeypatch) -> None:
         base_url="",
         api_key="sk-test-key",
         worker_backend="cursor",
+        cursor_agent_model="gpt-5",
         code_style="Clean Python",
     )
     save_global_config(cfg)
@@ -32,6 +33,7 @@ def test_global_config_roundtrip(tmp_path: Path, monkeypatch) -> None:
     assert loaded.model_name == "google/gemini-2.5-flash-lite"
     assert loaded.api_key == "sk-test-key"
     assert loaded.worker_backend == "cursor"
+    assert loaded.cursor_agent_model == "gpt-5"
     assert loaded.code_style == "Clean Python"
 
 
@@ -75,9 +77,16 @@ def test_from_configs_merges_correctly(tmp_path: Path) -> None:
     assert run_cfg.openai_model == "gemini-2.5-flash-lite"
     assert run_cfg.openrouter_api_key == "sk-or"
     assert run_cfg.default_worker_backend == "cursor"
+    assert run_cfg.cursor_agent_model == "composer-2"
     assert run_cfg.research_idea == "Do X\n\n## Success criteria\n\nY works"
     assert run_cfg.preferences == "type hints"
     assert run_cfg.researcher_root == project_dir / ".airesearcher"
+    assert run_cfg.orchestrator_input_max_chars is None
+    assert run_cfg.orchestrator_prev_summary_max_chars is None
+    assert run_cfg.orchestrator_last_worker_max_chars is None
+    assert run_cfg.orchestrator_tier_file_max_chars is None
+    assert run_cfg.orchestrator_branch_memory_max_chars is None
+    assert run_cfg.worker_packet_max_chars is None
 
 
 def test_from_configs_project_prefs_override_global(tmp_path: Path) -> None:

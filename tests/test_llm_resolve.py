@@ -17,6 +17,7 @@ def _base_cfg(tmp_path: Path, **kwargs: object) -> RunConfig:
         "openai_base_url": None,
         "openai_model": "gpt-4o-mini",
         "default_worker_backend": "cursor",
+        "cursor_agent_model": "composer-2",
     }
     defaults.update(kwargs)
     return RunConfig(**defaults)  # type: ignore[arg-type]

@@ -1,0 +1,55 @@
+{
+  "cycles": 10,
+  "sizes": [
+    {
+      "cycle": 0,
+      "written": 541,
+      "read": 541
+    },
+    {
+      "cycle": 1,
+      "written": 1041,
+      "read": 1041
+    },
+    {
+      "cycle": 2,
+      "written": 1541,
+      "read": 1541
+    },
+    {
+      "cycle": 3,
+      "written": 2041,
+      "read": 2041
+    },
+    {
+      "cycle": 4,
+      "written": 2541,
+      "read": 2541
+    },
+    {
+      "cycle": 5,
+      "written": 3041,
+      "read": 3041
+    },
+    {
+      "cycle": 6,
+      "written": 3541,
+      "read": 3541
+    },
+    {
+      "cycle": 7,
+      "written": 4041,
+      "read": 4041
+    },
+    {
+      "cycle": 8,
+      "written": 4541,
+      "read": 4541
+    },
+    {
+      "cycle": 9,
+      "written": 5041,
+      "read": 5041
+    }
+  ]
+}

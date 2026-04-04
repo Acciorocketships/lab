@@ -1,0 +1,5 @@
+{
+  "original_worker": "researcher",
+  "overridden_worker": "planner",
+  "task_mentions_new": true
+}

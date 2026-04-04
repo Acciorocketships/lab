@@ -202,6 +202,7 @@ def run_oauth_browser_for_global(client_id: str | None = None) -> Path:
         openai_base_url=None,
         openai_model="gpt-4o-mini",
         default_worker_backend="cursor",
+        cursor_agent_model="composer-2",
         oauth_client_id=cid,
         oauth_token_path=GLOBAL_OAUTH_PATH,
         oauth_extra_authorize_params={
@@ -255,6 +256,12 @@ def run_interactive_global_setup() -> Path:
         type=click.Choice(["cursor", "claude"], case_sensitive=False),
         default="cursor",
     )
+    cursor_agent_model = "composer-2"
+    if worker_backend == "cursor":
+        cursor_agent_model = click.prompt(
+            "Cursor agent CLI model (--model)",
+            default="composer-2",
+        )
 
     click.echo("")
     click.echo(
@@ -268,6 +275,7 @@ def run_interactive_global_setup() -> Path:
         api_key=api_key,
         oauth_client_id=oauth_client_id,
         worker_backend=worker_backend,
+        cursor_agent_model=cursor_agent_model,
         code_style="",
     )
     return save_global_config(gcfg)

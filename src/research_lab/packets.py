@@ -23,7 +23,7 @@ def build_worker_packet(
     researcher_root: Path,
     task: str,
     extra_sections: dict[str, str] | None = None,
-    max_chars: int = 24000,
+    max_chars: int | None = None,
     current_branch: str = "",
 ) -> str:
     """Assemble markdown packet: role header, Tier A, extended path pointers, branch memory, task."""
@@ -54,6 +54,8 @@ def build_worker_packet(
             if body:
                 parts.append(f"## {title}\n{body}\n")
     text = "\n".join(parts)
+    if max_chars is None:
+        return text
     if len(text) <= max_chars:
         return text
     return _trim_packet(text, max_chars)

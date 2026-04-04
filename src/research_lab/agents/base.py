@@ -16,6 +16,7 @@ def run_worker(
     *,
     backend: Backend,
     project_cwd: Path,
+    cursor_agent_model: str,
     allowed_tools: str | None = None,
     resume: str | None = None,
     on_chunk: StreamCallback | None = None,
@@ -33,6 +34,7 @@ def run_worker(
     if backend == "cursor" and cursor_cli.available():
         return cursor_cli.run_agent_print(
             packet,
+            model=cursor_agent_model,
             cwd=project_cwd,
             trust=True,
             force=True,

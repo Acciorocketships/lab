@@ -1,0 +1,6 @@
+{
+  "raw_ctx_len": 60528,
+  "truncated_len": 12000,
+  "chars_lost": 48528,
+  "loss_pct": 80.2
+}

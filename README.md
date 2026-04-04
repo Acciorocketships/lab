@@ -109,6 +109,22 @@ Workers use **Claude Code** (`claude -p`) or **Cursor agent** (`cursor agent -p`
 - **cursor**: Runs `cursor agent -p "<prompt>" --trust`. No subprocess timeout by default; set `AIRESEARCHER_CURSOR_TIMEOUT_SEC` to cap runtime in seconds if needed.
 - **claude**: Runs `claude -p --output-format json`. Install with `npm i -g @anthropic-ai/claude-code`. No subprocess timeout by default; set `AIRESEARCHER_CLAUDE_TIMEOUT_SEC` to cap runtime in seconds if needed.
 
+### Context truncation
+
+By default, the app no longer truncates orchestrator context or worker packets in Python. We pass the
+full assembled prompt and let the upstream provider/model enforce its own context window. This means
+you will get a provider/model error if the prompt is too large, rather than silently losing
+instructions or context in app code.
+
+If you want to reintroduce limits, set the optional limit fields on `RunConfig`:
+
+- `orchestrator_input_max_chars`
+- `orchestrator_prev_summary_max_chars`
+- `orchestrator_last_worker_max_chars`
+- `orchestrator_tier_file_max_chars`
+- `orchestrator_branch_memory_max_chars`
+- `worker_packet_max_chars`
+
 ## Pipeline (high level)
 
 1. **Console (Textual)** and **scheduler** share **SQLite** (`control_events`, `system_state`, `run_events`, `worker_stream`).

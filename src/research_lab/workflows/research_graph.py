@@ -89,6 +89,10 @@ def choose_action(
         current_branch=str(state.get("current_branch", "") or ""),
         last_worker_output=str(state.get("last_action_summary", "") or ""),
         previous_context_summary=prev,
+        prev_summary_max_chars=cfg.orchestrator_prev_summary_max_chars,
+        last_worker_max_chars=cfg.orchestrator_last_worker_max_chars,
+        tier_file_max_chars=cfg.orchestrator_tier_file_max_chars,
+        branch_memory_max_chars=cfg.orchestrator_branch_memory_max_chars,
     )
     dec = orchestrator.decide_orchestrator(
         ctx,
@@ -183,6 +187,7 @@ def execute_worker(
         task=task,
         extra_sections=extra if extra else None,
         current_branch=str(state.get("current_branch", "") or ""),
+        max_chars=cfg.worker_packet_max_chars,
     )
     packets.write_packet_file(researcher_root, cyc, worker, pkt)
     relpath = memory.episodes_cycle_relpath(cycle=cyc, worker=worker)
@@ -199,7 +204,13 @@ def execute_worker(
             except Exception:
                 pass
 
-    res = agents_base.run_worker(pkt, backend=backend, project_cwd=project_dir, on_chunk=on_chunk)
+    res = agents_base.run_worker(
+        pkt,
+        backend=backend,
+        project_cwd=project_dir,
+        cursor_agent_model=cfg.cursor_agent_model,
+        on_chunk=on_chunk,
+    )
     packets.write_worker_output_file(researcher_root, cyc, worker, res)
     summary = str(res.get("parsed", res))
     return {

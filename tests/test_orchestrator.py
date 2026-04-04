@@ -21,6 +21,7 @@ def test_no_api_key_raises(tmp_path: Path, monkeypatch) -> None:
         openai_base_url=None,
         openai_model="gpt-4o-mini",
         default_worker_backend="cursor",
+        cursor_agent_model="composer-2",
     )
     with pytest.raises(OrchestratorCredentialsError):
         decide_orchestrator("context", model="gpt-4o-mini", cfg=cfg)

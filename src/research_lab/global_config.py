@@ -24,6 +24,7 @@ class GlobalConfig:
     api_key: str = ""
     oauth_client_id: str = "app_EMoamEEZ73f0CkXaXp7hrann"
     worker_backend: str = "cursor"
+    cursor_agent_model: str = "composer-2"
     code_style: str = ""
 
     def to_toml(self) -> str:
@@ -39,6 +40,7 @@ class GlobalConfig:
             "\n"
             "[worker]\n"
             f'backend = "{self.worker_backend}"\n'
+            f'cursor_model = "{self.cursor_agent_model}"\n'
             "\n"
             "[preferences]\n"
             f"code_style = {_format_toml_string_value(self.code_style)}\n"
@@ -59,6 +61,7 @@ class GlobalConfig:
             api_key=str(auth.get("api_key", "")),
             oauth_client_id=str(auth.get("oauth_client_id", "app_EMoamEEZ73f0CkXaXp7hrann")),
             worker_backend=str(worker.get("backend", "cursor")),
+            cursor_agent_model=str(worker.get("cursor_model", "composer-2")),
             code_style=str(prefs.get("code_style", "")),
         )
 
