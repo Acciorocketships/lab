@@ -3,16 +3,23 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
+import time
 from typing import Any, TypeVar
 
 from openai import OpenAI
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from research_lab.config import RunConfig
 from research_lab.oauth_pkce import resolve_openai_bearer
 
 T = TypeVar("T", bound=BaseModel)
+
+_log = logging.getLogger(__name__)
+
+_JSON_RETRIES = 3
+_RETRY_BACKOFF_SEC = 1.0
 
 
 def _client(base_url: str | None, api_key: str | None) -> OpenAI:
@@ -89,13 +96,25 @@ def generate(
                     return parsed
             except Exception:
                 pass
-        raw = client.chat.completions.create(
-            model=model,
-            messages=messages,  # type: ignore[arg-type]
-            response_format={"type": "json_object"},
-        )
-        text = raw.choices[0].message.content or "{}"
-        return response_format.model_validate_json(text)
+        last_err: Exception | None = None
+        for attempt in range(_JSON_RETRIES):
+            raw = client.chat.completions.create(
+                model=model,
+                messages=messages,  # type: ignore[arg-type]
+                response_format={"type": "json_object"},
+            )
+            text = raw.choices[0].message.content or "{}"
+            try:
+                return response_format.model_validate_json(text)
+            except (ValidationError, ValueError) as exc:
+                last_err = exc
+                _log.warning(
+                    "LLM returned invalid JSON (attempt %d/%d, %d chars): %s",
+                    attempt + 1, _JSON_RETRIES, len(text), exc,
+                )
+                if attempt < _JSON_RETRIES - 1:
+                    time.sleep(_RETRY_BACKOFF_SEC * (attempt + 1))
+        raise last_err  # type: ignore[misc]
     completion = client.chat.completions.create(
         model=model,
         messages=messages,  # type: ignore[arg-type]

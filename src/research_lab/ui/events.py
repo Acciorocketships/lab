@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 
 from research_lab import db
@@ -33,21 +34,130 @@ def format_cycle_header(cycle: int, worker: str, task: str) -> str:
     pad = "─" * max(1, 50 - len(worker) - len(str(cycle)))
     return (
         f"\n  [bold]── cycle {cycle} · {worker} {pad}[/]\n"
-        f"  [dim]{task[:140]}[/]"
+        f"  [dim]{task}[/]"
     )
 
 
 def format_stream_chunk(chunk: str) -> str:
-    """A single streaming output line from a worker process."""
-    text = chunk.rstrip()[:200]
+    """A single streaming output line from a worker process (plain text fallback)."""
+    text = chunk.rstrip()
     if not text:
         return ""
     return f"  [dim]┊ {text}[/]"
 
 
-def format_worker_done(elapsed_sec: float, ok: bool = True) -> str:
-    """Summary line after worker completes."""
+def format_worker_done(elapsed_sec: float, ok: bool = True, result_text: str = "") -> str:
+    """Summary line after worker completes, optionally with a result excerpt."""
     t = f"{elapsed_sec:.1f}s"
     if ok:
-        return f"  [green]✓[/] [dim]Done ({t})[/]"
-    return f"  [red]✗[/] [dim]Failed ({t})[/]"
+        line = f"  [green]✓[/] [dim]Done ({t})[/]"
+    else:
+        line = f"  [red]✗[/] [dim]Failed ({t})[/]"
+    if result_text:
+        excerpt = " ".join(result_text.strip().split())[:200]
+        if excerpt:
+            line += f"\n  [dim]  {excerpt}[/]"
+    return line
+
+
+# ---------------------------------------------------------------------------
+# Stream-JSON chunk parsing (tool call activity for the live status line)
+# ---------------------------------------------------------------------------
+
+_TOOL_LABELS: dict[str, tuple[str, tuple[str, ...]]] = {
+    "Read": ("Reading", ("file_path", "path")),
+    "View": ("Reading", ("file_path", "path")),
+    "Write": ("Writing", ("file_path", "path")),
+    "Create": ("Creating", ("file_path", "path")),
+    "Edit": ("Editing", ("file_path", "path")),
+    "Replace": ("Editing", ("file_path", "path")),
+    "StrReplace": ("Editing", ("file_path", "path")),
+    "MultiEdit": ("Editing", ("file_path", "path")),
+    "Bash": ("Running", ("command",)),
+    "Shell": ("Running", ("command",)),
+    "Execute": ("Running", ("command",)),
+    "Grep": ("Searching", ("pattern", "query")),
+    "Search": ("Searching", ("pattern", "query")),
+    "RipGrep": ("Searching", ("pattern", "query")),
+    "Glob": ("Finding files", ("pattern", "glob_pattern")),
+    "ListFiles": ("Listing", ("path", "directory")),
+    "TodoWrite": ("Planning", ()),
+    "WebSearch": ("Web search", ("search_term", "query")),
+    "WebFetch": ("Fetching", ("url",)),
+    "Task": ("Dispatching agent", ("description",)),
+    "SemanticSearch": ("Semantic search", ("query",)),
+}
+
+
+def _format_tool_use(name: str, input_data: dict) -> str:
+    label_info = _TOOL_LABELS.get(name)
+    if label_info is None:
+        return name
+    verb, keys = label_info
+    for key in keys:
+        val = input_data.get(key, "")
+        if val:
+            val_str = str(val)
+            if len(val_str) > 80:
+                val_str = val_str[:77] + "…"
+            return f"{verb} {val_str}"
+    return verb
+
+
+def parse_stream_event(chunk: str) -> tuple[str, str] | None:
+    """Parse a stream-json chunk and return ``(event_type, display_text)`` or
+    *None* to skip.  ``event_type`` is ``"tool"`` or ``"text"``.
+    """
+    text = chunk.strip()
+    if not text:
+        return None
+
+    try:
+        data = json.loads(text)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        clean = text.rstrip()
+        return ("text", clean) if clean else None
+
+    if not isinstance(data, dict):
+        return ("text", str(data))
+
+    typ = data.get("type", "")
+
+    if typ == "assistant":
+        msg = data.get("message", {})
+        parts: list[str] = []
+        for block in msg.get("content", []):
+            if block.get("type") == "tool_use":
+                return ("tool", _format_tool_use(block.get("name", ""), block.get("input", {})))
+            if block.get("type") == "text":
+                t = block.get("text", "").strip()
+                if t:
+                    parts.append(t)
+        if parts:
+            return ("text", " ".join(parts).split("\n")[0][:160])
+        return None
+
+    if typ in ("tool_use", "tool_call"):
+        return (
+            "tool",
+            _format_tool_use(
+                data.get("name", "") or data.get("tool", ""),
+                data.get("input", {}) or data.get("arguments", {}),
+            ),
+        )
+
+    if typ in ("result", "system", "tool_result"):
+        return None
+
+    return None
+
+
+def extract_result_excerpt(summary: str, max_len: int = 200) -> str:
+    """Collapse a worker summary into a short single-line excerpt."""
+    text = summary.strip()
+    if not text:
+        return ""
+    text = " ".join(text.split())
+    if len(text) > max_len:
+        text = text[: max_len - 1] + "…"
+    return text

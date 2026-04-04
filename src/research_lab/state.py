@@ -22,6 +22,7 @@ class ResearchState(TypedDict, total=False):
     orchestrator_reason: str
     rolling_context_summary: str
     last_packet_relpath: str
+    worker_ok: bool
     acceptance_satisfied: bool
     shutdown_requested: bool
     worker_kwargs: dict[str, str]

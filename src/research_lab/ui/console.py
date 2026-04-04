@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import multiprocessing
+import json
 import sqlite3
 import time
 from pathlib import Path
@@ -20,6 +20,7 @@ from research_lab.ui.prompt_text_area import PromptSubmitted, PromptTextArea
 
 if TYPE_CHECKING:
     from research_lab.config import RunConfig
+    from research_lab.loop import SchedulerProcessHandle
 
 CSS = """
 Screen {
@@ -70,6 +71,13 @@ Screen {
 #prompt:focus {
     border: none;
 }
+
+#activity-status {
+    dock: bottom;
+    height: auto;
+    max-height: 2;
+    padding: 0 2;
+}
 """
 
 
@@ -87,7 +95,7 @@ class ResearchConsole(App[None]):
         self.db_path = db_path
         self.cfg = cfg
         self._conn = db.connect_db(db_path)
-        self._scheduler: multiprocessing.Process | None = None
+        self._scheduler: SchedulerProcessHandle | None = None
         self._last_stream_id = 0
         self._last_run_event_id = 0
         self._last_cycle = 0
@@ -95,6 +103,8 @@ class ResearchConsole(App[None]):
         self._worker_start: float = 0.0
         self._project_name = cfg.project_dir.name
         self._model = cfg.openai_model
+        self._auto_restarts = 0
+        self._MAX_AUTO_RESTARTS = 3
 
     def compose(self) -> ComposeResult:
         yield Static("", id="header")
@@ -106,6 +116,7 @@ class ResearchConsole(App[None]):
                 wrap=True,
                 auto_scroll=True,
             )
+        yield Static("", id="activity-status")
         with Container(id="prompt-box"):
             yield Static("❯", id="prompt-indicator")
             yield PromptTextArea(
@@ -137,10 +148,50 @@ class ResearchConsole(App[None]):
         self.query_one("#header", Static).update(hdr)
 
     def _poll(self) -> None:
-        """Periodic poll: update header, run events, and stream chunks."""
+        """Periodic poll: update header, run events, stream chunks, and health check."""
+        self._check_scheduler_health()
         self._refresh_header()
         self._poll_run_events()
         self._poll_stream()
+
+    def _check_scheduler_health(self) -> None:
+        """Detect a crashed scheduler subprocess and auto-restart when possible."""
+        if self._scheduler is None:
+            return
+        if self._scheduler.is_alive():
+            return
+        self._scheduler = None
+        try:
+            mode = db.get_system_state(self._conn).get("control_mode", "paused")
+        except sqlite3.OperationalError:
+            return
+        if mode != "active":
+            return
+        log = self.query_one("#activity", RichLog)
+        if self._auto_restarts >= self._MAX_AUTO_RESTARTS:
+            log.write(
+                "\n  [red]⚠ Agent process crashed repeatedly. Use [bold]/start[/] to restart.[/]"
+            )
+            db.set_control_mode(self._conn, "paused")
+            self._conn.commit()
+            return
+        self._auto_restarts += 1
+        log.write(
+            f"\n  [red]⚠ Agent process exited unexpectedly. "
+            f"Restarting… ({self._auto_restarts}/{self._MAX_AUTO_RESTARTS})[/]"
+        )
+        self._restart_scheduler()
+
+    def _restart_scheduler(self) -> None:
+        from research_lab.loop import spawn_scheduler
+        from research_lab.global_config import project_researcher_root
+
+        researcher_root = project_researcher_root(self.cfg.project_dir)
+        db.enqueue_event(self._conn, "resume", None)
+        self._conn.commit()
+        self._scheduler = spawn_scheduler(
+            self.db_path, researcher_root, self.cfg.project_dir, self.cfg,
+        )
 
     def _poll_run_events(self) -> None:
         """Check for new orchestrator / worker lifecycle events."""
@@ -148,7 +199,7 @@ class ResearchConsole(App[None]):
         try:
             rows = list(
                 self._conn.execute(
-                    "SELECT id, ts, cycle, kind, worker, roadmap_step, task, summary "
+                    "SELECT id, ts, cycle, kind, worker, roadmap_step, task, summary, payload_json "
                     "FROM run_events WHERE id > ? ORDER BY id ASC LIMIT 50",
                     (self._last_run_event_id,),
                 )
@@ -171,21 +222,38 @@ class ResearchConsole(App[None]):
                     log.write(events.format_cycle_header(cycle, worker, task))
             elif kind == "worker":
                 elapsed = time.time() - self._worker_start if self._worker_start else 0
-                ok = "error" not in (row["summary"] or "").lower()
-                log.write(events.format_worker_done(elapsed, ok))
+                payload: dict = {}
+                try:
+                    payload = json.loads(row["payload_json"]) if row["payload_json"] else {}
+                except (json.JSONDecodeError, TypeError):
+                    pass
+                ok = payload.get("worker_ok", True)
+                excerpt = events.extract_result_excerpt(row["summary"] or "")
+                log.write(events.format_worker_done(elapsed, ok, excerpt))
+                self.query_one("#activity-status", Static).update("")
 
     def _poll_stream(self) -> None:
-        """Read new streaming chunks from the worker_stream table."""
-        log = self.query_one("#activity", RichLog)
+        """Read new streaming chunks from the worker_stream table.
+
+        All stream content updates the live status widget in place rather than
+        appending to the scrollback log, so the UI shows a single continuously-
+        refreshed line instead of an ever-growing list of ``┊`` rows.
+        """
+        status = self.query_one("#activity-status", Static)
         try:
             rows = db.stream_chunks_since(self._conn, self._last_stream_id)
         except sqlite3.OperationalError:
             return
         for row in rows:
             self._last_stream_id = row["id"]
-            line = events.format_stream_chunk(row["chunk"])
-            if line:
-                log.write(line)
+            parsed = events.parse_stream_event(row["chunk"])
+            if parsed is None:
+                continue
+            event_type, text = parsed
+            if event_type == "tool":
+                status.update(f"  [dim]┊[/] [cyan]{text}[/]")
+            elif event_type == "text" and text.strip():
+                status.update(f"  [dim]┊ {text.strip()}[/]")
 
     # --- input handling -------------------------------------------------------
 
@@ -253,20 +321,22 @@ class ResearchConsole(App[None]):
 
     def _cmd_start(self) -> None:
         log = self.query_one("#activity", RichLog)
-        if self._scheduler and self._scheduler.is_alive():
-            log.write("  [dim]Agent is already running.[/]")
+        mode = db.get_system_state(self._conn).get("control_mode", "active")
+        scheduler_alive = bool(self._scheduler and self._scheduler.is_alive())
+
+        if mode != "active" or not scheduler_alive:
+            db.enqueue_event(self._conn, "resume", None)
+            self._conn.commit()
+
+        if scheduler_alive:
+            if mode == "paused":
+                log.write("  [green]Agent resumed.[/]\n")
+            else:
+                log.write("  [dim]Agent is already running.[/]")
             return
 
-        db.enqueue_event(self._conn, "resume", None)
-        self._conn.commit()
-
-        from research_lab.loop import spawn_scheduler
-        from research_lab.global_config import project_researcher_root
-
-        researcher_root = project_researcher_root(self.cfg.project_dir)
-        self._scheduler = spawn_scheduler(
-            self.db_path, researcher_root, self.cfg.project_dir, self.cfg,
-        )
+        self._auto_restarts = 0
+        self._restart_scheduler()
         log.write("  [green]Agent started.[/]\n")
 
     def _cmd_pause(self) -> None:

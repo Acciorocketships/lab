@@ -72,8 +72,9 @@ def run_agent_print(
     *timeout_sec*: cap in seconds, or ``None`` / ``<= 0`` for no cap (default). Env
     ``AIRESEARCHER_CURSOR_TIMEOUT_SEC`` applies when *timeout_sec* is omitted.
     """
+    effective_format = "stream-json" if on_chunk is not None else output_format
     cmd = _build_cmd(
-        prompt, model=model, output_format=output_format, trust=trust, force=force, resume=resume
+        prompt, model=model, output_format=effective_format, trust=trust, force=force, resume=resume
     )
     if cmd is None:
         return {"ok": False, "error": "cursor CLI not found", "stdout": "", "stderr": ""}
@@ -154,6 +155,24 @@ def _run_streaming(
 def _parse_result(returncode: int | None, stdout: str, stderr: str) -> dict[str, Any]:
     out = stdout.strip()
     err = stderr.strip()
+
+    for line in reversed(out.splitlines()):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+            if isinstance(obj, dict) and obj.get("type") == "result":
+                return {
+                    "ok": not obj.get("is_error", False),
+                    "exit_code": returncode or 0,
+                    "stdout": out,
+                    "stderr": err,
+                    "parsed": obj,
+                }
+        except (json.JSONDecodeError, TypeError):
+            continue
+
     parsed: Any = None
     if out:
         try:

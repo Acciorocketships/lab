@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 import time
+import traceback
 from pathlib import Path
 from typing import Any
 
@@ -212,12 +214,22 @@ def execute_worker(
         on_chunk=on_chunk,
     )
     packets.write_worker_output_file(researcher_root, cyc, worker, res)
-    summary = str(res.get("parsed", res))
+    parsed = res.get("parsed")
+    worker_ok = res.get("ok", True)
+    result_text = ""
+    if isinstance(parsed, dict):
+        result_text = parsed.get("result", "") or ""
+        if not result_text and parsed.get("raw"):
+            result_text = str(parsed["raw"])
+    elif isinstance(parsed, str):
+        result_text = parsed
+    summary = result_text or str(parsed or res)
     return {
         "cycle_count": cyc,
         "last_action_summary": summary,
         "last_packet_relpath": relpath,
         "orchestrator_reason": str(state.get("orchestrator_reason", "") or ""),
+        "worker_ok": worker_ok,
     }
 
 
@@ -236,7 +248,10 @@ def update_state(state: ResearchState, *, db_path: Path, researcher_root: Path) 
             roadmap_step=str(state.get("roadmap_step", "")),
             task=str(state.get("orchestrator_task", "")),
             summary=str(state.get("last_action_summary", "")),
-            payload={"last_action_summary": str(state.get("last_action_summary", ""))},
+            payload={
+                "last_action_summary": str(state.get("last_action_summary", "")),
+                "worker_ok": state.get("worker_ok", True),
+            },
             packet_path=pkt_rel,
         )
         if pkt_rel:
@@ -307,23 +322,55 @@ def _state_from_db(db_path: Path) -> ResearchState:
     conn = _conn(db_path)
     try:
         st = db.get_system_state(conn)
+        conn.commit()
         return {
             "current_goal": st.get("task") or st.get("last_message", "") or "continue",
             "current_branch": st.get("current_branch", ""),
             "current_worker": st.get("current_worker", "") or "planner",
             "cycle_count": int(st.get("cycle_count", 0)),
-        "control_mode": st.get("control_mode", "active"),
-        "pending_instructions": [],
-        "last_action_summary": st.get("last_message", ""),
-        "roadmap_step": st.get("roadmap_step", ""),
-        "orchestrator_task": st.get("task", ""),
-        "orchestrator_reason": "",
-        "acceptance_satisfied": False,
-        "shutdown_requested": False,
-        "worker_kwargs": {},
-    }
+            "control_mode": st.get("control_mode", "active"),
+            "pending_instructions": [],
+            "last_action_summary": st.get("last_message", ""),
+            "roadmap_step": st.get("roadmap_step", ""),
+            "orchestrator_task": st.get("task", ""),
+            "orchestrator_reason": "",
+            "acceptance_satisfied": False,
+            "shutdown_requested": False,
+            "worker_kwargs": {},
+        }
     finally:
         conn.close()
+
+
+_log = logging.getLogger(__name__)
+
+_MAX_CONSECUTIVE_ERRORS = 5
+
+
+def _record_cycle_error(db_path: Path, state: ResearchState, tb: str) -> None:
+    """Write a run_event so the console can display the cycle failure."""
+    try:
+        conn = _conn(db_path)
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            cycle = int(state.get("cycle_count", 0)) + 1
+            worker = state.get("current_worker", "unknown")
+            db.append_run_event(
+                conn,
+                cycle=cycle,
+                kind="worker",
+                worker=worker,
+                roadmap_step=str(state.get("roadmap_step", "")),
+                task=str(state.get("orchestrator_task", "")),
+                summary=f"cycle crashed: {tb.splitlines()[-1][:200]}",
+                payload={"worker_ok": False, "error": tb[-2000:]},
+                packet_path=None,
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass
 
 
 def run_loop(
@@ -342,17 +389,50 @@ def run_loop(
         researcher_root=researcher_root,
         project_dir=project_dir,
     )
+    consecutive_errors = 0
     while True:
-        conn = _conn(db_path)
-        try:
-            mode = db.get_system_state(conn)["control_mode"]
-        finally:
-            conn.close()
+        state = _state_from_db(db_path)
+        mode = state.get("control_mode", "active")
         if mode == "paused":
-            time.sleep(0.5)
-            continue
+            event_updates = ingest_events(state, db_path=db_path, researcher_root=researcher_root)
+            mode = str(event_updates.get("control_mode", mode))
+            if mode == "paused":
+                time.sleep(0.5)
+                continue
+            if mode == "shutdown":
+                break
+            state = _state_from_db(db_path)
         if mode == "shutdown":
             break
-        out = app.invoke(_state_from_db(db_path))
+        try:
+            out = app.invoke(state)
+            consecutive_errors = 0
+        except Exception:
+            consecutive_errors += 1
+            tb = traceback.format_exc()
+            _log.error("Cycle %d failed:\n%s", state.get("cycle_count", 0) + 1, tb)
+            _record_cycle_error(db_path, state, tb)
+            if consecutive_errors >= _MAX_CONSECUTIVE_ERRORS:
+                _log.error(
+                    "Hit %d consecutive cycle errors — pausing scheduler.",
+                    _MAX_CONSECUTIVE_ERRORS,
+                )
+                conn = _conn(db_path)
+                try:
+                    conn.execute("BEGIN IMMEDIATE")
+                    db.set_control_mode(conn, "paused")
+                    conn.commit()
+                finally:
+                    conn.close()
+                break
+            time.sleep(min(2 ** consecutive_errors, 30))
+            continue
         if out.get("acceptance_satisfied"):
+            conn = _conn(db_path)
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                db.set_control_mode(conn, "paused")
+                conn.commit()
+            finally:
+                conn.close()
             break
