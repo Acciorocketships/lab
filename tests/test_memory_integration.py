@@ -64,41 +64,7 @@ def test_context_summary_overwrite_cycle(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 3. Episode accumulation
-# ---------------------------------------------------------------------------
-
-
-def test_episode_accumulation(tmp_path: Path) -> None:
-    """20 append_episode_index_entry calls; index.md preserves all entries in order."""
-    memory.ensure_memory_layout(tmp_path)
-    workers = ["planner", "researcher", "executer", "implementer", "debugger"]
-
-    for cycle in range(1, 21):
-        w = workers[cycle % len(workers)]
-        memory.append_episode_index_entry(
-            tmp_path,
-            cycle=cycle,
-            worker=w,
-            task=f"Task_{cycle:03d}",
-            reason=f"Reason_{cycle:03d}",
-            episode_relpath=memory.episodes_cycle_relpath(cycle=cycle, worker=w),
-        )
-
-    idx_path = memory.episodes_dir(tmp_path) / "index.md"
-    text = idx_path.read_text(encoding="utf-8")
-    for cycle in range(1, 21):
-        w = workers[cycle % len(workers)]
-        assert f"Cycle {cycle}" in text, f"Missing cycle {cycle}"
-        assert f"Task_{cycle:03d}" in text
-        assert f"Reason_{cycle:03d}" in text
-        assert f"cycle_{cycle:06d}/{w}/packet.md" in text
-        assert f"cycle_{cycle:06d}/{w}/worker_output.json" in text
-
-    _log("episode_accumulation", {"entries": 20, "index_chars": len(text)})
-
-
-# ---------------------------------------------------------------------------
-# 4. Extended memory isolation
+# 3. Extended memory isolation
 # ---------------------------------------------------------------------------
 
 
@@ -134,7 +100,7 @@ def test_extended_memory_isolation(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 5. Branch memory write / read
+# 4. Branch memory write / read
 # ---------------------------------------------------------------------------
 
 
@@ -163,7 +129,7 @@ def test_branch_memory_write_read(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 6. Lesson append ordering
+# 5. Lesson append ordering
 # ---------------------------------------------------------------------------
 
 
@@ -186,45 +152,7 @@ def test_lesson_append_ordering(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 7. User instruction lifecycle
-# ---------------------------------------------------------------------------
-
-
-def test_user_instruction_lifecycle(tmp_path: Path) -> None:
-    """Write instruction -> pending=True -> clear -> pending=False."""
-    memory.ensure_memory_layout(tmp_path)
-    assert not memory.user_instructions_new_has_pending(tmp_path)
-
-    memory.write_user_instruction_new_section(tmp_path, "Run ablation study on dropout rates")
-    assert memory.user_instructions_new_has_pending(tmp_path)
-
-    memory.write_user_instruction_new_section(tmp_path, "Also compare with baseline")
-    text = helpers.read_text(memory.state_dir(tmp_path) / "user_instructions.md")
-    assert "Run ablation study on dropout rates" in text
-    assert "Also compare with baseline" in text
-
-    # Simulate clearing: rewrite the file without bullets under ## New
-    cleared = (
-        "# User instructions\n\n"
-        "## New\n\n"
-        "## In progress\n\n"
-        "- Run ablation study on dropout rates\n"
-        "- Also compare with baseline\n\n"
-        "## Completed\n\n"
-    )
-    helpers.write_text(memory.state_dir(tmp_path) / "user_instructions.md", cleared)
-    assert not memory.user_instructions_new_has_pending(tmp_path)
-
-    _log("user_instruction_lifecycle", {
-        "instructions_written": 2,
-        "pending_after_write": True,
-        "pending_after_clear": False,
-        "file_chars": len(cleared),
-    })
-
-
-# ---------------------------------------------------------------------------
-# 8. Reset preserves research_idea and preferences
+# 6. Reset preserves research_idea and preferences
 # ---------------------------------------------------------------------------
 
 

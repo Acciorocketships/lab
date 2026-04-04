@@ -38,10 +38,6 @@ def analyze_memory_fidelity() -> str:
     if data:
         lines.append(f"- **Context summary overwrite**: {data['cycles']} cycles tested, each overwrite fully replaced prior content.")
 
-    data = _load("episode_accumulation")
-    if data:
-        lines.append(f"- **Episode accumulation**: {data['entries']} entries, index grew to {data['index_chars']} chars.")
-
     data = _load("extended_memory_isolation")
     if data:
         leaked = data.get("secret_in_ctx") or data.get("secret_in_pkt")
@@ -78,21 +74,10 @@ def analyze_context_budgets() -> str:
             for name, size in sorted(data["section_sizes"].items(), key=lambda x: -x[1]):
                 lines.append(f"  - `{name}`: ~{size} chars")
 
-    data = _load("orchestrator_hard_cap")
-    if data:
-        lines.append(f"- **Hard cap truncation**: raw context was {data['raw_ctx_len']} chars, "
-                      f"truncated to {data['truncated_len']}. "
-                      f"**{data['loss_pct']}%** of content lost to the 12,000-char cap.")
-
     data = _load("packet_budget")
     if data:
         lines.append(f"- **Packet budget**: {data['pkt_len']} chars vs {data['budget']} budget. "
                       f"Header present: {data['header_present']}, objective present: {data['objective_present']}.")
-
-    data = _load("packet_trim")
-    if data:
-        lines.append(f"- **Packet trimming**: {data['original_len']} chars -> {data['trimmed_len']} chars. "
-                      f"Head preserved: {data['head_preserved']}, tail preserved: {data['tail_preserved']}.")
 
     data = _load("context_summary_compression")
     if data:
@@ -243,27 +228,13 @@ def analyze_utilization() -> str:
 def analyze_user_instructions() -> str:
     lines = [_section("User Instruction Lifecycle")]
 
-    data = _load("user_instruction_lifecycle")
-    if data:
-        lines.append(f"- **Instructions written**: {data.get('instructions_written', '?')}")
-        lines.append(f"- **Pending after write**: {data.get('pending_after_write', '?')}")
-        lines.append(f"- **Pending after clear**: {data.get('pending_after_clear', '?')}")
-
-    data = _load("user_instruction_forces_planner")
-    if data:
-        lines.append(f"- **Planner override**: orchestrator chose `{data.get('original_worker')}`, "
-                      f"system overrode to `{data.get('overridden_worker')}`")
-
-    data = _load("user_instruction_full_lifecycle")
-    if data:
-        lines.append(f"- **Full lifecycle test**: instruction \"{data.get('instruction', '?')}\"")
-        lines.append(f"  - Pending after enqueue: {data.get('pending_after_enqueue')}")
-        lines.append(f"  - Overridden to planner: {data.get('override_to_planner')}")
-        lines.append(f"  - Pending after clear: {data.get('pending_after_clear')}")
-        lines.append(f"  - Integrated into plan: {data.get('in_plan')}")
-        lines.append(f"  - Next cycle not overridden: {data.get('next_worker_not_overridden')}")
-    else:
-        lines.append("- Full lifecycle log: *not found*")
+    lines.append(
+        "- Graph-level coverage (ingest event → planner override → second cycle respects orchestrator): "
+        "`pytest tests/test_e2e_toy_problem.py::test_user_instruction_override_through_real_graph -v`"
+    )
+    lines.append(
+        "- File-level pending detection: `pytest tests/test_memory.py::test_user_instructions_new_has_pending -v`"
+    )
 
     return "\n".join(lines)
 
@@ -369,7 +340,10 @@ could proactively trigger a consolidation cycle or increase compression aggressi
 def main() -> None:
     if not LOG_DIR.exists():
         print(f"No logs directory at {LOG_DIR}. Run the tests first:")
-        print("  pytest tests/test_memory_integration.py tests/test_context_integration.py tests/test_context_analysis.py -v -s")
+        print(
+            "  pytest tests/test_memory_integration.py tests/test_context_integration.py "
+            "tests/test_packets.py tests/test_e2e_toy_problem.py -v -s"
+        )
         sys.exit(1)
 
     log_files = list(LOG_DIR.glob("*.json"))

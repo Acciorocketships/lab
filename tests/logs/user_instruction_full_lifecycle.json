@@ -1,8 +1,0 @@
-{
-  "instruction": "Add ablation study to experiments",
-  "pending_after_enqueue": true,
-  "override_to_planner": true,
-  "pending_after_clear": false,
-  "in_plan": true,
-  "next_worker_not_overridden": true
-}

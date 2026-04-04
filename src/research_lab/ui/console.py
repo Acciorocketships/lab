@@ -161,13 +161,14 @@ class ResearchConsole(App[None]):
         if self._scheduler.is_alive():
             return
         self._scheduler = None
+        log = self.query_one("#activity", RichLog)
+        self._revert_to_checkpoint(log)
         try:
             mode = db.get_system_state(self._conn).get("control_mode", "paused")
         except sqlite3.OperationalError:
             return
         if mode != "active":
             return
-        log = self.query_one("#activity", RichLog)
         if self._auto_restarts >= self._MAX_AUTO_RESTARTS:
             log.write(
                 "\n  [red]⚠ Agent process crashed repeatedly. Use [bold]/start[/] to restart.[/]"
@@ -341,16 +342,19 @@ class ResearchConsole(App[None]):
 
     def _cmd_pause(self) -> None:
         log = self.query_one("#activity", RichLog)
-        db.enqueue_event(self._conn, "pause", None)
+        self._kill_scheduler()
+        self._revert_to_checkpoint(log)
+        db.set_control_mode(self._conn, "paused")
         self._conn.commit()
         log.write("  [yellow]Agent paused.[/]")
 
     def _cmd_exit(self) -> None:
         log = self.query_one("#activity", RichLog)
-        db.enqueue_event(self._conn, "pause", None)
-        self._conn.commit()
         log.write("  [dim]Shutting down...[/]")
         self._kill_scheduler()
+        self._revert_to_checkpoint(log)
+        db.set_control_mode(self._conn, "paused")
+        self._conn.commit()
         self.set_timer(0.3, self.exit)
 
     def _cmd_status(self) -> None:
@@ -429,15 +433,38 @@ class ResearchConsole(App[None]):
     # --- lifecycle ------------------------------------------------------------
 
     def _kill_scheduler(self) -> None:
+        """Immediately kill the scheduler and all child worker processes."""
         if self._scheduler and self._scheduler.is_alive():
-            self._scheduler.terminate()
-            self._scheduler.join(timeout=3)
+            self._scheduler.kill_group()
         self._scheduler = None
 
+    def _revert_to_checkpoint(self, log: RichLog) -> None:
+        """Restore the working tree to the last completed-cycle checkpoint and
+        roll back the DB to match."""
+        from research_lab import git_checkpoint
+
+        if not git_checkpoint.has_checkpoint(self.cfg.project_dir):
+            return
+        cycle = git_checkpoint.revert_to_checkpoint(self.cfg.project_dir)
+        if cycle is None:
+            return
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            db.rollback_to_cycle(self._conn, cycle)
+            self._conn.commit()
+        except Exception:
+            try:
+                self._conn.rollback()
+            except Exception:
+                pass
+        log.write(f"  [yellow]Reverted to checkpoint (cycle {cycle}).[/]")
+
     def action_quit(self) -> None:
-        db.enqueue_event(self._conn, "pause", None)
-        self._conn.commit()
+        log = self.query_one("#activity", RichLog)
         self._kill_scheduler()
+        self._revert_to_checkpoint(log)
+        db.set_control_mode(self._conn, "paused")
+        self._conn.commit()
         self.exit()
 
 

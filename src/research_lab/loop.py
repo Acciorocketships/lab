@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import sys
 from dataclasses import asdict
@@ -18,7 +19,12 @@ if TYPE_CHECKING:
 
 
 class SchedulerProcessHandle:
-    """Small adapter so the console can manage a subprocess like a process."""
+    """Small adapter so the console can manage a subprocess like a process.
+
+    The subprocess is started in its own session / process group so that
+    ``kill_group()`` can tear down the scheduler **and** any child worker
+    processes (cursor / claude CLI) in one shot.
+    """
 
     def __init__(self, proc: subprocess.Popen[object]) -> None:
         self._proc = proc
@@ -35,6 +41,22 @@ class SchedulerProcessHandle:
             self._proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
             return
+
+    def kill_group(self) -> None:
+        """SIGKILL the entire process group (scheduler + child workers)."""
+        if self._proc.poll() is not None:
+            return
+        try:
+            os.killpg(self._proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            try:
+                self._proc.kill()
+            except OSError:
+                pass
+        try:
+            self._proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
 
 
 def _run_scheduler(db_path: Path, researcher_root: Path, project_dir: Path, cfg: RunConfig) -> None:
@@ -107,6 +129,7 @@ def spawn_scheduler(
         env=_subprocess_env(),
         stdout=log_fh,
         stderr=log_fh,
+        start_new_session=True,
     )
     return SchedulerProcessHandle(proc)
 

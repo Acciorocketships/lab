@@ -252,6 +252,17 @@ def stream_chunks_since(conn: sqlite3.Connection, after_id: int = 0) -> list[sql
     )
 
 
+def rollback_to_cycle(conn: sqlite3.Connection, cycle: int) -> None:
+    """Reset system_state to *cycle* and purge run_events / stream rows beyond it."""
+    conn.execute(
+        "UPDATE system_state SET cycle_count = ?, control_mode = 'paused', "
+        "current_worker = '', last_message = '' WHERE id = 1",
+        (cycle,),
+    )
+    conn.execute("DELETE FROM run_events WHERE cycle > ?", (cycle,))
+    conn.execute("DELETE FROM worker_stream WHERE cycle > ?", (cycle,))
+
+
 def clear_stream(conn: sqlite3.Connection, cycle: int | None = None) -> None:
     """Delete stream rows, optionally only for a given cycle."""
     if cycle is not None:

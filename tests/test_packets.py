@@ -33,6 +33,25 @@ def test_build_packet_budget(tmp_path: Path) -> None:
     assert len(text) <= 2100
 
 
+def test_build_worker_packet_trim_keeps_head_and_tail(tmp_path: Path) -> None:
+    """When over budget, trimming keeps start and end of the packet (public API)."""
+    memory.ensure_memory_layout(tmp_path)
+    head = "HEAD_MARKER_TRIM_TEST"
+    tail = "TAIL_MARKER_TRIM_TEST"
+    (memory.state_dir(tmp_path) / "research_idea.md").write_text(
+        head + ("m" * 25_000) + tail, encoding="utf-8"
+    )
+    text = packets.build_worker_packet(
+        worker="planner",
+        researcher_root=tmp_path,
+        task="Plan",
+        max_chars=8000,
+    )
+    assert head in text
+    assert tail in text
+    assert "truncated for context budget" in text
+
+
 def test_build_packet_no_limits_by_default(tmp_path: Path) -> None:
     """Default packet builder does not trim; providers enforce context limits instead."""
     memory.ensure_memory_layout(tmp_path)

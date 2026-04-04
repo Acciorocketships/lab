@@ -10,7 +10,7 @@ from typing import Any
 
 from langgraph.graph import END, START, StateGraph
 
-from research_lab import control, db, memory, orchestrator, packets
+from research_lab import control, db, git_checkpoint, memory, orchestrator, packets
 from research_lab.agents import (
     base as agents_base,
     critic as critic_mod,
@@ -373,6 +373,22 @@ def _record_cycle_error(db_path: Path, state: ResearchState, tb: str) -> None:
         pass
 
 
+def _revert_to_last_checkpoint(project_dir: Path, db_path: Path) -> None:
+    """Revert working tree and DB to the last checkpoint (best-effort)."""
+    try:
+        cycle = git_checkpoint.revert_to_checkpoint(project_dir)
+        if cycle is not None:
+            conn = _conn(db_path)
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                db.rollback_to_cycle(conn, cycle)
+                conn.commit()
+            finally:
+                conn.close()
+    except Exception:
+        _log.warning("Revert to checkpoint failed", exc_info=True)
+
+
 def run_loop(
     cfg: RunConfig,
     *,
@@ -412,6 +428,7 @@ def run_loop(
             tb = traceback.format_exc()
             _log.error("Cycle %d failed:\n%s", state.get("cycle_count", 0) + 1, tb)
             _record_cycle_error(db_path, state, tb)
+            _revert_to_last_checkpoint(project_dir, db_path)
             if consecutive_errors >= _MAX_CONSECUTIVE_ERRORS:
                 _log.error(
                     "Hit %d consecutive cycle errors — pausing scheduler.",
@@ -427,6 +444,11 @@ def run_loop(
                 break
             time.sleep(min(2 ** consecutive_errors, 30))
             continue
+
+        cycle = int(out.get("cycle_count", state.get("cycle_count", 0)))
+        worker = str(out.get("current_worker", ""))
+        git_checkpoint.create_checkpoint(project_dir, cycle, worker)
+
         if out.get("acceptance_satisfied"):
             conn = _conn(db_path)
             try:

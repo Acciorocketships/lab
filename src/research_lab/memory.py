@@ -195,34 +195,11 @@ def _default_tier_a_content(name: str) -> str:
 def _default_extended_memory_index() -> str:
     return """# Extended memory index
 
-Catalog of material outside Tier A (`state/*.md`). This file is included **in full** in orchestrator and worker context alongside other Tier A files—keep it readable (paths + short descriptions). When you add long notes under `memory/extended/`, describe them here; open those files with your tools when you need the full text. Layout rules are in the shared prompt (`MEMORY_AND_TIER_A` in `agents/shared_prompt.py`).
+Index of long-form files under `memory/extended/`. This file is included **in full** in orchestrator and worker context alongside other Tier A files, so keep it concise and high-signal: path plus a short description, or a few one-line bullets, for what the full file contains. Use it to point from Tier A to longer logs, artifacts, findings, notes, or transcripts that are too large to inline. Layout rules are in the shared prompt (`MEMORY_AND_TIER_A` in `agents/shared_prompt.py`).
 
 ## `memory/extended/`
 
-- *(path + what it contains)*
-
-
-## `memory/branch/`
-
-Per active git branch (`/` → `__` in filenames). Optional list of branch files you care about:
-
-- *(none yet)*
-
-## `memory/episodes/`
-
-Worker runs: see `memory/episodes/index.md` and `memory/episodes/README.md`. Optional pointers to specific cycles:
-
-- *(none yet)*
-
-## `memory/skills/`
-
-Use **`skills_index.md`** (Tier A) as the canonical table; add cross-links here only if it helps navigation.
-
-## Experiments
-
-Under `data/runtime/experiments/` — link noteworthy runs here or from Tier A when useful:
-
-- *(none yet)*
+- *(path + what it contains / why it matters)*
 """
 
 
