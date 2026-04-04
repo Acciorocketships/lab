@@ -29,19 +29,55 @@ class LabConfigError(RuntimeError):
 DEFAULT_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 
 
-def prompt_multiline_preference(click: object, *, intro: str) -> str:
-    """Open ``$EDITOR`` for multiline text; fall back to a single-line prompt if the editor exits without a save."""
-    c = click
-    c.echo("")
-    c.echo(intro)
-    edited = c.edit("", extension=".txt", require_save=False)
-    if edited is None:
-        edited = c.prompt(
-            "Editor unavailable or cancelled — enter as a single line (or leave blank)",
-            default="",
-            show_default=False,
+def read_multiline_terminal(click_mod: object | None = None) -> str:
+    """Read multiline text with full line-editing via prompt_toolkit.
+
+    Arrow keys navigate freely between lines; Esc then Enter submits.
+    Falls back to raw stdin if prompt_toolkit is unavailable or the
+    session is non-interactive.
+    """
+    import sys
+
+    try:
+        from prompt_toolkit import PromptSession
+
+        if not sys.stdin.isatty():
+            raise RuntimeError("non-interactive")
+
+        hint = "  Type below (arrow keys to navigate). Press [Esc] then [Enter] to submit.\n"
+        if click_mod is not None:
+            click_mod.echo(hint)
+        else:
+            print(hint, file=sys.stderr)
+
+        session = PromptSession()
+        result = session.prompt(
+            "❯ ",
+            multiline=True,
+            prompt_continuation="  ",
         )
-    return (edited or "").strip()
+        return (result or "").strip()
+    except (ImportError, RuntimeError):
+        pass
+    except (KeyboardInterrupt, EOFError):
+        return ""
+
+    if click_mod is not None:
+        click_mod.echo(
+            "Enter or paste text below, then end input with "
+            "Ctrl+D (macOS/Linux) or Ctrl+Z then Enter (Windows)."
+        )
+    else:
+        print(
+            "Enter or paste text below, then end input with "
+            "Ctrl+D (macOS/Linux) or Ctrl+Z then Enter (Windows).",
+            file=sys.stderr,
+        )
+    try:
+        data = sys.stdin.read()
+    except (KeyboardInterrupt, EOFError):
+        return ""
+    return (data or "").strip()
 
 
 def ensure_console_ready(project_dir: Path) -> tuple[Path, RunConfig]:

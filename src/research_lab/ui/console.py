@@ -1,4 +1,4 @@
-"""Redesigned Textual TUI: Claude Code-inspired layout with streaming output."""
+"""Textual TUI: Claude Code-inspired layout with streaming output."""
 
 from __future__ import annotations
 
@@ -10,12 +10,13 @@ from typing import TYPE_CHECKING
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical
-from textual.widgets import Input, RichLog, Static
+from textual.containers import Container, Vertical
+from textual.widgets import RichLog, Static
 
 from research_lab import db
 from research_lab.runner import reset_project_preserving_research_idea
 from research_lab.ui import events
+from research_lab.ui.prompt_text_area import PromptSubmitted, PromptTextArea
 
 if TYPE_CHECKING:
     from research_lab.config import RunConfig
@@ -28,29 +29,42 @@ Screen {
 #header {
     height: 1;
     dock: top;
-    background: $primary-background;
+    background: $panel;
     color: $text-muted;
-    padding: 0 1;
+    padding: 0 2;
 }
 
 #activity {
     min-height: 1;
+    padding: 0 1;
+    scrollbar-size: 1 1;
 }
 
-#statusbar {
-    height: 1;
+#prompt-box {
     dock: bottom;
-    background: $primary-background;
-    color: $text-muted;
+    layout: horizontal;
+    height: 3;
+    max-height: 14;
+    min-height: 3;
+    margin: 0 1;
     padding: 0 1;
+    border: round $primary;
+    background: $boost;
+}
+
+#prompt-indicator {
+    width: 2;
+    height: 1;
+    color: $accent;
+    content-align: left top;
 }
 
 #prompt {
-    dock: bottom;
+    width: 1fr;
     height: 1;
-    margin: 0;
     border: none;
-    background: $surface;
+    background: transparent;
+    padding: 0;
 }
 
 #prompt:focus {
@@ -85,16 +99,34 @@ class ResearchConsole(App[None]):
     def compose(self) -> ComposeResult:
         yield Static("", id="header")
         with Vertical():
-            yield RichLog(id="activity", highlight=False, markup=True, wrap=True, auto_scroll=True)
-        yield Static("", id="statusbar")
-        yield Input(placeholder="> ", id="prompt")
+            yield RichLog(
+                id="activity",
+                highlight=False,
+                markup=True,
+                wrap=True,
+                auto_scroll=True,
+            )
+        with Container(id="prompt-box"):
+            yield Static("❯", id="prompt-indicator")
+            yield PromptTextArea(
+                "",
+                id="prompt",
+                placeholder="Type here · Enter to send · Shift+Enter for new line",
+                compact=True,
+                show_line_numbers=False,
+            )
 
     def on_mount(self) -> None:
         self._refresh_header()
         log = self.query_one("#activity", RichLog)
         log.write("")
-        log.write("  [bold]Welcome to lab.[/] Type [bold]/start[/] to begin, or type an instruction.")
-        log.write("  Type [bold]/help[/] for available commands.\n")
+        log.write("  [bold]Welcome to lab.[/]")
+        log.write("  Type [bold]/start[/] to begin, or type an instruction.")
+        log.write(
+            "  [dim]Enter[/] sends · [dim]Shift+Enter[/] for newline · "
+            "[dim]/help[/] for commands\n"
+        )
+        self.query_one("#prompt", PromptTextArea).focus()
         self.set_interval(0.3, self._poll)
 
     def _refresh_header(self) -> None:
@@ -104,17 +136,9 @@ class ResearchConsole(App[None]):
             hdr = "[bold]lab[/]"
         self.query_one("#header", Static).update(hdr)
 
-    def _refresh_status(self) -> None:
-        try:
-            line = events.status_line(self._conn)
-        except sqlite3.OperationalError:
-            line = "[dim]waiting for DB...[/]"
-        self.query_one("#statusbar", Static).update(line)
-
     def _poll(self) -> None:
-        """Periodic poll: update header, status bar, run events, and stream chunks."""
+        """Periodic poll: update header, run events, and stream chunks."""
         self._refresh_header()
-        self._refresh_status()
         self._poll_run_events()
         self._poll_stream()
 
@@ -165,23 +189,51 @@ class ResearchConsole(App[None]):
 
     # --- input handling -------------------------------------------------------
 
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        line = event.value.strip()
-        event.input.value = ""
-        if not line:
+    def on_prompt_submitted(self, event: PromptSubmitted) -> None:
+        ta = event.sender
+        text = ta.text
+        ta.text = ""
+        ta._adjust_height()
+        self._submit_prompt_text(text)
+
+    def _submit_prompt_text(self, raw: str) -> None:
+        text = raw.strip()
+        if not text:
             return
+
+        lines = text.splitlines()
+        first = lines[0].strip()
+        tail = "\n".join(lines[1:]).strip() if len(lines) > 1 else ""
 
         log = self.query_one("#activity", RichLog)
 
-        if not line.startswith("/"):
-            db.enqueue_event(self._conn, "instruction", line)
+        if not first.startswith("/"):
+            db.enqueue_event(self._conn, "instruction", text)
             self._conn.commit()
-            log.write(f"\n  [green]\u276f[/] {line[:200]}")
+            preview = text if len(text) <= 200 else text[:200] + "…"
+            log.write(f"\n  [green]❯[/] {preview}")
             return
 
-        parts = line.split(maxsplit=1)
+        parts = first.split(maxsplit=1)
         cmd = parts[0].lower().removeprefix("/")
         rest = parts[1] if len(parts) > 1 else ""
+
+        if cmd == "instruction":
+            body = (rest + "\n" + tail if tail else rest).strip()
+            if not body:
+                log.write("  [red]/instruction[/] requires text")
+                return
+            db.enqueue_event(self._conn, "instruction", body)
+            self._conn.commit()
+            preview = body if len(body) <= 200 else body[:200] + "…"
+            log.write(f"\n  [green]❯[/] {preview}")
+            return
+
+        if tail:
+            log.write(
+                "  [dim]Note: only the first line is used as a slash command; "
+                "omit the leading / for multi-line instructions.[/]"
+            )
 
         handler = {
             "start": self._cmd_start,
@@ -196,10 +248,6 @@ class ResearchConsole(App[None]):
 
         if handler:
             handler()
-        elif cmd == "instruction" and rest:
-            db.enqueue_event(self._conn, "instruction", rest)
-            self._conn.commit()
-            log.write(f"\n  [green]\u276f[/] {rest[:200]}")
         else:
             log.write(f"  [red]Unknown command:[/] /{cmd}")
 
@@ -266,6 +314,7 @@ class ResearchConsole(App[None]):
             "  [bold]/reset[/]        Clear DB and runtime memory; keep research_idea.md + preferences.md\n"
             "  [bold]/help[/]         This message\n"
             "\n  Plain text is queued as an instruction.\n"
+            "  [dim]Enter[/] sends · [dim]Shift+Enter[/] for newline · navigate lines with arrows\n"
         )
 
     def _cmd_backlog(self) -> None:

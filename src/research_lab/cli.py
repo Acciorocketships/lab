@@ -14,7 +14,7 @@ from research_lab.global_config import (
 from research_lab.runner import (
     LabConfigError,
     init_project_at,
-    prompt_multiline_preference,
+    read_multiline_terminal,
     run_interactive_global_setup,
     run_lab_console,
 )
@@ -57,30 +57,14 @@ def init() -> None:
 
     click.echo("")
     click.echo(
-        "Research brief — goal, approach, and what “done” looks like (all in one place). "
-        "Save and close the editor when done (or cancel for a single-line prompt)."
+        "Research brief — goal, approach, and what “done” looks like (all in one place)."
     )
-    edited = click.edit("", extension=".md", require_save=False)
-    if edited is None:
-        edited = click.prompt(
-            "Research brief (single line)",
-            default="",
-            show_default=False,
-        )
-    brief = (edited or "").strip()
+    brief = read_multiline_terminal(click).strip()
     if not brief:
         click.echo("Error: research brief is required.", err=True)
         raise SystemExit(1)
 
-    prefs = prompt_multiline_preference(
-        click,
-        intro=(
-            "Project-specific preferences (optional): editor opens — paste multiple lines, or leave empty "
-            "to use global code style only. Save and close when done."
-        ),
-    )
-
-    pcfg = ProjectConfig(research_idea=brief, preferences=prefs)
+    pcfg = ProjectConfig(research_idea=brief, preferences="")
 
     try:
         root = init_project_at(project_dir, pcfg, overwrite=overwrite)
@@ -90,6 +74,9 @@ def init() -> None:
 
     click.echo(f"\nProject initialized at {root}")
     click.echo("Run `lab` to start the console.")
+    click.echo(
+        f"Optional: add project-specific preferences under [project] in {root / 'config.toml'}."
+    )
 
 
 if __name__ == "__main__":
