@@ -113,7 +113,7 @@ def spawn_scheduler(
     that subprocess output (logging warnings, tracebacks) never bleeds through
     the Textual TUI.
     """
-    memory.ensure_memory_layout(researcher_root)
+    memory.ensure_memory_layout(researcher_root, project_dir=project_dir)
     log_path = researcher_root / "data" / "scheduler.log"
     log_fh = open(log_path, "a")  # noqa: SIM115
     proc = subprocess.Popen(

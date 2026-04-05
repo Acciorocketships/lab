@@ -288,7 +288,7 @@ def build_graph(
 ):
     """Compile LangGraph; optional checkpoint_path reserved for durable resume."""
     del checkpoint_path  # wired when enabling SqliteSaver for crash recovery
-    memory.ensure_memory_layout(researcher_root)
+    memory.ensure_memory_layout(researcher_root, project_dir=project_dir)
 
     def n_ingest(s: ResearchState):
         return ingest_events(s, db_path=db_path, researcher_root=researcher_root)

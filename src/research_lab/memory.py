@@ -39,9 +39,9 @@ def research_idea_body_for_project_config(markdown: str) -> str:
     return text
 
 
-def experiments_dir(researcher_root: Path) -> Path:
-    """Experiment artifacts under runtime (see also SQLite ``experiments`` table)."""
-    return researcher_root / "data" / "runtime" / "experiments"
+def experiments_dir(project_dir: Path) -> Path:
+    """Experiment artifacts live in the project directory (visible and git-checkpointed)."""
+    return project_dir / "experiments"
 
 
 def _clear_dir_contents(path: Path, *, keep: frozenset[str] = frozenset()) -> None:
@@ -61,13 +61,15 @@ def reset_runtime_artifacts(
     *,
     preserved_research_idea_md: str,
     preserved_preferences_md: str,
+    project_dir: Path | None = None,
 ) -> None:
     """Remove episodic memory and Tier A except ``research_idea.md`` and ``preferences.md``."""
     _clear_dir_contents(extended_dir(researcher_root))
     _clear_dir_contents(researcher_root / "data" / "runtime" / "memory" / "branch")
     _clear_dir_contents(episodes_dir(researcher_root), keep=frozenset({"README.md"}))
     _clear_dir_contents(skills_dir(researcher_root))
-    _clear_dir_contents(experiments_dir(researcher_root))
+    if project_dir is not None:
+        _clear_dir_contents(experiments_dir(project_dir))
 
     sd = state_dir(researcher_root)
     helpers.ensure_dir(sd)
@@ -113,7 +115,7 @@ def skills_dir(researcher_root: Path) -> Path:
     return researcher_root / "data" / "runtime" / "memory" / "skills"
 
 
-def ensure_memory_layout(researcher_root: Path) -> None:
+def ensure_memory_layout(researcher_root: Path, *, project_dir: Path | None = None) -> None:
     """Create runtime dirs and empty Tier A files if missing."""
     base = researcher_root / "data" / "runtime"
     for sub in (
@@ -122,9 +124,10 @@ def ensure_memory_layout(researcher_root: Path) -> None:
         "memory/branch",
         "memory/episodes",
         "memory/skills",
-        "experiments",
     ):
         helpers.ensure_dir(base / sub)
+    if project_dir is not None:
+        helpers.ensure_dir(experiments_dir(project_dir))
     for name in TIER_A_FILES:
         p = state_dir(researcher_root) / name
         if not p.exists():

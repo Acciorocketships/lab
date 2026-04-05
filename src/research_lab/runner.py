@@ -96,7 +96,7 @@ def ensure_console_ready(project_dir: Path) -> tuple[Path, RunConfig]:
     pcfg = load_project_config(project_dir)
     run_cfg = RunConfig.from_configs(gcfg, pcfg, project_dir)
     researcher_root = project_researcher_root(project_dir)
-    memory.ensure_memory_layout(researcher_root)
+    memory.ensure_memory_layout(researcher_root, project_dir=project_dir)
 
     db_path = researcher_root / "data" / "runtime.db"
     conn = db.connect_db(db_path)
@@ -130,7 +130,7 @@ def run_console_session(
     Use this from tests and scripts that build :class:`RunConfig` directly. Ensures memory layout
     and optionally forces ``control_mode`` to ``paused`` before opening the console.
     """
-    memory.ensure_memory_layout(cfg.researcher_root)
+    memory.ensure_memory_layout(cfg.researcher_root, project_dir=cfg.project_dir)
     if ensure_paused:
         conn = db.connect_db(db_path)
         try:
@@ -182,7 +182,7 @@ def init_project_at(
     run_cfg = RunConfig.from_configs(gcfg, pcfg, project_dir)
     researcher_root = project_researcher_root(project_dir)
     researcher_root.mkdir(parents=True, exist_ok=True)
-    memory.ensure_memory_layout(researcher_root)
+    memory.ensure_memory_layout(researcher_root, project_dir=project_dir)
     seed_tier_a_from_run_config(researcher_root, run_cfg)
     return researcher_root
 
@@ -297,7 +297,7 @@ def bootstrap_bench_project(
     run_cfg = RunConfig.from_configs(gcfg, pcfg, project_dir)
     researcher_root = project_researcher_root(project_dir)
     researcher_root.mkdir(parents=True, exist_ok=True)
-    memory.ensure_memory_layout(researcher_root)
+    memory.ensure_memory_layout(researcher_root, project_dir=project_dir)
     seed_tier_a_from_run_config(researcher_root, run_cfg)
     db_path = researcher_root / "data" / "runtime.db"
     return db_path, run_cfg
@@ -338,5 +338,6 @@ def reset_project_preserving_research_idea(project_dir: Path) -> None:
         researcher_root,
         preserved_research_idea_md=preserved,
         preserved_preferences_md=preserved_prefs,
+        project_dir=project_dir,
     )
-    memory.ensure_memory_layout(researcher_root)
+    memory.ensure_memory_layout(researcher_root, project_dir=project_dir)

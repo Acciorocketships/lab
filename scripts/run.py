@@ -47,7 +47,7 @@ def main() -> None:
     )
     RESEARCHER_ROOT.mkdir(parents=True, exist_ok=True)
     PROJECT_DIR.mkdir(parents=True, exist_ok=True)
-    memory.ensure_memory_layout(RESEARCHER_ROOT)
+    memory.ensure_memory_layout(RESEARCHER_ROOT, project_dir=PROJECT_DIR)
     seed_tier_a_from_run_config(RESEARCHER_ROOT, cfg)
 
     db_path = RESEARCHER_ROOT / "data" / "runtime.db"

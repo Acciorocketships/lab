@@ -15,8 +15,10 @@ def test_new_experiment_id(tmp_path: Path) -> None:
     """Creates folder and row."""
     dbp = tmp_path / "t.db"
     conn = db.connect_db(dbp)
-    eid = experiments.new_experiment_id(conn, tmp_path / "rr")
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    eid = experiments.new_experiment_id(conn, project_dir)
     conn.commit()
     conn.close()
     assert eid.startswith("exp_")
-    assert (tmp_path / "rr" / "data" / "runtime" / "experiments" / eid / "proposal.md").exists()
+    assert (project_dir / "experiments" / eid / "proposal.md").exists()

@@ -10,9 +10,9 @@ import sqlite3
 from research_lab import helpers
 
 
-def new_experiment_id(conn: sqlite3.Connection, researcher_root: Path) -> str:
+def new_experiment_id(conn: sqlite3.Connection, project_dir: Path) -> str:
     """Allocate exp_000001 style id and insert row."""
-    exp_dir = researcher_root / "data" / "runtime" / "experiments"
+    exp_dir = project_dir / "experiments"
     helpers.ensure_dir(exp_dir)
     n = len(list(exp_dir.glob("exp_*"))) + 1
     eid = f"exp_{n:06d}"
