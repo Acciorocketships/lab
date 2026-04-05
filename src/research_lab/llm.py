@@ -12,7 +12,7 @@ from openai import OpenAI
 from pydantic import BaseModel, ValidationError
 
 from research_lab.config import RunConfig
-from research_lab.oauth_pkce import resolve_openai_bearer
+from research_lab.oauth_pkce import oauth_token_file, resolve_openai_bearer
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -70,6 +70,44 @@ def resolve_llm_base_url(cfg: RunConfig) -> str | None:
             or "http://127.0.0.1:11434/v1"
         )
     return cfg.openai_base_url
+
+
+def describe_orchestrator_credential_source(cfg: RunConfig) -> str:
+    """Human-readable label for where :func:`resolve_llm_api_key` will take credentials (no secrets)."""
+    backend = (cfg.orchestrator_backend or "openai").lower()
+    if backend == "openai":
+        if cfg.openai_api_key:
+            return "OpenAI API key from global config ([auth] api_key)"
+        if os.environ.get("OPENAI_API_KEY"):
+            return "OpenAI API key from OPENAI_API_KEY"
+        token_path = oauth_token_file(cfg)
+        if token_path.is_file():
+            return f"OpenAI OAuth token file ({token_path})"
+        return (
+            "No OpenAI credentials (set [auth] api_key, OPENAI_API_KEY, or run OAuth login)"
+        )
+    if backend == "openrouter":
+        if cfg.openrouter_api_key:
+            return "OpenRouter API key from global config ([auth] api_key)"
+        if os.environ.get("OPENROUTER_API_KEY"):
+            return "OpenRouter API key from OPENROUTER_API_KEY"
+        return "No OpenRouter API key (set [auth] api_key or OPENROUTER_API_KEY)"
+    if backend == "local":
+        if cfg.openai_api_key:
+            return "API key from global config ([auth] api_key)"
+        if os.environ.get("OPENAI_API_KEY"):
+            return "OPENAI_API_KEY"
+        if os.environ.get("LOCAL_LLM_API_KEY"):
+            return "LOCAL_LLM_API_KEY"
+        return 'Default local placeholder key ("ollama")'
+    if cfg.openai_api_key:
+        return "OpenAI API key from global config ([auth] api_key)"
+    if os.environ.get("OPENAI_API_KEY"):
+        return "OpenAI API key from OPENAI_API_KEY"
+    token_path = oauth_token_file(cfg)
+    if token_path.is_file():
+        return f"OpenAI OAuth token file ({token_path})"
+    return "No credentials matched for orchestrator backend"
 
 
 def generate(

@@ -93,7 +93,7 @@ def test_existing_codex_token_file_is_upgraded_to_api_bearer(tmp_path: Path, mon
 
     monkeypatch.setattr(
         "research_lab.oauth_pkce.exchange_id_token_for_api_key",
-        lambda cfg, id_token: "exchanged-api-bearer",
+        lambda cfg, id_token, **kwargs: "exchanged-api-bearer",
     )
 
     assert load_and_refresh_token_file(cfg) == "exchanged-api-bearer"

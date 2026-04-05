@@ -11,7 +11,7 @@ MEMORY_AND_TIER_A = """**Tier A** (`state/*.md`) and `memory/extended/`: keep th
 - **`research_idea.md`** — research brief: goals, approach, and implicit success criteria (what “done” means).
 - **`preferences.md`** — user preferences to guide the project; generally not updated by the agents.
 - **`roadmap.md`** — durable end-to-end plan (phases, milestones); include completed lines; on scope change, retcon the **whole** file into one coherent story.
-- **`immediate_plan.md`** — a more granular plan for the current step in the roadmap. when using planning for implementation/other actions, the plan should go here. this is **only** the current chunk; when the chunk finishes, clear/replace.
+- **`immediate_plan.md`** — a more granular plan for the current step in the roadmap. when using planning for implementation/other actions, the plan should go here. this is **only** the current chunk; when the chunk finishes, clear/replace. Prefer iterative chunks that establish a simple working baseline or proof of concept first, then add detail or components in later cycles.
 - **`status.md`** — live snapshot: blockers, current focus, last meaningful change.
 - **`skills_index.md`** — table of `memory/skills/*.md` entries; keep aligned when you add skills.
 - **`lessons.md`** — short durable takeaways; also record abandoned approaches/branches.

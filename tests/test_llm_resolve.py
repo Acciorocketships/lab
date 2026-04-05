@@ -3,7 +3,11 @@
 from pathlib import Path
 
 from research_lab.config import RunConfig
-from research_lab.llm import resolve_llm_api_key, resolve_llm_base_url
+from research_lab.llm import (
+    describe_orchestrator_credential_source,
+    resolve_llm_api_key,
+    resolve_llm_base_url,
+)
 
 
 def _base_cfg(tmp_path: Path, **kwargs: object) -> RunConfig:
@@ -62,3 +66,32 @@ def test_resolve_local_env_base_url(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("LOCAL_LLM_BASE_URL", "http://localhost:8080/v1")
     cfg = _base_cfg(tmp_path, orchestrator_backend="local")
     assert resolve_llm_base_url(cfg) == "http://localhost:8080/v1"
+
+
+def test_describe_openai_prefers_config_key(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    cfg = _base_cfg(tmp_path, openai_api_key="sk-cfg")
+    assert "global config" in describe_orchestrator_credential_source(cfg)
+
+
+def test_describe_openai_env_key(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-env")
+    cfg = _base_cfg(tmp_path, openai_api_key=None)
+    assert "OPENAI_API_KEY" in describe_orchestrator_credential_source(cfg)
+
+
+def test_describe_openai_oauth_file(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    tok = tmp_path / "oauth_tokens.json"
+    tok.write_text("{}", encoding="utf-8")
+    cfg = _base_cfg(tmp_path, openai_api_key=None, oauth_token_path=tok)
+    label = describe_orchestrator_credential_source(cfg)
+    assert "OAuth token file" in label
+    assert str(tok) in label
+
+
+def test_describe_openrouter_env(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk")
+    cfg = _base_cfg(tmp_path, orchestrator_backend="openrouter", openrouter_api_key=None)
+    assert "OPENROUTER_API_KEY" in describe_orchestrator_credential_source(cfg)

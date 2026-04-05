@@ -15,6 +15,7 @@ from research_lab.runner import (
     LabConfigError,
     init_project_at,
     read_multiline_terminal,
+    run_auth_test,
     run_interactive_global_setup,
     run_lab_console,
 )
@@ -37,6 +38,23 @@ def setup() -> None:
     """One-time global setup: model provider, credentials, worker backend."""
     path = run_interactive_global_setup()
     click.echo(f"\nGlobal config saved to {path}")
+
+
+@main.command("auth-test")
+@click.option(
+    "--project-dir",
+    type=click.Path(path_type=Path, file_okay=False, dir_okay=True),
+    default=None,
+    help="Project root (default: current directory).",
+)
+def auth_test(project_dir: Path | None) -> None:
+    """Show where orchestrator credentials come from and call the routing model once."""
+    root = project_dir if project_dir is not None else Path.cwd()
+    try:
+        run_auth_test(root)
+    except LabConfigError as e:
+        click.echo(f"Error: {e}", err=True)
+        raise SystemExit(1)
 
 
 @main.command()

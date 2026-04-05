@@ -88,19 +88,63 @@ def _token_exchange_uses_openai_api_key(token_endpoint: str) -> bool:
     return p.netloc == "auth.openai.com" and p.path.rstrip("/") == "/oauth/token"
 
 
-def exchange_id_token_for_api_key(cfg: RunConfig, id_token: str) -> str:
-    """Exchange a ChatGPT/Codex id_token for the bearer accepted by api.openai.com."""
+def exchange_id_token_for_api_key(
+    cfg: RunConfig,
+    id_token: str,
+    *,
+    oauth_access_token: str | None = None,
+) -> str:
+    """Exchange a ChatGPT/Codex id_token for the bearer accepted by api.openai.com.
+
+    ``auth.openai.com`` expects JSON bodies for some grants (same as refresh). We try JSON first,
+    then optional ``Authorization: Bearer`` with the session token from the code exchange, then
+    form-urlencoded for other IdPs or legacy behavior.
+    """
     _auth_ep, token_ep = resolve_oauth_endpoints(cfg)
-    body = {
+    payload = {
         "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
         "client_id": cfg.oauth_client_id or "",
         "requested_token": "openai-api-key",
         "subject_token": id_token,
         "subject_token_type": "urn:ietf:params:oauth:token-type:id_token",
     }
+    p = urlparse(token_ep)
+    openai_host = p.netloc == "auth.openai.com" and p.path.rstrip("/") == "/oauth/token"
+
+    def _access_from_response(r: httpx.Response) -> str | None:
+        if not r.is_success:
+            return None
+        data = r.json()
+        at = data.get("access_token")
+        return str(at) if at else None
+
+    if openai_host:
+        r = httpx.post(
+            token_ep,
+            json=payload,
+            headers={"Content-Type": "application/json"},
+            timeout=60.0,
+        )
+        out = _access_from_response(r)
+        if out:
+            return out
+        if oauth_access_token:
+            r = httpx.post(
+                token_ep,
+                json=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {oauth_access_token}",
+                },
+                timeout=60.0,
+            )
+            out = _access_from_response(r)
+            if out:
+                return out
+
     r = httpx.post(
         token_ep,
-        data=body,
+        data=payload,
         headers={"Content-Type": "application/x-www-form-urlencoded"},
         timeout=60.0,
     )
@@ -235,9 +279,18 @@ def run_browser_login_once(cfg: RunConfig) -> Path:
     path_out = oauth_token_file(cfg)
     path_out.parent.mkdir(parents=True, exist_ok=True)
     expires_in = float(tok.get("expires_in", 3600))
-    api_bearer = tok["access_token"]
+    oauth_at = str(tok["access_token"])
+    api_bearer = oauth_at
     if tok.get("id_token") and _token_exchange_uses_openai_api_key(token_ep):
-        api_bearer = exchange_id_token_for_api_key(cfg, str(tok["id_token"]))
+        try:
+            api_bearer = exchange_id_token_for_api_key(
+                cfg, str(tok["id_token"]), oauth_access_token=oauth_at
+            )
+        except Exception:
+            print(
+                "Note: id_token → API key exchange failed; using OAuth access token from "
+                "sign-in. If Chat Completions return 401, set OPENAI_API_KEY or open an issue."
+            )
     record: dict[str, Any] = {
         "access_token": api_bearer,
         "refresh_token": tok.get("refresh_token"),
@@ -303,7 +356,9 @@ def load_and_refresh_token_file(cfg: RunConfig) -> str | None:
         if data.get("id_token") and _token_exchange_uses_openai_api_key(token_ep) and not data.get("oauth_access_token"):
             try:
                 data["oauth_access_token"] = access
-                data["access_token"] = exchange_id_token_for_api_key(cfg, str(data["id_token"]))
+                data["access_token"] = exchange_id_token_for_api_key(
+                    cfg, str(data["id_token"]), oauth_access_token=access
+                )
                 path.write_text(json.dumps(data, indent=2), encoding="utf-8")
                 try:
                     path.chmod(0o600)
@@ -329,7 +384,11 @@ def load_and_refresh_token_file(cfg: RunConfig) -> str | None:
         data["id_token"] = tok["id_token"]
     if data.get("id_token") and _token_exchange_uses_openai_api_key(token_ep):
         try:
-            data["access_token"] = exchange_id_token_for_api_key(cfg, str(data["id_token"]))
+            data["access_token"] = exchange_id_token_for_api_key(
+                cfg,
+                str(data["id_token"]),
+                oauth_access_token=data.get("oauth_access_token"),
+            )
         except Exception:
             return access
     elif tok.get("access_token"):

@@ -80,6 +80,48 @@ def read_multiline_terminal(click_mod: object | None = None) -> str:
     return (data or "").strip()
 
 
+def run_auth_test(project_dir: Path) -> None:
+    """Print orchestrator credential source and run one minimal routing LLM call."""
+    from research_lab import llm
+    from research_lab.orchestrator import (
+        decide_orchestrator,
+        missing_orchestrator_credentials_hint,
+    )
+
+    if not global_config_exists():
+        raise LabConfigError("Global config not found. Run `lab setup` first.")
+    if not project_is_initialized(project_dir):
+        raise LabConfigError(
+            f"Project not initialized at {project_dir}. Run `lab init` first."
+        )
+
+    gcfg = load_global_config()
+    pcfg = load_project_config(project_dir)
+    cfg = RunConfig.from_configs(gcfg, pcfg, project_dir)
+
+    base = llm.resolve_llm_base_url(cfg)
+    print(f"Project: {project_dir.resolve()}")
+    print(f"Orchestrator backend: {cfg.orchestrator_backend}")
+    print(f"Model: {cfg.openai_model}")
+    print(f"Base URL: {base or '(default — OpenAI official API)'}")
+    print(f"Credential source: {llm.describe_orchestrator_credential_source(cfg)}")
+
+    api_key = llm.resolve_llm_api_key(cfg)
+    if not api_key:
+        raise LabConfigError(missing_orchestrator_credentials_hint(cfg))
+
+    ctx = (
+        "# Auth test\n"
+        "Minimal orchestrator check. Pick worker=planner with a one-sentence reason."
+    )
+    decision = decide_orchestrator(ctx, model=cfg.openai_model, cfg=cfg)
+    print("")
+    print("Orchestrator call succeeded.")
+    print(f"  worker: {decision.worker}")
+    if decision.reason:
+        print(f"  reason: {decision.reason}")
+
+
 def ensure_console_ready(project_dir: Path) -> tuple[Path, RunConfig]:
     """Load merged config, ensure memory layout, pause active scheduler row, return db path and RunConfig.
 

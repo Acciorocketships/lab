@@ -114,6 +114,11 @@ When the project is stuck, stagnating, or looping, use `critic` proactively and 
 """.strip()
 
 
+def missing_orchestrator_credentials_hint(cfg: RunConfig) -> str:
+    """User-facing hint when routing LLM has no API credentials."""
+    return _no_credentials_reason(cfg)
+
+
 def _no_credentials_reason(cfg: RunConfig) -> str:
     b = (cfg.orchestrator_backend or "openai").lower()
     if b == "openai":
@@ -135,7 +140,7 @@ def decide_orchestrator(
     api_key = llm.resolve_llm_api_key(cfg)
     base_url = llm.resolve_llm_base_url(cfg)
     if not api_key:
-        raise OrchestratorCredentialsError(_no_credentials_reason(cfg))
+        raise OrchestratorCredentialsError(missing_orchestrator_credentials_hint(cfg))
     user_content = (
         context_md
         if cfg.orchestrator_input_max_chars is None
