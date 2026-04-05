@@ -98,13 +98,17 @@ def _escape_toml(s: str) -> str:
 
 
 def _format_toml_string_value(s: str) -> str:
-    """Emit a TOML string value. Use a multiline ``\"\"\"`` block when *s* contains newlines (readable)."""
+    """Emit a TOML string value.
+
+    Multiline values use a multiline **literal** string (``'''``) so backslashes stay literal.
+    Basic multiline ``\"\"\"`` would treat ``\\`` as escapes and break on Windows paths, LaTeX, etc.
+    """
     if not s:
         return '""'
     if "\n" in s:
-        if '"""' in s:
+        if "'''" in s:
             return '"' + _escape_toml(s) + '"'
-        return '"""\n' + s + '"""'
+        return "'''\n" + s + "'''"
     return '"' + _escape_toml(s) + '"'
 
 

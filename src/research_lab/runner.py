@@ -123,7 +123,7 @@ def run_auth_test(project_dir: Path) -> None:
 
 
 def ensure_console_ready(project_dir: Path) -> tuple[Path, RunConfig]:
-    """Load merged config, ensure memory layout, pause active scheduler row, return db path and RunConfig.
+    """Load global + project config, ensure memory layout, pause active scheduler row, return db path and RunConfig.
 
     Requires ``~/.airesearcher/config.toml`` and ``<project_dir>/.airesearcher/config.toml``.
     """
@@ -307,7 +307,8 @@ def run_interactive_global_setup() -> Path:
 
     click.echo("")
     click.echo(
-        f"Optional: edit code style under [preferences] code_style in {GLOBAL_CONFIG_PATH} when ready."
+        f"Optional: set default preferences under [preferences] code_style in {GLOBAL_CONFIG_PATH}; "
+        "they are copied into new projects when you run `lab init`."
     )
 
     gcfg = GlobalConfig(

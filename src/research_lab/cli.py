@@ -9,6 +9,7 @@ import click
 from research_lab.global_config import (
     ProjectConfig,
     global_config_exists,
+    load_global_config,
     project_is_initialized,
 )
 from research_lab.runner import (
@@ -82,7 +83,8 @@ def init() -> None:
         click.echo("Error: research brief is required.", err=True)
         raise SystemExit(1)
 
-    pcfg = ProjectConfig(research_idea=brief, preferences="")
+    gcfg = load_global_config()
+    pcfg = ProjectConfig(research_idea=brief, preferences=gcfg.code_style)
 
     try:
         root = init_project_at(project_dir, pcfg, overwrite=overwrite)
@@ -93,7 +95,8 @@ def init() -> None:
     click.echo(f"\nProject initialized at {root}")
     click.echo("Run `lab` to start the console.")
     click.echo(
-        f"Optional: add project-specific preferences under [project] in {root / 'config.toml'}."
+        f"Preferences are under [project] in {root / 'config.toml'} "
+        "(copied from global [preferences] code_style; edit per project as needed)."
     )
 
 

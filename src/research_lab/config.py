@@ -53,7 +53,12 @@ class RunConfig:
         pcfg: ProjectConfig,
         project_dir: Path,
     ) -> RunConfig:
-        """Build a RunConfig by merging global and project-level settings."""
+        """Build a RunConfig from global + project TOML.
+
+        Model/auth/worker fields come from global config. Research brief and **preferences**
+        come only from the project file (``lab init`` copies global ``code_style`` into
+        ``[project] preferences`` as a starting point).
+        """
         from research_lab.global_config import GLOBAL_OAUTH_PATH, project_researcher_root
 
         researcher_root = project_researcher_root(project_dir)
@@ -67,7 +72,7 @@ class RunConfig:
             researcher_root=researcher_root,
             project_dir=project_dir,
             research_idea=pcfg.research_idea,
-            preferences=pcfg.preferences or gcfg.code_style,
+            preferences=pcfg.preferences,
             orchestrator_backend=gcfg.provider,
             openai_api_key=api_key if gcfg.provider != "openrouter" else None,
             openai_base_url=gcfg.base_url or None,

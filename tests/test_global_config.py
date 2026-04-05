@@ -24,7 +24,7 @@ def test_global_config_roundtrip(tmp_path: Path, monkeypatch) -> None:
         base_url="",
         api_key="sk-test-key",
         worker_backend="cursor",
-        cursor_agent_model="gpt-5",
+        cursor_agent_model="composer-2",
         code_style="Clean Python",
     )
     save_global_config(cfg)
@@ -33,7 +33,7 @@ def test_global_config_roundtrip(tmp_path: Path, monkeypatch) -> None:
     assert loaded.model_name == "google/gemini-2.5-flash-lite"
     assert loaded.api_key == "sk-test-key"
     assert loaded.worker_backend == "cursor"
-    assert loaded.cursor_agent_model == "gpt-5"
+    assert loaded.cursor_agent_model == "composer-2"
     assert loaded.code_style == "Clean Python"
 
 
@@ -57,7 +57,7 @@ def test_project_not_initialized(tmp_path: Path) -> None:
     assert not project_is_initialized(tmp_path)
 
 
-def test_from_configs_merges_correctly(tmp_path: Path) -> None:
+def test_from_configs_uses_project_preferences_only(tmp_path: Path) -> None:
     gcfg = GlobalConfig(
         provider="openrouter",
         model_name="gemini-2.5-flash-lite",
@@ -79,7 +79,7 @@ def test_from_configs_merges_correctly(tmp_path: Path) -> None:
     assert run_cfg.default_worker_backend == "cursor"
     assert run_cfg.cursor_agent_model == "composer-2"
     assert run_cfg.research_idea == "Do X\n\n## Success criteria\n\nY works"
-    assert run_cfg.preferences == "type hints"
+    assert run_cfg.preferences == ""
     assert run_cfg.researcher_root == project_dir / ".airesearcher"
     assert run_cfg.orchestrator_input_max_chars is None
     assert run_cfg.orchestrator_prev_summary_max_chars is None
@@ -89,7 +89,7 @@ def test_from_configs_merges_correctly(tmp_path: Path) -> None:
     assert run_cfg.worker_packet_max_chars is None
 
 
-def test_from_configs_project_prefs_override_global(tmp_path: Path) -> None:
+def test_from_configs_project_preferences_not_global(tmp_path: Path) -> None:
     gcfg = GlobalConfig(code_style="global style")
     pcfg = ProjectConfig(
         research_idea="x",
@@ -124,3 +124,30 @@ def test_global_code_style_multiline_roundtrip(tmp_path: Path, monkeypatch) -> N
     save_global_config(cfg)
     loaded = load_global_config()
     assert loaded.code_style == "Rule A\nRule B\n- use types"
+
+
+def test_multiline_config_backslashes_roundtrip(tmp_path: Path, monkeypatch) -> None:
+    """Backslashes in multiline values must not break TOML (regression: basic \"\"\" strings)."""
+    monkeypatch.setattr("research_lab.global_config.GLOBAL_DIR", tmp_path)
+    monkeypatch.setattr("research_lab.global_config.GLOBAL_CONFIG_PATH", tmp_path / "config.toml")
+
+    project_dir = tmp_path / "proj"
+    project_dir.mkdir()
+    idea = "Work in C:\\Users\\dev\\analyticgmm\nUse \\alpha in notes\n\n## Done\nOK"
+    gcfg = GlobalConfig(code_style="See C:\\tools\\bin\nOr \\n is fine")
+    pcfg = ProjectConfig(research_idea=idea, preferences="")
+
+    save_global_config(gcfg)
+    save_project_config(project_dir, pcfg)
+
+    assert load_global_config().code_style == gcfg.code_style
+    assert load_project_config(project_dir).research_idea == idea
+
+
+def test_project_config_triple_single_quote_fallback_roundtrip(tmp_path: Path) -> None:
+    """If the brief contains ''' we fall back to escaped double-quoted form."""
+    project_dir = tmp_path / "proj"
+    project_dir.mkdir()
+    cfg = ProjectConfig(research_idea="prefix ''' rare\nsecond line", preferences="")
+    save_project_config(project_dir, cfg)
+    assert load_project_config(project_dir).research_idea == cfg.research_idea

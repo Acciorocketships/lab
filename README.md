@@ -82,7 +82,7 @@ Two directories per project:
 
 | Location | Purpose |
 |----------|---------|
-| **Global config** | `~/.airesearcher/` — model settings, credentials, OAuth tokens, code style preferences. Shared across all projects. |
+| **Global config** | `~/.airesearcher/` — model settings, credentials, OAuth tokens, default preferences (`code_style`) copied into new projects. Shared across all projects. |
 | **Researcher root** | `<project_dir>/.airesearcher/` — project-specific config, memory (Tier A–E), SQLite DB, experiments. |
 | **Project directory** | The repo or tree under study; workers run CLI tools with this as cwd. |
 
@@ -90,11 +90,11 @@ Two directories per project:
 
 ### Global (`~/.airesearcher/config.toml`)
 
-Created by `lab setup`. Contains model provider/name, API keys or OAuth client id, worker backend. Optional **code style** goes under `[preferences]` as `code_style` — edit the file by hand; multiline values work as TOML `"""..."""` blocks.
+Created by `lab setup`. Contains model provider/name, API keys or OAuth client id, worker backend. Optional default **preferences** go under `[preferences]` as `code_style` — on `lab init`, that value is copied into the project file; edit the file by hand; multiline values work as TOML literal blocks.
 
 ### Per-project (`.airesearcher/config.toml`)
 
-Created by `lab init`. Contains a single **research brief** (`research_idea` in TOML — goals and implicit success criteria in one field) and optional project-specific preference overrides.
+Created by `lab init`. Contains a **research brief** (`research_idea`) and **preferences** (`preferences` under `[project]`). At init, preferences start as a copy of global `code_style`; the running lab uses only this project field (change global defaults for future inits, or edit the project TOML for this repo).
 
 ### Model providers
 

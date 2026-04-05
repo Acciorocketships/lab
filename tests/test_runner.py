@@ -31,7 +31,7 @@ def test_ensure_console_ready_raises_without_project(tmp_path: Path, monkeypatch
         ensure_console_ready(tmp_path)
 
 
-def test_bootstrap_bench_project_writes_and_merges(tmp_path: Path, monkeypatch) -> None:
+def test_bootstrap_bench_project_writes_configs(tmp_path: Path, monkeypatch) -> None:
     gdir = tmp_path / "global"
     monkeypatch.setattr("research_lab.global_config.GLOBAL_DIR", gdir)
     monkeypatch.setattr("research_lab.global_config.GLOBAL_CONFIG_PATH", gdir / "config.toml")

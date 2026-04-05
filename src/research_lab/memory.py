@@ -126,8 +126,7 @@ def ensure_memory_layout(researcher_root: Path, *, project_dir: Path | None = No
         "memory/skills",
     ):
         helpers.ensure_dir(base / sub)
-    if project_dir is not None:
-        helpers.ensure_dir(experiments_dir(project_dir))
+    # experiments/ under project_dir is created on first experiment (see experiments.new_experiment_id).
     for name in TIER_A_FILES:
         p = state_dir(researcher_root) / name
         if not p.exists():
