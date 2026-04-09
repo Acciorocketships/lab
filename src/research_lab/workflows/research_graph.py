@@ -293,7 +293,6 @@ def update_state(state: ResearchState, *, db_path: Path, researcher_root: Path) 
         conn.commit()
     finally:
         conn.close()
-    memory.clear_worker_diff_baseline(researcher_root)
     return {}
 
 

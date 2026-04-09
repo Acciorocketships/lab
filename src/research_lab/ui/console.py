@@ -93,7 +93,7 @@ Screen {
     height: auto;
     padding: 1 3;
     margin: 0 2;
-    color: $text-muted;
+    color: rgb(235, 160, 160);
     border-left: tall $surface-lighten-1;
 }
 
@@ -305,11 +305,11 @@ class ResearchConsole(App[None]):
         if not force and now - self._last_file_changes_ts < 0.25:
             return
         self._last_file_changes_ts = now
-        baseline = None
         raw = read_worker_diff_baseline(project_researcher_root(self.cfg.project_dir))
-        if raw and int(raw.get("cycle", -1)) == self._last_cycle:
-            baseline = raw
-        diffs = events.compute_file_diffs(self.cfg.project_dir, baseline=baseline)
+        if not raw or int(raw.get("cycle", -1)) != self._last_cycle:
+            self._file_changes_widget.display = False
+            return
+        diffs = events.compute_file_diffs(self.cfg.project_dir, baseline=raw)
         if diffs:
             self._file_changes_widget.update(events.format_file_changes(diffs))
             self._file_changes_widget.display = True
