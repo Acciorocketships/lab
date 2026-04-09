@@ -41,6 +41,7 @@ Once in the console, type `/start` to begin the background agent, `/pause` to pa
 | `/branches` | Show branch registry |
 | `/experiments` | Show experiment registry |
 | `/reset` | Clear SQLite and runtime memory (Tier A except `research_idea.md` and `preferences.md`, episodes, extended, branches, skills, experiments); syncs `[project]` brief and preferences in `config.toml` from those files |
+| `/undo` | Stop the scheduler if running, restore the project tree and DB to before the current or last worker (git checkpoints); if the agent was running, restart it for a fresh orchestrator step (if paused, stays paused) |
 | `/help` | List all commands |
 | plain text | Queue as an instruction to the agent |
 

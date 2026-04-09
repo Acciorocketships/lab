@@ -252,6 +252,21 @@ def stream_chunks_since(conn: sqlite3.Connection, after_id: int = 0) -> list[sql
     )
 
 
+def orchestrator_ahead_of_worker(conn: sqlite3.Connection) -> bool:
+    """True when the latest orchestrator event is for a cycle with no worker row yet."""
+    row_o = conn.execute(
+        "SELECT MAX(cycle) FROM run_events WHERE kind = 'orchestrator'",
+    ).fetchone()
+    row_w = conn.execute(
+        "SELECT MAX(cycle) FROM run_events WHERE kind = 'worker'",
+    ).fetchone()
+    orch = row_o[0] if row_o else None
+    if orch is None:
+        return False
+    worker_max = int(row_w[0]) if row_w and row_w[0] is not None else 0
+    return int(orch) > worker_max
+
+
 def rollback_to_cycle(conn: sqlite3.Connection, cycle: int) -> None:
     """Reset system_state to *cycle* and purge run_events / stream rows beyond it."""
     conn.execute(

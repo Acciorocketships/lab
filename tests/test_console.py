@@ -82,7 +82,7 @@ def test_cmd_start_enqueues_resume_when_scheduler_is_alive(tmp_path: Path) -> No
 
     pending = db.fetch_pending_events(conn)
     assert [row["kind"] for row in pending] == ["resume"]
-    assert any("resumed" in message.lower() for message in writes)
+    assert console._orchestrating is True
 
     console._conn.close()
 

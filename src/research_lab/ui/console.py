@@ -152,6 +152,9 @@ class ResearchConsole(App[None]):
         self._last_file_changes_ts: float = 0.0
         self._orchestrating = False
         self._orchestrating_tick = 0
+        self._stream_is_running_placeholder = False
+        self._running_worker_tick = 0
+        self._welcome_widgets: list[Static] = []
 
     def compose(self) -> ComposeResult:
         yield Static("", id="header")
@@ -171,15 +174,40 @@ class ResearchConsole(App[None]):
         self._cleanup_orphaned_cycles()
         self._refresh_header()
         self.query_one("#stream-text", Static).display = False
-        self._write_activity("  [bold]Welcome to lab.[/]")
-        self._write_activity(
-            "  Type [bold]/start[/] to begin, [bold]/help[/] for a list of commands. "
-            "Type additional instructions at any time."
-        )
+        self._write_welcome_lines()
         self.query_one("#prompt", PromptTextArea).focus()
         self.set_interval(0.3, self._poll)
 
     # --- activity helpers -----------------------------------------------------
+
+    def _write_welcome_lines(self) -> None:
+        self._welcome_widgets = []
+        scroll = self.query_one("#activity-scroll", VerticalScroll)
+        stream = self.query_one("#stream-text", Static)
+        for markup in (
+            "  [bold]Welcome to lab.[/]",
+            "  Type [bold]/start[/] to begin, [bold]/help[/] for a list of commands. "
+            "Type additional instructions at any time.",
+        ):
+            w = Static(markup, classes="activity-line")
+            scroll.mount(w, before=stream)
+            self._welcome_widgets.append(w)
+        self.call_after_refresh(lambda: scroll.scroll_end(animate=False))
+
+    def _remove_welcome_intro(self) -> None:
+        """Drop the initial welcome lines after the user sends any input."""
+        for w in self._welcome_widgets:
+            w.remove()
+        self._welcome_widgets = []
+
+    def _clear_activity_log(self) -> None:
+        """Remove all lines from the scroll area except the live stream panel."""
+        self._welcome_widgets = []
+        scroll = self.query_one("#activity-scroll", VerticalScroll)
+        stream = self.query_one("#stream-text", Static)
+        for child in list(scroll.children):
+            if child is not stream:
+                child.remove()
 
     def _write_activity(self, markup: str) -> None:
         """Append a permanent line to the activity scroll area."""
@@ -237,6 +265,7 @@ class ResearchConsole(App[None]):
         return w
 
     def _clear_stream_status(self) -> None:
+        self._stream_is_running_placeholder = False
         status = self.query_one("#stream-text", Static)
         status.update(events.make_stream_panel(""))
         status.display = False
@@ -329,20 +358,25 @@ class ResearchConsole(App[None]):
         self._refresh_header()
         self._poll_run_events()
         self._poll_stream()
-        self._poll_orchestrating_status()
+        self._poll_animated_stream_status()
         self._refresh_running_cycle_header()
         self._refresh_file_changes()
 
-    def _poll_orchestrating_status(self) -> None:
-        """Show animated 'Orchestrating...' while the orchestrator LLM is deciding."""
-        if not self._orchestrating:
-            return
+    def _poll_animated_stream_status(self) -> None:
+        """Animate Orchestrating… or Running {worker}… until stream chunks replace the panel."""
         if self._scheduler is None or not self._scheduler.is_alive():
             self._orchestrating = False
+            self._stream_is_running_placeholder = False
             return
-        self._orchestrating_tick += 1
-        dots = "." * ((self._orchestrating_tick % 3) + 1)
-        self._set_stream_status(f"[dim]Orchestrating{dots}[/]")
+        if self._orchestrating:
+            self._orchestrating_tick += 1
+            dots = "." * ((self._orchestrating_tick % 3) + 1)
+            self._set_stream_status(f"[dim]Orchestrating{dots}[/]")
+            return
+        if self._stream_is_running_placeholder and self._worker_start_ts > 0:
+            self._running_worker_tick += 1
+            dots = "." * ((self._running_worker_tick % 3) + 1)
+            self._set_stream_status(f"[dim]Running {self._last_worker}{dots}[/]")
 
     def _check_scheduler_health(self) -> None:
         """Detect a crashed scheduler subprocess and auto-restart when possible."""
@@ -352,6 +386,7 @@ class ResearchConsole(App[None]):
             return
         self._scheduler = None
         self._orchestrating = False
+        self._stream_is_running_placeholder = False
         try:
             # Revert sets control_mode to paused via rollback_to_cycle; capture intent first.
             should_auto_restart = (
@@ -479,7 +514,10 @@ class ResearchConsole(App[None]):
                     self._file_changes_widget.display = False
                     self._current_cycle_widgets.append(self._file_changes_widget)
                     self._last_file_changes_ts = 0.0
-                self._set_stream_status(f"[dim]Running {worker}...[/]")
+                self._stream_is_running_placeholder = True
+                self._running_worker_tick = 0
+                wdots = "." * ((self._running_worker_tick % 3) + 1)
+                self._set_stream_status(f"[dim]Running {worker}{wdots}[/]")
                 if new_cycle and self._cycle_header_widget is not None:
                     self._scroll_cycle_header_to_top()
                 else:
@@ -556,11 +594,13 @@ class ResearchConsole(App[None]):
             event_type, text = parsed
             if event_type == "tool" and text.strip():
                 had_tool = True
+                self._stream_is_running_placeholder = False
                 self._set_stream_status(f"[cyan]{text}[/]")
                 self._scroll_to_bottom()
             elif event_type == "text" and text.strip():
                 clean = text.strip()
                 self._last_stream_text = clean
+                self._stream_is_running_placeholder = False
                 self._set_stream_status(f"[dim]{clean}[/]")
                 self._scroll_to_bottom()
         if had_tool:
@@ -579,6 +619,8 @@ class ResearchConsole(App[None]):
         text = raw.strip()
         if not text:
             return
+
+        self._remove_welcome_intro()
 
         lines = text.splitlines()
         first = lines[0].strip()
@@ -621,12 +663,25 @@ class ResearchConsole(App[None]):
             "backlog": self._cmd_backlog,
             "experiments": self._cmd_experiments,
             "reset": self._cmd_reset,
+            "undo": self._cmd_undo,
         }.get(cmd)
 
         if handler:
             handler()
         else:
             self._write_activity(f"  [red]Unknown command:[/] /{cmd}")
+
+    def _cmd_undo(self) -> None:
+        """Drop in-flight or last finished worker changes; restart only if the agent was running."""
+        was_running = bool(self._scheduler and self._scheduler.is_alive())
+        self._kill_scheduler()
+        self._revert_to_checkpoint(
+            undo_last_completed_worker=True,
+            emit_activity_message=False,
+        )
+        self._auto_restarts = 0
+        if was_running:
+            self._restart_scheduler()
 
     def _cmd_start(self) -> None:
         mode = db.get_system_state(self._conn).get("control_mode", "active")
@@ -689,6 +744,7 @@ class ResearchConsole(App[None]):
             "  [bold]/backlog[/]      Show recent instructions\n"
             "  [bold]/experiments[/]  Show experiments\n"
             "  [bold]/reset[/]        Clear DB and runtime memory; keep research_idea.md + preferences.md\n"
+            "  [bold]/undo[/]         Revert since last worker; restarts orchestrator only if agent was running\n"
             "  [bold]/help[/]         This message\n"
             "\n  Plain text is queued as an instruction.\n"
             "  [dim]Enter[/] sends · [dim]Shift+Enter[/] for newline · navigate lines with arrows\n"
@@ -731,11 +787,17 @@ class ResearchConsole(App[None]):
         self._last_file_changes_ts = 0.0
         self._last_stream_text = ""
         self._current_cycle_widgets = []
+        self._auto_restarts = 0
+        self._orchestrating_tick = 0
+        self._running_worker_tick = 0
+        self._clear_activity_log()
         self._clear_stream_status()
+        self._refresh_header()
         self._write_activity(
             "  [green]Reset complete.[/] Kept [bold]research_idea.md[/] and [bold]preferences.md[/]. "
             "Cleared DB, other Tier A files, episodes, extended, branches, skills, experiments."
         )
+        self._write_welcome_lines()
 
     # --- lifecycle ------------------------------------------------------------
 
@@ -745,6 +807,7 @@ class ResearchConsole(App[None]):
             self._scheduler.kill_group()
         self._scheduler = None
         self._orchestrating = False
+        self._stream_is_running_placeholder = False
 
     def _cleanup_orphaned_cycles(self) -> None:
         """Delete DB rows for cycles that have an orchestrator event but no worker event."""
@@ -790,10 +853,26 @@ class ResearchConsole(App[None]):
         helpers.ensure_dir(p.parent)
         p.write_text(_default_tier_a_content("context_summary.md"), encoding="utf-8")
 
-    def _revert_to_checkpoint(self) -> None:
+    def _revert_to_checkpoint(
+        self,
+        *,
+        undo_last_completed_worker: bool = False,
+        emit_activity_message: bool = True,
+    ) -> None:
         """Restore the working tree to the last completed-cycle checkpoint and
-        roll back the DB to match, removing any UI traces of the interrupted cycle."""
+        roll back the DB to match, removing any UI traces of the interrupted cycle.
+
+        When *undo_last_completed_worker* is true and the latest cycle has
+        already finished (orchestrator is not ahead of the last worker row),
+        the working tree is restored to the newest checkpoint whose recorded
+        cycle is ≤ (max completed worker cycle − 1), using the DB so repeated
+        /undo works even when the oldest checkpoint is a git root (no ``~1``).
+        Otherwise the tip checkpoint is used (same as pause/crash recovery:
+        drops an in-flight worker only).
+        """
         from research_lab import git_checkpoint
+
+        researcher_root = project_researcher_root(self.cfg.project_dir)
 
         # Remove in-progress cycle widgets unconditionally -- the scheduler is
         # dead at this point so the cycle cannot complete.
@@ -811,13 +890,31 @@ class ResearchConsole(App[None]):
         # Attempt git-level revert to the last completed-cycle checkpoint.
         reverted = False
         if git_checkpoint.has_checkpoint(self.cfg.project_dir):
-            cycle = git_checkpoint.revert_to_checkpoint(self.cfg.project_dir)
+            tip_ahead = db.orchestrator_ahead_of_worker(self._conn)
+            cycle: int | None = None
+            if undo_last_completed_worker and not tip_ahead:
+                row = self._conn.execute(
+                    "SELECT MAX(cycle) FROM run_events WHERE kind = 'worker'",
+                ).fetchone()
+                wmax = int(row[0]) if row and row[0] is not None else 0
+                if wmax >= 1:
+                    target = wmax - 1
+                    cycle = git_checkpoint.restore_checkpoint_at_or_before_cycle(
+                        self.cfg.project_dir, target,
+                    )
+                    if cycle is None and target == 0:
+                        cycle = 0
+            else:
+                cycle = git_checkpoint.revert_to_checkpoint(self.cfg.project_dir)
             if cycle is not None:
                 try:
                     self._conn.execute("BEGIN IMMEDIATE")
                     db.rollback_to_cycle(self._conn, cycle)
                     self._conn.commit()
                     reverted = True
+                    self._cleanup_incomplete_episodes(researcher_root, cycle)
+                    if cycle == 0:
+                        self._reset_context_summary(researcher_root)
                 except Exception:
                     try:
                         self._conn.rollback()
@@ -844,7 +941,6 @@ class ResearchConsole(App[None]):
                 except Exception:
                     pass
 
-            researcher_root = project_researcher_root(self.cfg.project_dir)
             self._cleanup_incomplete_episodes(researcher_root, last_completed)
             if last_completed == 0:
                 self._reset_context_summary(researcher_root)
@@ -871,7 +967,7 @@ class ResearchConsole(App[None]):
         except Exception:
             pass
 
-        if reverted:
+        if reverted and emit_activity_message:
             self._write_activity(
                 f"  [yellow]Reverted to checkpoint (cycle {self._last_cycle}).[/]"
             )

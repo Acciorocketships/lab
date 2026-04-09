@@ -8,7 +8,7 @@ from research_lab import memory
 def test_default_extended_memory_index_scopes_to_extended_only(tmp_path: Path) -> None:
     memory.ensure_memory_layout(tmp_path)
     text = (memory.state_dir(tmp_path) / "extended_memory_index.md").read_text(encoding="utf-8")
-    assert "## `memory/extended/`" in text
+    assert "## `.airesearcher/data/runtime/memory/extended/`" in text
     assert "memory/branch/" not in text
     assert "memory/episodes/" not in text
 

@@ -79,3 +79,47 @@ def test_clear_stream(tmp_path: Path) -> None:
     rows = db.stream_chunks_since(conn, 0)
     assert len(rows) == 1
     assert rows[0]["cycle"] == 2
+
+
+def test_orchestrator_ahead_of_worker(tmp_path: Path) -> None:
+    conn = db.connect_db(tmp_path / "t.db")
+    assert db.orchestrator_ahead_of_worker(conn) is False
+    db.append_run_event(
+        conn,
+        cycle=1,
+        kind="orchestrator",
+        worker="planner",
+        roadmap_step="",
+        task="t",
+        summary="s",
+        payload=None,
+        packet_path=None,
+    )
+    conn.commit()
+    assert db.orchestrator_ahead_of_worker(conn) is True
+    db.append_run_event(
+        conn,
+        cycle=1,
+        kind="worker",
+        worker="planner",
+        roadmap_step="",
+        task="t",
+        summary="done",
+        payload=None,
+        packet_path=None,
+    )
+    conn.commit()
+    assert db.orchestrator_ahead_of_worker(conn) is False
+    db.append_run_event(
+        conn,
+        cycle=2,
+        kind="orchestrator",
+        worker="researcher",
+        roadmap_step="",
+        task="t2",
+        summary="s2",
+        payload=None,
+        packet_path=None,
+    )
+    conn.commit()
+    assert db.orchestrator_ahead_of_worker(conn) is True

@@ -358,7 +358,8 @@ def bootstrap_bench_project(
 
 
 def reset_project_preserving_research_idea(project_dir: Path) -> None:
-    """Clear SQLite runtime data and on-disk memory except ``state/research_idea.md`` and ``preferences.md``.
+    """Clear SQLite runtime data and on-disk memory except Tier A ``research_idea.md`` and ``preferences.md``
+    under ``.airesearcher/data/runtime/state/``.
 
     Syncs ``[project]`` ``research_idea`` and ``preferences`` in TOML from those files (Markdown body
     after stripping an optional leading H1).

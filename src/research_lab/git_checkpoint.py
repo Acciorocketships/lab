@@ -190,6 +190,27 @@ def get_checkpoint_cycle(project_dir: Path) -> int | None:
 # Revert
 # ---------------------------------------------------------------------------
 
+def _restore_working_tree_to_treeish(project_dir: Path, treeish: str) -> bool:
+    """Reset index + working tree to match *treeish* (commit or branch name)."""
+    try:
+        subprocess.run(
+            ["git", "read-tree", "--reset", treeish],
+            cwd=project_dir, check=True, capture_output=True,
+        )
+        subprocess.run(
+            ["git", "checkout-index", "-a", "-f"],
+            cwd=project_dir, check=True, capture_output=True,
+        )
+        subprocess.run(
+            ["git", "clean", "-fd"],
+            cwd=project_dir, check=True, capture_output=True,
+        )
+        return True
+    except subprocess.CalledProcessError as exc:
+        _log.error("Tree restore failed: %s\nstderr: %s", exc, getattr(exc, "stderr", ""))
+        return False
+
+
 def revert_to_checkpoint(project_dir: Path) -> int | None:
     """Restore the working tree to the latest checkpoint.
 
@@ -206,23 +227,75 @@ def revert_to_checkpoint(project_dir: Path) -> int | None:
     _ensure_airesearcher_excluded(project_dir)
     cycle = get_checkpoint_cycle(project_dir)
 
+    if not _restore_working_tree_to_treeish(project_dir, CHECKPOINT_BRANCH):
+        return None
+
+    _log.info("Reverted working tree to checkpoint cycle %s", cycle)
+    return cycle
+
+
+def restore_checkpoint_at_or_before_cycle(project_dir: Path, max_cycle: int) -> int | None:
+    """Restore the working tree to the newest ``checkpoints`` commit whose message
+    cycle is ≤ *max_cycle*, and move the branch ref to that commit.
+
+    Unlike ``checkpoints~1``, this works when the oldest checkpoint is a git root
+    (no first parent) and when stepping back by **logical** cycle using the DB.
+
+    Returns the parsed cycle from the chosen commit, or *None* if no matching
+    commit exists (e.g. *max_cycle* < 1 and only ``cycle 1`` checkpoints exist).
+    """
+    if max_cycle < 0 or not has_checkpoint(project_dir):
+        return None
+
+    log = subprocess.run(
+        ["git", "log", CHECKPOINT_BRANCH, "--format=%H %s"],
+        cwd=project_dir, capture_output=True, text=True,
+    )
+    if log.returncode != 0 or not log.stdout.strip():
+        return None
+
+    best_sha: str | None = None
+    best_c = -1
+    for line in log.stdout.strip().splitlines():
+        parts = line.split(" ", 1)
+        if len(parts) < 2:
+            continue
+        sha, subj = parts[0], parts[1]
+        m = re.search(r"cycle\s+(\d+)", subj)
+        if not m:
+            continue
+        c = int(m.group(1))
+        if c <= max_cycle and c > best_c:
+            best_c = c
+            best_sha = sha
+
+    if best_sha is None or best_c < 0:
+        _log.info("No checkpoint commit with cycle ≤ %s", max_cycle)
+        return None
+
+    _ensure_airesearcher_excluded(project_dir)
+    if not _restore_working_tree_to_treeish(project_dir, best_sha):
+        return None
+
     try:
         subprocess.run(
-            ["git", "read-tree", "--reset", CHECKPOINT_BRANCH],
+            ["git", "update-ref", f"refs/heads/{CHECKPOINT_BRANCH}", best_sha],
             cwd=project_dir, check=True, capture_output=True,
         )
-        subprocess.run(
-            ["git", "checkout-index", "-a", "-f"],
-            cwd=project_dir, check=True, capture_output=True,
-        )
-        subprocess.run(
-            ["git", "clean", "-fd"],
-            cwd=project_dir, check=True, capture_output=True,
-        )
-
-        _log.info("Reverted working tree to checkpoint cycle %s", cycle)
-        return cycle
-
     except subprocess.CalledProcessError as exc:
-        _log.error("Revert failed: %s\nstderr: %s", exc, getattr(exc, "stderr", ""))
+        _log.error("update-ref checkpoints failed: %s", exc)
         return None
+
+    _log.info("Restored checkpoints to cycle %s (max requested %s)", best_c, max_cycle)
+    return best_c
+
+
+def revert_checkpoints_to_parent(project_dir: Path) -> int | None:
+    """Prefer :func:`restore_checkpoint_at_or_before_cycle` with DB max worker.
+
+    Kept for tests and callers that only know the tip message cycle.
+    """
+    tip = get_checkpoint_cycle(project_dir)
+    if tip is None or tip < 1:
+        return None
+    return restore_checkpoint_at_or_before_cycle(project_dir, tip - 1)
