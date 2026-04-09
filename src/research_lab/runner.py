@@ -200,7 +200,12 @@ def seed_tier_a_from_run_config(researcher_root: Path, cfg: RunConfig) -> None:
     )
     (state / "preferences.md").write_text(f"# Preferences\n\n{cfg.preferences}\n", encoding="utf-8")
     (state / "project_brief.md").write_text(
-        f"# Project\n\nImplementation directory: `{cfg.project_dir}`\n", encoding="utf-8"
+        "# Project\n\n"
+        f"Implementation directory: `{cfg.project_dir}`\n\n"
+        f"Tier A memory directory: `{researcher_root / 'data' / 'runtime' / 'state'}`\n"
+        "Tier A files such as `roadmap.md`, `immediate_plan.md`, and `status.md` belong there, not in a project-root `state/` folder.\n\n"
+        f"User-facing reports and demos should be saved in the project directory, preferably `{cfg.project_dir / 'reports'}`.\n",
+        encoding="utf-8",
     )
 
 
@@ -399,6 +404,10 @@ def reset_project_preserving_research_idea(project_dir: Path) -> None:
 
     sd = memory.state_dir(researcher_root)
     (sd / "project_brief.md").write_text(
-        f"# Project\n\nImplementation directory: `{project_dir}`\n",
+        "# Project\n\n"
+        f"Implementation directory: `{project_dir}`\n\n"
+        f"Tier A memory directory: `{sd}`\n"
+        "Tier A files such as `roadmap.md`, `immediate_plan.md`, and `status.md` belong there, not in a project-root `state/` folder.\n\n"
+        f"User-facing reports and demos should be saved in the project directory, preferably `{project_dir / 'reports'}`.\n",
         encoding="utf-8",
     )

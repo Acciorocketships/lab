@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 # Paths: `data/runtime/state/` — full list in memory.TIER_A_FILES.
-MEMORY_AND_TIER_A = """**Tier A** (`state/*.md`) and `memory/extended/`: keep them current.
+MEMORY_AND_TIER_A = """**Tier A** means `.airesearcher/data/runtime/state/*.md`, not a project-root `state/` folder. Keep those files current, along with `.airesearcher/data/runtime/memory/extended/`.
 
 All workers share responsibility for maintaining Tier A. If your run changes project truth, plans, status, durable lessons, or creates long-form memory elsewhere, update the relevant Tier A files in the same run. Do not assume planner or a later worker will clean this up for you. If a file's truth did not change, leave it alone.
 
-**Tier A files** (`state/*.md` — meanings):
+**Tier A files** (`.airesearcher/data/runtime/state/*.md` — meanings):
 - **`project_brief.md`** — project identity, scope, and constraints the repo must respect. Update when the project framing, boundaries, non-goals, or hard constraints change.
 - **`extended_memory_index.md`** — index of `memory/extended/` only. Keep this current alongside the rest of Tier A. When you add or materially update a file under `memory/extended/`, add or refresh the matching index entry. Each entry should point to one long-form file and give a brief description or a few high-level bullets about what the full file contains, so future workers can decide whether to open it.
 - **`research_idea.md`** — research brief: goals, approach, and implicit success criteria (what “done” means). Update when the core problem statement, hypothesis, evaluation target, or success criteria change.

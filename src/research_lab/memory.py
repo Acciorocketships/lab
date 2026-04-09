@@ -98,9 +98,7 @@ def capture_worker_diff_baseline(project_dir: Path, cycle: int) -> dict[str, Any
             ["git", "rev-parse", "HEAD"],
             cwd=project_dir, capture_output=True, text=True, timeout=3,
         )
-        if rh.returncode != 0:
-            return None
-        head = rh.stdout.strip()
+        head = rh.stdout.strip() if rh.returncode == 0 else None
 
         ru = subprocess.run(
             ["git", "ls-files", "-o", "--exclude-standard"],
@@ -113,25 +111,39 @@ def capture_worker_diff_baseline(project_dir: Path, cycle: int) -> dict[str, Any
                 if fn:
                     untracked_lines[fn] = _snapshot_line_count(project_dir, fn)
 
+        tracked_lines: dict[str, int] | None = None
         tree: str | None = None
-        rs = subprocess.run(
-            ["git", "stash", "create", "--include-untracked"],
-            cwd=project_dir, capture_output=True, text=True, timeout=30,
-        )
-        if rs.returncode == 0 and rs.stdout.strip():
-            stash = rs.stdout.strip().splitlines()[-1].strip()
+        if head:
+            rs = subprocess.run(
+                ["git", "stash", "create", "--include-untracked"],
+                cwd=project_dir, capture_output=True, text=True, timeout=30,
+            )
+            if rs.returncode == 0 and rs.stdout.strip():
+                stash = rs.stdout.strip().splitlines()[-1].strip()
+                rt = subprocess.run(
+                    ["git", "rev-parse", f"{stash}^{{tree}}"],
+                    cwd=project_dir, capture_output=True, text=True, timeout=3,
+                )
+                if rt.returncode == 0 and rt.stdout.strip():
+                    tree = rt.stdout.strip()
+        else:
             rt = subprocess.run(
-                ["git", "rev-parse", f"{stash}^{{tree}}"],
-                cwd=project_dir, capture_output=True, text=True, timeout=3,
+                ["git", "ls-files"],
+                cwd=project_dir, capture_output=True, text=True, timeout=5,
             )
             if rt.returncode == 0 and rt.stdout.strip():
-                tree = rt.stdout.strip()
+                tracked_lines = {}
+                for fname in rt.stdout.strip().splitlines():
+                    fn = fname.strip().replace("\\", "/")
+                    if fn:
+                        tracked_lines[fn] = _snapshot_line_count(project_dir, fn)
 
         return {
             "cycle": cycle,
             "tree": tree,
             "head": head,
             "untracked_lines": untracked_lines,
+            "tracked_lines": tracked_lines,
         }
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         return None

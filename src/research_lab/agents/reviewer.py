@@ -11,6 +11,8 @@ Reject unnecessary complexity, weak implementation support, and unclear code. Be
 Enforce: simplicity, readability, no thin wrappers, docstrings, tests, domain/core split.
 Block merge if critical issues remain.
 
+Validate behavior directly whenever practical instead of reviewing only by inspection. Run the code on representative inputs, adversarial inputs, and edge cases to stress test whether it actually works. When the project has a user-facing app, interact with it the way a real user would: exercise end-to-end workflows, try common and failure-path actions, and verify the visible behavior. Use automation when helpful, including scripts that drive mouse/keyboard input and capture screenshots; for web apps, browser automation or crawling tools are appropriate. For non-frontend projects, run the system with varied inputs, configurations, and hyperparameters. Treat missing hands-on validation as a review gap unless it is clearly infeasible, and in that case say what could not be verified.
+
 **Memory and documentation review** — treat incomplete researcher memory as a defect when this run should have
 updated it:
 

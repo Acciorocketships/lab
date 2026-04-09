@@ -160,24 +160,45 @@ def compute_file_diffs(
             head = (baseline.get("head") or "").strip()
             ref = tree if isinstance(tree, str) and tree.strip() else head
             untracked_lines: dict[str, int] = dict(baseline.get("untracked_lines") or {})
-            if not ref:
-                return []
 
-            r = subprocess.run(
-                ["git", "diff", "--numstat", "--no-renames", ref],
-                cwd=project_dir, capture_output=True, text=True, timeout=5,
-            )
-            if r.returncode == 0 and r.stdout.strip():
-                for line in r.stdout.strip().splitlines():
-                    parts = line.split("\t")
-                    if len(parts) < 3:
-                        continue
-                    try:
-                        a, d = int(parts[0]), int(parts[1])
-                    except ValueError:
-                        a, d = 0, 0
-                    path = parts[2].replace("\\", "/")
-                    diffs_map[path] = (a, d)
+            if ref:
+                r = subprocess.run(
+                    ["git", "diff", "--numstat", "--no-renames", ref],
+                    cwd=project_dir, capture_output=True, text=True, timeout=5,
+                )
+                if r.returncode == 0 and r.stdout.strip():
+                    for line in r.stdout.strip().splitlines():
+                        parts = line.split("\t")
+                        if len(parts) < 3:
+                            continue
+                        try:
+                            a, d = int(parts[0]), int(parts[1])
+                        except ValueError:
+                            a, d = 0, 0
+                        path = parts[2].replace("\\", "/")
+                        diffs_map[path] = (a, d)
+            else:
+                tracked_lines: dict[str, int] = dict(baseline.get("tracked_lines") or {})
+                if tracked_lines:
+                    r_staged = subprocess.run(
+                        ["git", "ls-files"],
+                        cwd=project_dir, capture_output=True, text=True, timeout=5,
+                    )
+                    if r_staged.returncode == 0 and r_staged.stdout.strip():
+                        for fname in r_staged.stdout.strip().splitlines():
+                            fn = fname.strip().replace("\\", "/")
+                            if not fn:
+                                continue
+                            prev = tracked_lines.get(fn)
+                            now = _git_line_count(project_dir, fn)
+                            if prev is None:
+                                if now:
+                                    diffs_map[fn] = (now, 0)
+                            elif now != prev:
+                                if now > prev:
+                                    diffs_map[fn] = (now - prev, 0)
+                                else:
+                                    diffs_map[fn] = (0, prev - now)
 
             baseline_tree_paths: set[str] = set()
             if tree:
@@ -419,6 +440,133 @@ def parse_stream_event(chunk: str, *, full_text: bool = False) -> tuple[str, str
     return None
 
 
+_LATEX_SYMBOLS: dict[str, str] = {
+    r"\alpha": "α", r"\beta": "β", r"\gamma": "γ", r"\delta": "δ",
+    r"\epsilon": "ε", r"\varepsilon": "ε", r"\zeta": "ζ", r"\eta": "η",
+    r"\theta": "θ", r"\iota": "ι", r"\kappa": "κ", r"\lambda": "λ",
+    r"\mu": "μ", r"\nu": "ν", r"\xi": "ξ", r"\pi": "π", r"\rho": "ρ",
+    r"\sigma": "σ", r"\tau": "τ", r"\phi": "φ", r"\varphi": "φ",
+    r"\chi": "χ", r"\psi": "ψ", r"\omega": "ω",
+    r"\Gamma": "Γ", r"\Delta": "Δ", r"\Theta": "Θ", r"\Lambda": "Λ",
+    r"\Xi": "Ξ", r"\Pi": "Π", r"\Sigma": "Σ", r"\Phi": "Φ",
+    r"\Psi": "Ψ", r"\Omega": "Ω",
+    r"\infty": "∞", r"\partial": "∂", r"\nabla": "∇",
+    r"\sum": "Σ", r"\prod": "Π", r"\int": "∫",
+    r"\cdot": "·", r"\odot": "⊙", r"\otimes": "⊗", r"\oplus": "⊕",
+    r"\times": "×", r"\div": "÷", r"\pm": "±", r"\mp": "∓",
+    r"\leq": "≤", r"\le": "≤", r"\geq": "≥", r"\ge": "≥",
+    r"\neq": "≠", r"\ne": "≠", r"\approx": "≈",
+    r"\equiv": "≡", r"\sim": "∼", r"\propto": "∝",
+    r"\in": "∈", r"\notin": "∉", r"\subset": "⊂", r"\supset": "⊃",
+    r"\subseteq": "⊆", r"\supseteq": "⊇",
+    r"\cup": "∪", r"\cap": "∩", r"\emptyset": "∅",
+    r"\forall": "∀", r"\exists": "∃", r"\neg": "¬",
+    r"\wedge": "∧", r"\vee": "∨",
+    r"\rightarrow": "→", r"\leftarrow": "←", r"\Rightarrow": "⇒",
+    r"\Leftarrow": "⇐", r"\leftrightarrow": "↔", r"\mapsto": "↦",
+    r"\to": "→",
+    r"\ldots": "…", r"\cdots": "⋯", r"\dots": "…",
+    r"\langle": "⟨", r"\rangle": "⟩",
+    r"\ell": "ℓ", r"\hbar": "ℏ",
+}
+_LATEX_SORTED = sorted(_LATEX_SYMBOLS.items(), key=lambda x: -len(x[0]))
+
+_SUPERSCRIPTS = str.maketrans(
+    "0123456789+-=()abcdefghijklmnoprstuvwxyzABDEGHIJKLMNOPRTUVW",
+    "⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁼⁽⁾ᵃᵇᶜᵈᵉᶠᵍʰⁱʲᵏˡᵐⁿᵒᵖʳˢᵗᵘᵛʷˣʸᶻᴬᴮᴰᴱᴳᴴᴵᴶᴷᴸᴹᴺᴼᴾᴿᵀᵁⱽᵂ",
+)
+_SUBSCRIPTS = str.maketrans(
+    "0123456789+-=()aehijklmnoprstuvx",
+    "₀₁₂₃₄₅₆₇₈₉₊₋₌₍₎ₐₑₕᵢⱼₖₗₘₙₒₚᵣₛₜᵤᵥₓ",
+)
+
+
+def _translate_script(content: str, table: dict[int, int]) -> str | None:
+    """Translate *content* using *table*, returning None if any char has no mapping."""
+    converted = content.translate(table)
+    if converted == content:
+        return None
+    if any(ord(c) not in table for c in content):
+        return None
+    return converted
+
+
+def _apply_scripts(text: str) -> str:
+    """Convert ^{...}, _{...}, ^X, _X to Unicode super/subscripts (math context)."""
+    def _braced(m: re.Match, table: dict[int, int]) -> str:
+        return _translate_script(m.group(1), table) or m.group(0)
+
+    def _single(m: re.Match, table: dict[int, int]) -> str:
+        return _translate_script(m.group(1), table) or m.group(0)
+
+    text = re.sub(r"\^\{([^}]+)\}", lambda m: _braced(m, _SUPERSCRIPTS), text)
+    text = re.sub(r"_\{([^}]+)\}", lambda m: _braced(m, _SUBSCRIPTS), text)
+    text = re.sub(r"\^([0-9a-zA-Z])", lambda m: _single(m, _SUPERSCRIPTS), text)
+    text = re.sub(r"_([0-9a-zA-Z])", lambda m: _single(m, _SUBSCRIPTS), text)
+    return text
+
+
+def _apply_scripts_safe(text: str) -> str:
+    """Convert scripts outside math delimiters using conservative heuristics.
+
+    Only converts single-letter-variable subscripts/superscripts (``x_j``,
+    ``A'^2``) and braced forms (``x_{ij}``).  Multi-letter identifiers like
+    ``merge_like_terms`` are left untouched.
+    """
+    def _braced(m: re.Match, table: dict[int, int]) -> str:
+        return _translate_script(m.group(1), table) or m.group(0)
+
+    text = re.sub(r"\^\{([^}]+)\}", lambda m: _braced(m, _SUPERSCRIPTS), text)
+    text = re.sub(r"_\{([^}]+)\}", lambda m: _braced(m, _SUBSCRIPTS), text)
+
+    def _safe_sub(m: re.Match) -> str:
+        base, ch = m.group(1), m.group(2)
+        return base + (_translate_script(ch, _SUBSCRIPTS) or f"_{ch}")
+
+    def _safe_sup(m: re.Match) -> str:
+        base, ch = m.group(1), m.group(2)
+        return base + (_translate_script(ch, _SUPERSCRIPTS) or f"^{ch}")
+
+    text = re.sub(r"(?<![a-zA-Z])([a-zA-Z]'?)_([0-9a-zA-Z])(?![a-zA-Z_])", _safe_sub, text)
+    text = re.sub(r"(?<![a-zA-Z])([a-zA-Z]'?)\^([0-9a-zA-Z])(?![a-zA-Z])", _safe_sup, text)
+    return text
+
+
+def _process_math_content(content: str) -> str:
+    """Apply all LaTeX-to-Unicode conversions to text inside math delimiters."""
+    content = re.sub(r"\\t?frac\{([^}]*)\}\{([^}]*)\}", r"\1/\2", content)
+    content = re.sub(r"\\t?frac(\d)(\d)", r"\1/\2", content)
+    for cmd, sym in _LATEX_SORTED:
+        content = content.replace(cmd, sym)
+    content = re.sub(
+        r"\\(?:text|mathrm|mathbf|mathit|mathcal|mathbb|operatorname)\{([^}]*)\}",
+        r"\1", content,
+    )
+    content = re.sub(r"\\(?:left|right|big|Big|bigg|Bigg)\b\s*", "", content)
+    content = _apply_scripts(content)
+    return content
+
+
+def _strip_latex(text: str) -> str:
+    """Convert LaTeX math notation to readable Unicode for terminal display."""
+    text = re.sub(r"\\\((.+?)\\\)", lambda m: _process_math_content(m.group(1)), text)
+    text = re.sub(r"\\\[(.+?)\\\]", lambda m: _process_math_content(m.group(1)), text)
+    for cmd, sym in _LATEX_SORTED:
+        text = text.replace(cmd, sym)
+    text = re.sub(
+        r"\\(?:text|mathrm|mathbf|mathit|mathcal|mathbb|operatorname)\{([^}]*)\}",
+        r"\1", text,
+    )
+    text = re.sub(r"\\(?:left|right|big|Big|bigg|Bigg)\b\s*", "", text)
+    parts = re.split(r"(`[^`]+`)", text)
+    text = "".join(
+        _apply_scripts_safe(part) if not part.startswith("`")
+        else "`" + _apply_scripts_safe(part[1:-1]) + "`"
+        for part in parts
+    )
+    return text
+
+
 def _inline_md_to_rich(text: str) -> str:
     """Convert inline Markdown (bold, code) to Rich markup.
 
@@ -431,7 +579,7 @@ def _inline_md_to_rich(text: str) -> str:
 
 
 def _markup_text(text: str) -> Text:
-    return Text.from_markup(_inline_md_to_rich(_rich_escape(text)))
+    return Text.from_markup(_inline_md_to_rich(_rich_escape(_strip_latex(text))))
 
 
 def _append_paragraph(renderables: list[RenderableType], lines: list[str]) -> None:
@@ -485,9 +633,9 @@ def _make_markdown_table(block_lines: list[str]) -> Table | None:
         padding=(0, 3),
     )
     for header in headers:
-        table.add_column(Text.from_markup(_inline_md_to_rich(header)), overflow="fold")
+        table.add_column(Text.from_markup(_inline_md_to_rich(_rich_escape(_strip_latex(header)))), overflow="fold")
     for row in rows:
-        table.add_row(*[Text.from_markup(_inline_md_to_rich(cell)) for cell in row])
+        table.add_row(*[Text.from_markup(_inline_md_to_rich(_rich_escape(_strip_latex(cell)))) for cell in row])
     return table
 
 
@@ -495,8 +643,9 @@ _CODE_REF_RE = re.compile(r"^(\d+):(\d+):(.+)$")
 
 
 def _resolve_code_lexer(language: str, title_file: str, code: str) -> str:
-    normalized = _CODE_LANGUAGE_ALIASES.get(language.strip().lower(), language.strip().lower())
-    if normalized:
+    lang = language.strip().lower()
+    normalized = _CODE_LANGUAGE_ALIASES.get(lang, lang)
+    if normalized and not _CODE_REF_RE.match(normalized):
         return normalized
     first_line = code.lstrip().splitlines()[0].strip() if code.strip() else ""
     if first_line.startswith("#!"):
@@ -505,8 +654,11 @@ def _resolve_code_lexer(language: str, title_file: str, code: str) -> str:
         if any(shell in first_line for shell in ("bash", "sh", "zsh")):
             return "bash"
     if title_file:
+        ext = Path(title_file).suffix.lstrip(".")
+        if ext in _CODE_LANGUAGE_ALIASES:
+            return _CODE_LANGUAGE_ALIASES[ext]
         guessed = Syntax.guess_lexer(title_file, code)
-        if guessed:
+        if guessed and guessed.lower() != "text":
             return guessed
     lowered = code.lower()
     stripped_lines = [line.strip() for line in code.splitlines() if line.strip()]
@@ -550,7 +702,12 @@ def _make_code_block(code: str, language: str) -> Panel:
     start_line = 1
     title_file = ""
 
-    if lines:
+    m = _CODE_REF_RE.match(language.strip())
+    if m:
+        start_line = int(m.group(1))
+        title_file = m.group(3).strip()
+        language = ""
+    elif lines:
         m = _CODE_REF_RE.match(lines[0].strip())
         if m:
             start_line = int(m.group(1))
@@ -674,17 +831,17 @@ def render_markdown(text: str) -> RenderableType:
 
         if stripped.startswith("### "):
             _append_paragraph(renderables, paragraph_lines)
-            renderables.append(Text.from_markup(f"[bold]{_inline_md_to_rich(_rich_escape(stripped[4:]))}[/bold]"))
+            renderables.append(Text.from_markup(f"[bold]{_inline_md_to_rich(_rich_escape(_strip_latex(stripped[4:])))}[/bold]"))
             continue
         if stripped.startswith("## "):
             _append_paragraph(renderables, paragraph_lines)
-            renderables.append(Text.from_markup(f"[bold]{_inline_md_to_rich(_rich_escape(stripped[3:]))}[/bold]"))
+            renderables.append(Text.from_markup(f"[bold]{_inline_md_to_rich(_rich_escape(_strip_latex(stripped[3:])))}[/bold]"))
             continue
         if stripped.startswith("# "):
             _append_paragraph(renderables, paragraph_lines)
             renderables.append(
                 Text.from_markup(
-                    f"[bold underline]{_inline_md_to_rich(_rich_escape(stripped[2:]))}[/bold underline]"
+                    f"[bold underline]{_inline_md_to_rich(_rich_escape(_strip_latex(stripped[2:])))}[/bold underline]"
                 )
             )
             continue
@@ -699,7 +856,7 @@ def render_markdown(text: str) -> RenderableType:
             _append_paragraph(renderables, paragraph_lines)
             depth = len(m.group(1)) // 2
             indent = "  " * depth
-            item_text = _inline_md_to_rich(_rich_escape(line[m.end() :]))
+            item_text = _inline_md_to_rich(_rich_escape(_strip_latex(line[m.end() :])))
             renderables.append(Text.from_markup(f"{indent}[dim]•[/dim] {item_text}"))
             continue
 
@@ -708,7 +865,7 @@ def render_markdown(text: str) -> RenderableType:
             _append_paragraph(renderables, paragraph_lines)
             depth = len(m.group(1)) // 2
             indent = "  " * depth
-            item_text = _inline_md_to_rich(_rich_escape(line[m.end() :]))
+            item_text = _inline_md_to_rich(_rich_escape(_strip_latex(line[m.end() :])))
             renderables.append(Text.from_markup(f"{indent}{m.group(2)}. {item_text}"))
             continue
 
