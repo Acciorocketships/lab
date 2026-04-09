@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import shutil
+import subprocess
 from pathlib import Path
+from typing import Any
 
 from research_lab import helpers
 
@@ -26,6 +29,112 @@ TIER_A_FILES = [
 def state_dir(researcher_root: Path) -> Path:
     """Tier A operating memory directory."""
     return researcher_root / "data" / "runtime" / "state"
+
+
+def worker_diff_baseline_path(researcher_root: Path) -> Path:
+    """JSON snapshot of the project tree at worker start (for live TUI diffs)."""
+    return researcher_root / "data" / "runtime" / "worker_diff_baseline.json"
+
+
+def write_worker_diff_baseline(researcher_root: Path, payload: dict[str, Any]) -> None:
+    """Persist baseline; overwritten at each worker start."""
+    p = worker_diff_baseline_path(researcher_root)
+    helpers.ensure_dir(p.parent)
+    p.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+def read_worker_diff_baseline(researcher_root: Path) -> dict[str, Any] | None:
+    """Load baseline dict, or None if missing / invalid."""
+    p = worker_diff_baseline_path(researcher_root)
+    if not p.is_file():
+        return None
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def clear_worker_diff_baseline(researcher_root: Path) -> None:
+    """Remove baseline after the worker run completes."""
+    p = worker_diff_baseline_path(researcher_root)
+    try:
+        p.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _snapshot_line_count(project_dir: Path, relpath: str) -> int:
+    fpath = project_dir / relpath
+    try:
+        if fpath.is_file() and fpath.stat().st_size < 500_000:
+            return fpath.read_bytes().count(b"\n")
+    except OSError:
+        pass
+    return 0
+
+
+def _git_repo_ok(project_dir: Path) -> bool:
+    try:
+        r = subprocess.run(
+            ["git", "rev-parse", "--is-inside-work-tree"],
+            cwd=project_dir, capture_output=True, text=True, timeout=3,
+        )
+        return r.returncode == 0 and r.stdout.strip() == "true"
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return False
+
+
+def capture_worker_diff_baseline(project_dir: Path, cycle: int) -> dict[str, Any] | None:
+    """Snapshot working tree at worker start for live TUI diffs (see :func:`write_worker_diff_baseline`).
+
+    Prefers a ``git stash create`` tree object so diffs are vs the exact tree at start, not
+    vs ``HEAD``. Falls back to ``HEAD`` only when no stash commit is created.
+    """
+    if not _git_repo_ok(project_dir):
+        return None
+    try:
+        rh = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=project_dir, capture_output=True, text=True, timeout=3,
+        )
+        if rh.returncode != 0:
+            return None
+        head = rh.stdout.strip()
+
+        ru = subprocess.run(
+            ["git", "ls-files", "-o", "--exclude-standard"],
+            cwd=project_dir, capture_output=True, text=True, timeout=5,
+        )
+        untracked_lines: dict[str, int] = {}
+        if ru.returncode == 0 and ru.stdout.strip():
+            for fname in ru.stdout.strip().splitlines():
+                fn = fname.strip().replace("\\", "/")
+                if fn:
+                    untracked_lines[fn] = _snapshot_line_count(project_dir, fn)
+
+        tree: str | None = None
+        rs = subprocess.run(
+            ["git", "stash", "create", "--include-untracked"],
+            cwd=project_dir, capture_output=True, text=True, timeout=30,
+        )
+        if rs.returncode == 0 and rs.stdout.strip():
+            stash = rs.stdout.strip().splitlines()[-1].strip()
+            rt = subprocess.run(
+                ["git", "rev-parse", f"{stash}^{{tree}}"],
+                cwd=project_dir, capture_output=True, text=True, timeout=3,
+            )
+            if rt.returncode == 0 and rt.stdout.strip():
+                tree = rt.stdout.strip()
+
+        return {
+            "cycle": cycle,
+            "tree": tree,
+            "head": head,
+            "untracked_lines": untracked_lines,
+        }
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return None
 
 
 def research_idea_body_for_project_config(markdown: str) -> str:
@@ -88,6 +197,7 @@ def reset_runtime_artifacts(
         else:
             helpers.write_text(p, _default_tier_a_content(name))
     _ensure_episodes_readme(researcher_root)
+    clear_worker_diff_baseline(researcher_root)
 
 
 def extended_dir(researcher_root: Path) -> Path:

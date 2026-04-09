@@ -5,9 +5,10 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+import subprocess
 import time
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from rich import box
 from rich.console import Group, RenderableType
@@ -126,6 +127,149 @@ def format_cycle_header(
 def cycle_header_running_elapsed(orchestrator_ts: float) -> float:
     """Elapsed seconds for a running cycle (for live header updates)."""
     return max(0.0, time.time() - orchestrator_ts)
+
+
+# ---------------------------------------------------------------------------
+# Real-time file change tracking (git diff per cycle)
+# ---------------------------------------------------------------------------
+
+def _git_line_count(project_dir: Path, relpath: str) -> int:
+    fpath = project_dir / relpath
+    try:
+        if fpath.is_file() and fpath.stat().st_size < 500_000:
+            return fpath.read_bytes().count(b"\n")
+    except OSError:
+        pass
+    return 0
+
+
+def compute_file_diffs(
+    project_dir: Path,
+    baseline: dict[str, Any] | None = None,
+) -> list[tuple[str, int, int]]:
+    """Return ``(relative_path, additions, deletions)`` for changed or new files.
+
+    With *baseline* (from :func:`research_lab.memory.capture_worker_diff_baseline`), compare
+    to the tree at worker start. Without it, compare tracked files to ``HEAD`` and list
+    untracked paths with total line counts (legacy behaviour).
+    """
+    diffs_map: dict[str, tuple[int, int]] = {}
+    try:
+        if baseline and isinstance(baseline.get("cycle"), int):
+            tree = baseline.get("tree")
+            head = (baseline.get("head") or "").strip()
+            ref = tree if isinstance(tree, str) and tree.strip() else head
+            untracked_lines: dict[str, int] = dict(baseline.get("untracked_lines") or {})
+            if not ref:
+                return []
+
+            r = subprocess.run(
+                ["git", "diff", "--numstat", "--no-renames", ref],
+                cwd=project_dir, capture_output=True, text=True, timeout=5,
+            )
+            if r.returncode == 0 and r.stdout.strip():
+                for line in r.stdout.strip().splitlines():
+                    parts = line.split("\t")
+                    if len(parts) < 3:
+                        continue
+                    try:
+                        a, d = int(parts[0]), int(parts[1])
+                    except ValueError:
+                        a, d = 0, 0
+                    path = parts[2].replace("\\", "/")
+                    diffs_map[path] = (a, d)
+
+            baseline_tree_paths: set[str] = set()
+            if tree:
+                rt = subprocess.run(
+                    ["git", "ls-tree", "-r", "--name-only", tree],
+                    cwd=project_dir, capture_output=True, text=True, timeout=5,
+                )
+                if rt.returncode == 0 and rt.stdout.strip():
+                    baseline_tree_paths = {p.replace("\\", "/") for p in rt.stdout.splitlines() if p.strip()}
+
+            r2 = subprocess.run(
+                ["git", "ls-files", "-o", "--exclude-standard"],
+                cwd=project_dir, capture_output=True, text=True, timeout=5,
+            )
+            if r2.returncode == 0 and r2.stdout.strip():
+                for fname in r2.stdout.strip().splitlines():
+                    fn = fname.strip().replace("\\", "/")
+                    if not fn or fn in diffs_map:
+                        continue
+                    if tree and fn in baseline_tree_paths:
+                        continue
+                    prev = untracked_lines.get(fn)
+                    now = _git_line_count(project_dir, fn)
+                    if prev is None:
+                        if now:
+                            diffs_map[fn] = (now, 0)
+                    elif now != prev:
+                        if now > prev:
+                            diffs_map[fn] = (now - prev, 0)
+                        else:
+                            diffs_map[fn] = (0, prev - now)
+            return sorted(
+                ((p, a, d) for p, (a, d) in diffs_map.items()),
+                key=lambda t: t[0],
+            )
+
+        r = subprocess.run(
+            ["git", "diff", "--numstat", "--no-renames", "HEAD"],
+            cwd=project_dir, capture_output=True, text=True, timeout=5,
+        )
+        if r.returncode == 0 and r.stdout.strip():
+            for line in r.stdout.strip().splitlines():
+                parts = line.split("\t")
+                if len(parts) < 3:
+                    continue
+                try:
+                    a, d = int(parts[0]), int(parts[1])
+                except ValueError:
+                    a, d = 0, 0
+                path = parts[2].replace("\\", "/")
+                diffs_map[path] = (a, d)
+
+        r2 = subprocess.run(
+            ["git", "ls-files", "-o", "--exclude-standard"],
+            cwd=project_dir, capture_output=True, text=True, timeout=5,
+        )
+        if r2.returncode == 0 and r2.stdout.strip():
+            for fname in r2.stdout.strip().splitlines():
+                fn = fname.strip().replace("\\", "/")
+                if not fn:
+                    continue
+                if fn in diffs_map:
+                    continue
+                now = _git_line_count(project_dir, fn)
+                if now:
+                    diffs_map[fn] = (now, 0)
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass
+    return sorted(
+        ((p, a, d) for p, (a, d) in diffs_map.items()),
+        key=lambda t: t[0],
+    )
+
+
+_NB = "\u00a0"  # non-breaking space keeps each entry on one line
+
+
+def format_file_changes(diffs: list[tuple[str, int, int]]) -> Text:
+    """Format diffs as a wrapping line of ``file\u00a0+N\u00a0-M`` entries.
+
+    Non-breaking spaces glue each entry together so word-wrap only splits
+    between files, never inside a single entry.
+    """
+    text = Text()
+    for i, (filename, adds, dels) in enumerate(diffs):
+        if i > 0:
+            text.append("  ")
+        text.append(f"{filename}{_NB}", style="dim")
+        text.append(f"+{adds}", style="green")
+        text.append(_NB)
+        text.append(f"-{dels}", style="red")
+    return text
 
 
 def format_stream_chunk(chunk: str) -> str:

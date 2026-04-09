@@ -14,6 +14,8 @@ from textual.containers import Container, VerticalScroll
 from textual.widgets import Static
 
 from research_lab import db
+from research_lab.global_config import project_researcher_root
+from research_lab.memory import read_worker_diff_baseline
 from research_lab.runner import reset_project_preserving_research_idea
 from research_lab.ui import events
 from research_lab.ui.prompt_text_area import PromptSubmitted, PromptTextArea
@@ -95,6 +97,13 @@ Screen {
     border-left: tall $surface-lighten-1;
 }
 
+.file-changes {
+    height: auto;
+    width: 1fr;
+    margin: 0 3;
+    padding: 0 1;
+}
+
 #stream-text {
     height: auto;
     margin: 0 2;
@@ -139,6 +148,10 @@ class ResearchConsole(App[None]):
         self._MAX_AUTO_RESTARTS = 3
         self._last_stream_text = ""
         self._current_cycle_widgets: list[Static] = []
+        self._file_changes_widget: Static | None = None
+        self._last_file_changes_ts: float = 0.0
+        self._orchestrating = False
+        self._orchestrating_tick = 0
 
     def compose(self) -> ComposeResult:
         yield Static("", id="header")
@@ -158,12 +171,10 @@ class ResearchConsole(App[None]):
         self._cleanup_orphaned_cycles()
         self._refresh_header()
         self.query_one("#stream-text", Static).display = False
-        self._write_activity("")
         self._write_activity("  [bold]Welcome to lab.[/]")
-        self._write_activity("  Type [bold]/start[/] to begin, or type an instruction.")
         self._write_activity(
-            "  [dim]Enter[/] sends · [dim]Shift+Enter[/] for newline · "
-            "[dim]/help[/] for commands\n"
+            "  Type [bold]/start[/] to begin, [bold]/help[/] for a list of commands. "
+            "Type additional instructions at any time."
         )
         self.query_one("#prompt", PromptTextArea).focus()
         self.set_interval(0.3, self._poll)
@@ -286,6 +297,25 @@ class ResearchConsole(App[None]):
 
     # --- polling --------------------------------------------------------------
 
+    def _refresh_file_changes(self, *, force: bool = False) -> None:
+        """Update the file-changes widget with current git diff stats."""
+        if self._file_changes_widget is None:
+            return
+        now = time.time()
+        if not force and now - self._last_file_changes_ts < 0.25:
+            return
+        self._last_file_changes_ts = now
+        baseline = None
+        raw = read_worker_diff_baseline(project_researcher_root(self.cfg.project_dir))
+        if raw and int(raw.get("cycle", -1)) == self._last_cycle:
+            baseline = raw
+        diffs = events.compute_file_diffs(self.cfg.project_dir, baseline=baseline)
+        if diffs:
+            self._file_changes_widget.update(events.format_file_changes(diffs))
+            self._file_changes_widget.display = True
+        else:
+            self._file_changes_widget.display = False
+
     def _refresh_header(self) -> None:
         try:
             hdr = events.header_line(self._project_name, self._model, self._conn)
@@ -299,7 +329,20 @@ class ResearchConsole(App[None]):
         self._refresh_header()
         self._poll_run_events()
         self._poll_stream()
+        self._poll_orchestrating_status()
         self._refresh_running_cycle_header()
+        self._refresh_file_changes()
+
+    def _poll_orchestrating_status(self) -> None:
+        """Show animated 'Orchestrating...' while the orchestrator LLM is deciding."""
+        if not self._orchestrating:
+            return
+        if self._scheduler is None or not self._scheduler.is_alive():
+            self._orchestrating = False
+            return
+        self._orchestrating_tick += 1
+        dots = "." * ((self._orchestrating_tick % 3) + 1)
+        self._set_stream_status(f"[dim]Orchestrating{dots}[/]")
 
     def _check_scheduler_health(self) -> None:
         """Detect a crashed scheduler subprocess and auto-restart when possible."""
@@ -308,12 +351,16 @@ class ResearchConsole(App[None]):
         if self._scheduler.is_alive():
             return
         self._scheduler = None
-        self._revert_to_checkpoint()
+        self._orchestrating = False
         try:
-            mode = db.get_system_state(self._conn).get("control_mode", "paused")
+            # Revert sets control_mode to paused via rollback_to_cycle; capture intent first.
+            should_auto_restart = (
+                db.get_system_state(self._conn).get("control_mode", "paused") == "active"
+            )
         except sqlite3.OperationalError:
-            return
-        if mode != "active":
+            should_auto_restart = False
+        self._revert_to_checkpoint()
+        if not should_auto_restart:
             return
         if self._auto_restarts >= self._MAX_AUTO_RESTARTS:
             self._write_activity(
@@ -331,7 +378,6 @@ class ResearchConsole(App[None]):
 
     def _restart_scheduler(self) -> None:
         from research_lab.loop import spawn_scheduler
-        from research_lab.global_config import project_researcher_root
 
         researcher_root = project_researcher_root(self.cfg.project_dir)
         db.enqueue_event(self._conn, "resume", None)
@@ -339,6 +385,7 @@ class ResearchConsole(App[None]):
         self._scheduler = spawn_scheduler(
             self.db_path, researcher_root, self.cfg.project_dir, self.cfg,
         )
+        self._orchestrating = True
 
     def _refresh_running_cycle_header(self) -> None:
         """Tick the live duration on the open cycle header while the worker runs."""
@@ -389,6 +436,7 @@ class ResearchConsole(App[None]):
             task = row["task"] or ""
 
             if kind == "orchestrator":
+                self._orchestrating = False
                 new_cycle = cycle != self._last_cycle or worker != self._last_worker
                 if new_cycle:
                     if self._cycle_header_widget is not None:
@@ -425,6 +473,12 @@ class ResearchConsole(App[None]):
                     task_w = self._write_task(task)
                     if task_w is not None:
                         self._current_cycle_widgets.append(task_w)
+                    self._file_changes_widget = self._mount_activity_widget(
+                        "", classes="activity-line file-changes",
+                    )
+                    self._file_changes_widget.display = False
+                    self._current_cycle_widgets.append(self._file_changes_widget)
+                    self._last_file_changes_ts = 0.0
                 self._set_stream_status(f"[dim]Running {worker}...[/]")
                 if new_cycle and self._cycle_header_widget is not None:
                     self._scroll_cycle_header_to_top()
@@ -450,6 +504,8 @@ class ResearchConsole(App[None]):
                 summary_excerpt = events.extract_result_excerpt(row["summary"] or "")
                 excerpt = stream_excerpt or summary_excerpt
                 self._clear_stream_status()
+                self._refresh_file_changes(force=True)
+                self._file_changes_widget = None
                 if self._cycle_header_widget is not None and cycle == self._last_cycle:
                     self._cycle_header_widget.update(
                         events.format_cycle_header(
@@ -477,6 +533,8 @@ class ResearchConsole(App[None]):
                         self._last_stream_id = max(self._last_stream_id, int(sid_row[0]))
                 except sqlite3.OperationalError:
                     pass
+                if self._scheduler and self._scheduler.is_alive():
+                    self._orchestrating = True
 
     def _poll_stream(self) -> None:
         """Show the most recent stream event in the inline status panel.
@@ -489,6 +547,7 @@ class ResearchConsole(App[None]):
             rows = db.stream_chunks_since(self._conn, self._last_stream_id)
         except sqlite3.OperationalError:
             return
+        had_tool = False
         for row in rows:
             self._last_stream_id = row["id"]
             parsed = events.parse_stream_event(row["chunk"], full_text=True)
@@ -496,6 +555,7 @@ class ResearchConsole(App[None]):
                 continue
             event_type, text = parsed
             if event_type == "tool" and text.strip():
+                had_tool = True
                 self._set_stream_status(f"[cyan]{text}[/]")
                 self._scroll_to_bottom()
             elif event_type == "text" and text.strip():
@@ -503,6 +563,8 @@ class ResearchConsole(App[None]):
                 self._last_stream_text = clean
                 self._set_stream_status(f"[dim]{clean}[/]")
                 self._scroll_to_bottom()
+        if had_tool:
+            self._last_file_changes_ts = 0.0
 
     # --- input handling -------------------------------------------------------
 
@@ -576,14 +638,13 @@ class ResearchConsole(App[None]):
 
         if scheduler_alive:
             if mode == "paused":
-                self._write_activity("  [green]Agent resumed.[/]\n")
+                self._orchestrating = True
             else:
                 self._write_activity("  [dim]Agent is already running.[/]")
             return
 
         self._auto_restarts = 0
         self._restart_scheduler()
-        self._write_activity("  [green]Agent started.[/]\n")
 
     def _cmd_pause(self) -> None:
         self._kill_scheduler()
@@ -592,7 +653,6 @@ class ResearchConsole(App[None]):
         self._conn.commit()
         self._clear_stream_status()
         self._last_stream_text = ""
-        self._write_activity("  [yellow]Agent paused.[/]")
 
     def _cmd_exit(self) -> None:
         self._write_activity("  [dim]Shutting down...[/]")
@@ -667,6 +727,8 @@ class ResearchConsole(App[None]):
         self._worker_start_ts = 0.0
         self._last_orchestrator_task = ""
         self._cycle_header_widget = None
+        self._file_changes_widget = None
+        self._last_file_changes_ts = 0.0
         self._last_stream_text = ""
         self._current_cycle_widgets = []
         self._clear_stream_status()
@@ -682,6 +744,7 @@ class ResearchConsole(App[None]):
         if self._scheduler and self._scheduler.is_alive():
             self._scheduler.kill_group()
         self._scheduler = None
+        self._orchestrating = False
 
     def _cleanup_orphaned_cycles(self) -> None:
         """Delete DB rows for cycles that have an orchestrator event but no worker event."""
@@ -720,15 +783,17 @@ class ResearchConsole(App[None]):
     @staticmethod
     def _reset_context_summary(researcher_root: Path) -> None:
         """Reset context_summary.md to its default when no cycles have completed."""
+        from research_lab import helpers
         from research_lab.memory import state_dir, _default_tier_a_content
+
         p = state_dir(researcher_root) / "context_summary.md"
+        helpers.ensure_dir(p.parent)
         p.write_text(_default_tier_a_content("context_summary.md"), encoding="utf-8")
 
     def _revert_to_checkpoint(self) -> None:
         """Restore the working tree to the last completed-cycle checkpoint and
         roll back the DB to match, removing any UI traces of the interrupted cycle."""
         from research_lab import git_checkpoint
-        from research_lab.global_config import project_researcher_root
 
         # Remove in-progress cycle widgets unconditionally -- the scheduler is
         # dead at this point so the cycle cannot complete.
@@ -736,6 +801,8 @@ class ResearchConsole(App[None]):
             w.remove()
         self._current_cycle_widgets.clear()
         self._cycle_header_widget = None
+        self._file_changes_widget = None
+        self._last_file_changes_ts = 0.0
         self._worker_start_ts = 0.0
         self._last_worker = ""
         self._last_orchestrator_task = ""

@@ -211,6 +211,10 @@ def execute_worker(
     if backend not in ("claude", "cursor"):
         backend = "cursor"
 
+    snap = memory.capture_worker_diff_baseline(project_dir, cyc)
+    if snap is not None:
+        memory.write_worker_diff_baseline(researcher_root, snap)
+
     on_chunk = None
     if db_path is not None:
         stream_conn = _conn(db_path)
@@ -289,6 +293,7 @@ def update_state(state: ResearchState, *, db_path: Path, researcher_root: Path) 
         conn.commit()
     finally:
         conn.close()
+    memory.clear_worker_diff_baseline(researcher_root)
     return {}
 
 
