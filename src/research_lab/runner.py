@@ -134,10 +134,13 @@ def ensure_console_ready(project_dir: Path) -> tuple[Path, RunConfig]:
             f"Project not initialized at {project_dir}. Run `lab init` first (or `runner.init_project_at()`)."
         )
 
+    from research_lab.git_checkpoint import ensure_git_repo
+
     gcfg = load_global_config()
     pcfg = load_project_config(project_dir)
     run_cfg = RunConfig.from_configs(gcfg, pcfg, project_dir)
     researcher_root = project_researcher_root(project_dir)
+    ensure_git_repo(project_dir)
     memory.ensure_memory_layout(researcher_root, project_dir=project_dir)
 
     db_path = researcher_root / "data" / "runtime.db"
@@ -219,11 +222,14 @@ def init_project_at(
             f"Project already initialized at {project_dir / '.airesearcher'}; pass overwrite=True to re-seed."
         )
 
+    from research_lab.git_checkpoint import ensure_git_repo
+
     gcfg = load_global_config()
     save_project_config(project_dir, pcfg)
     run_cfg = RunConfig.from_configs(gcfg, pcfg, project_dir)
     researcher_root = project_researcher_root(project_dir)
     researcher_root.mkdir(parents=True, exist_ok=True)
+    ensure_git_repo(project_dir)
     memory.ensure_memory_layout(researcher_root, project_dir=project_dir)
     seed_tier_a_from_run_config(researcher_root, run_cfg)
     return researcher_root
@@ -375,8 +381,14 @@ def reset_project_preserving_research_idea(project_dir: Path) -> None:
     prefs_body = memory.research_idea_body_for_project_config(preserved_prefs)
     save_project_config(project_dir, ProjectConfig(research_idea=idea_body, preferences=prefs_body))
 
+    from research_lab.git_checkpoint import delete_checkpoint_branch
+
     db_path = researcher_root / "data" / "runtime.db"
     db.obliterate_runtime_db(db_path)
+    delete_checkpoint_branch(project_dir)
+    log_path = researcher_root / "data" / "scheduler.log"
+    if log_path.is_file():
+        log_path.unlink()
     memory.reset_runtime_artifacts(
         researcher_root,
         preserved_research_idea_md=preserved,
@@ -384,3 +396,9 @@ def reset_project_preserving_research_idea(project_dir: Path) -> None:
         project_dir=project_dir,
     )
     memory.ensure_memory_layout(researcher_root, project_dir=project_dir)
+
+    sd = memory.state_dir(researcher_root)
+    (sd / "project_brief.md").write_text(
+        f"# Project\n\nImplementation directory: `{project_dir}`\n",
+        encoding="utf-8",
+    )

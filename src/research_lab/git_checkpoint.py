@@ -25,6 +25,26 @@ def is_git_repo(project_dir: Path) -> bool:
     return (project_dir / ".git").is_dir()
 
 
+def ensure_git_repo(project_dir: Path) -> None:
+    """Initialize a git repo with an initial commit if one doesn't exist."""
+    if is_git_repo(project_dir):
+        return
+    _log.info("Initializing git repo at %s", project_dir)
+    subprocess.run(
+        ["git", "init"], cwd=project_dir, check=True, capture_output=True,
+    )
+    _ensure_airesearcher_excluded(project_dir)
+    env = _checkpoint_env()
+    subprocess.run(
+        ["git", "add", "-A"],
+        cwd=project_dir, env=env, check=True, capture_output=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "Initial commit (created by lab)", "--allow-empty"],
+        cwd=project_dir, env=env, check=True, capture_output=True,
+    )
+
+
 def _ensure_airesearcher_excluded(project_dir: Path) -> None:
     """Append ``.airesearcher/`` to ``.git/info/exclude`` so runtime data never
     leaks into checkpoint trees (idempotent)."""
@@ -135,6 +155,21 @@ def has_checkpoint(project_dir: Path) -> bool:
         ["git", "rev-parse", "--verify", f"refs/heads/{CHECKPOINT_BRANCH}"],
         cwd=project_dir, capture_output=True,
     ).returncode == 0
+
+
+def delete_checkpoint_branch(project_dir: Path) -> bool:
+    """Remove the ``checkpoints`` branch ref so stale checkpoints don't survive a reset."""
+    if not has_checkpoint(project_dir):
+        return False
+    result = subprocess.run(
+        ["git", "update-ref", "-d", f"refs/heads/{CHECKPOINT_BRANCH}"],
+        cwd=project_dir, capture_output=True,
+    )
+    if result.returncode == 0:
+        _log.info("Deleted checkpoints branch in %s", project_dir)
+        return True
+    _log.warning("Failed to delete checkpoints branch: %s", result.stderr)
+    return False
 
 
 def get_checkpoint_cycle(project_dir: Path) -> int | None:

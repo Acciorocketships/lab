@@ -701,10 +701,34 @@ class ResearchConsole(App[None]):
         except sqlite3.OperationalError:
             pass
 
+    @staticmethod
+    def _cleanup_incomplete_episodes(researcher_root: Path, last_completed: int) -> None:
+        """Delete episode directories for cycles beyond *last_completed*."""
+        from research_lab.memory import episodes_dir
+        import re as _re
+        ep_root = episodes_dir(researcher_root)
+        if not ep_root.is_dir():
+            return
+        for child in list(ep_root.iterdir()):
+            if not child.is_dir():
+                continue
+            m = _re.match(r"cycle_(\d+)", child.name)
+            if m and int(m.group(1)) > last_completed:
+                import shutil
+                shutil.rmtree(child, ignore_errors=True)
+
+    @staticmethod
+    def _reset_context_summary(researcher_root: Path) -> None:
+        """Reset context_summary.md to its default when no cycles have completed."""
+        from research_lab.memory import state_dir, _default_tier_a_content
+        p = state_dir(researcher_root) / "context_summary.md"
+        p.write_text(_default_tier_a_content("context_summary.md"), encoding="utf-8")
+
     def _revert_to_checkpoint(self) -> None:
         """Restore the working tree to the last completed-cycle checkpoint and
         roll back the DB to match, removing any UI traces of the interrupted cycle."""
         from research_lab import git_checkpoint
+        from research_lab.global_config import project_researcher_root
 
         # Remove in-progress cycle widgets unconditionally -- the scheduler is
         # dead at this point so the cycle cannot complete.
@@ -735,6 +759,28 @@ class ResearchConsole(App[None]):
 
         # Purge any remaining orphaned cycles the checkpoint didn't cover.
         self._cleanup_orphaned_cycles()
+
+        # Even without git, ensure system_state is consistent with completed
+        # cycles and clean up filesystem artifacts from interrupted runs.
+        if not reverted:
+            try:
+                row = self._conn.execute(
+                    "SELECT MAX(cycle) FROM run_events WHERE kind = 'worker'"
+                ).fetchone()
+                last_completed = int(row[0]) if row and row[0] is not None else 0
+                self._conn.execute("BEGIN IMMEDIATE")
+                db.rollback_to_cycle(self._conn, last_completed)
+                self._conn.commit()
+            except Exception:
+                try:
+                    self._conn.rollback()
+                except Exception:
+                    pass
+
+            researcher_root = project_researcher_root(self.cfg.project_dir)
+            self._cleanup_incomplete_episodes(researcher_root, last_completed)
+            if last_completed == 0:
+                self._reset_context_summary(researcher_root)
 
         # Resync event/stream IDs with the DB after deletions.
         try:

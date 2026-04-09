@@ -210,7 +210,7 @@ def _default_skills_index() -> str:
     return (
         "# Skills index\n\n"
         "List each skill file under `memory/skills/` with its path and purpose. "
-        "The skill_writer worker keeps this table aligned with files on disk.\n\n"
+        "Keep this table aligned with files on disk; `skill_writer` commonly does this, but any worker that adds or changes skills should update it.\n\n"
         "| Path | Purpose |\n"
         "|------|--------|\n"
         "| *(add rows as you add `memory/skills/*.md`)* | |\n\n"
