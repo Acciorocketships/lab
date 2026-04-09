@@ -14,9 +14,11 @@ from rich.console import Group, RenderableType
 from rich.markup import escape as _rich_escape
 from rich.panel import Panel
 from rich.rule import Rule
-from rich.syntax import Syntax
+from rich.style import Style
+from rich.syntax import ANSISyntaxTheme, Syntax
 from rich.table import Table
 from rich.text import Text
+from pygments.token import Comment, Error, Keyword, Name, Number, Operator, String, Text as TokenText
 
 from research_lab import db
 
@@ -49,6 +51,25 @@ _CODE_LANGUAGE_ALIASES = {
     "md": "markdown",
     "rs": "rust",
 }
+_CODE_THEME = ANSISyntaxTheme(
+    {
+        TokenText: Style.parse("white"),
+        Comment: Style.parse("italic bright_black"),
+        Keyword: Style.parse("bold bright_cyan"),
+        Keyword.Namespace: Style.parse("bold bright_magenta"),
+        Name.Builtin: Style.parse("bright_blue"),
+        Name.Class: Style.parse("bold bright_blue"),
+        Name.Decorator: Style.parse("bright_magenta"),
+        Name.Exception: Style.parse("bold bright_red"),
+        Name.Function: Style.parse("bold bright_blue"),
+        Name.Namespace: Style.parse("bright_blue"),
+        Name.Tag: Style.parse("bold bright_cyan"),
+        Number: Style.parse("bright_yellow"),
+        Operator: Style.parse("bright_magenta"),
+        String: Style.parse("bright_green"),
+        Error: Style.parse("bold bright_red"),
+    }
+)
 
 
 def header_line(project_name: str, model: str, conn: sqlite3.Connection) -> str:
@@ -398,12 +419,12 @@ def _make_code_block(code: str, language: str) -> Panel:
     syntax = Syntax(
         code,
         lexer,
-        theme="monokai",
+        theme=_CODE_THEME,
         code_width=None,
         word_wrap=True,
         line_numbers=show_nums,
         start_line=start_line,
-        indent_guides=False,
+        indent_guides=True,
         background_color=_CODE_BG,
         padding=0,
     )

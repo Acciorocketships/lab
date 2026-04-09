@@ -131,6 +131,61 @@ def test_worker_ok_from_payload_not_summary_substring(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# _fetch_last_stream_text prefers the result event over individual deltas
+# ---------------------------------------------------------------------------
+
+
+def test_fetch_last_stream_text_uses_result_event(tmp_path: Path) -> None:
+    """The full response from the result event should be returned, not the last delta."""
+    db_path = tmp_path / "runtime.db"
+    cfg = _cfg(tmp_path)
+    console = ResearchConsole(db_path, cfg)
+    conn = console._conn
+
+    full_text = (
+        "Here is the code:\n\n"
+        "```python\n140:175:src/analyticgmm/poly_gaussian.py\n"
+        "    def integrate_lebesgue(self, dims):\n"
+        "        pg = self\n"
+        "        for dim in range(d0 - 1, -1, -1):\n"
+        "            if dim in wanted:\n"
+        "                pg = pg.integrate_lebesgue_1d(dim)\n"
+        "        return pg\n```"
+    )
+
+    db.append_stream_chunk(conn, cycle=1, worker="implementer",
+                           chunk=json.dumps({"type": "content_block_delta",
+                                             "delta": {"type": "text_delta", "text": "return pg"}}))
+    db.append_stream_chunk(conn, cycle=1, worker="implementer",
+                           chunk=json.dumps({"type": "result", "subtype": "success",
+                                             "is_error": False, "result": full_text}))
+
+    got = console._fetch_last_stream_text(cycle=1)
+    assert "integrate_lebesgue" in got
+    assert "140:175" in got
+    assert got == full_text.strip()
+
+    conn.close()
+
+
+def test_fetch_last_stream_text_falls_back_to_delta(tmp_path: Path) -> None:
+    """When no result event exists, fall back to the last text delta."""
+    db_path = tmp_path / "runtime.db"
+    cfg = _cfg(tmp_path)
+    console = ResearchConsole(db_path, cfg)
+    conn = console._conn
+
+    db.append_stream_chunk(conn, cycle=1, worker="planner",
+                           chunk=json.dumps({"type": "content_block_delta",
+                                             "delta": {"type": "text_delta", "text": "some delta"}}))
+
+    got = console._fetch_last_stream_text(cycle=1)
+    assert got == "some delta"
+
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
 # Stream event parsing
 # ---------------------------------------------------------------------------
 

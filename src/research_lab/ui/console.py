@@ -236,14 +236,33 @@ class ResearchConsole(App[None]):
         status.display = True
 
     def _fetch_last_stream_text(self, cycle: int) -> str:
-        """Retrieve the last text content from worker_stream for a completed cycle."""
+        """Retrieve the full text output from worker_stream for a completed cycle.
+
+        Prefers the ``result`` event emitted at the end of a stream-json
+        session (contains the complete assistant response).  Falls back to the
+        last individual text chunk when no result event is available.
+        """
         try:
             rows = list(self._conn.execute(
-                "SELECT chunk FROM worker_stream WHERE cycle = ? ORDER BY id DESC LIMIT 50",
+                "SELECT chunk FROM worker_stream WHERE cycle = ? ORDER BY id DESC LIMIT 200",
                 (cycle,),
             ))
         except sqlite3.OperationalError:
             return ""
+
+        for row in rows:
+            raw = row["chunk"].strip()
+            if not raw:
+                continue
+            try:
+                data = json.loads(raw)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                continue
+            if isinstance(data, dict) and data.get("type") == "result":
+                result_text = data.get("result", "")
+                if isinstance(result_text, str) and result_text.strip():
+                    return result_text.strip()
+
         for row in rows:
             parsed = events.parse_stream_event(row["chunk"], full_text=True)
             if parsed and parsed[0] == "text" and parsed[1].strip():
@@ -423,11 +442,11 @@ class ResearchConsole(App[None]):
                 except (json.JSONDecodeError, TypeError):
                     pass
                 ok = payload.get("worker_ok", True)
-                stream_excerpt = events.extract_result_excerpt(self._last_stream_text)
+                stream_excerpt = events.extract_result_excerpt(
+                    self._fetch_last_stream_text(cycle)
+                )
                 if not stream_excerpt:
-                    stream_excerpt = events.extract_result_excerpt(
-                        self._fetch_last_stream_text(cycle)
-                    )
+                    stream_excerpt = events.extract_result_excerpt(self._last_stream_text)
                 summary_excerpt = events.extract_result_excerpt(row["summary"] or "")
                 excerpt = stream_excerpt or summary_excerpt
                 self._clear_stream_status()
