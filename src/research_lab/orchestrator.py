@@ -19,6 +19,7 @@ class OrchestratorDecision(BaseModel):
 
     worker: Literal[
         "planner",
+        "query",
         "researcher",
         "executer",
         "implementer",
@@ -50,7 +51,8 @@ You are the orchestrator. Route the project to exactly one next worker.
 - Prefer `planner` early when the project direction is not yet concretized.
 
 **Overall workflow**
-- If there is not enough information, or the problem could benefit from insights from prior research, existing datasets, libraries, similar projects, or related approaches, route to `researcher`. This is often a valuable first step.
+- If there is not enough local codebase information to make a good decision, craft a precise task, or understand how the current system is wired, route to `query`.
+- If there is not enough information from outside the repo, or the problem could benefit from insights from prior research, existing datasets, libraries, similar projects, or related approaches, route to `researcher`. This is often a valuable first step.
 - If there is no plan yet, or the plan should change because of new information, route to `planner`.
 - If something needs to be built or changed in the codebase, route to `implementer`.
 - If suspicious behavior, failures, confusing runtime behavior, or non-obvious bugs need root-cause investigation, route to `debugger`.
@@ -83,7 +85,8 @@ You are the orchestrator. Route the project to exactly one next worker.
 - Also prioritize communication of progress to the user. When there are meaningful results, completed milestones, useful artifacts, or demos worth showcasing, strongly consider routing to `reporter` rather than leaving the work undocumented or hard to inspect.
 
 **Worker-specific notes**
-- `researcher`: use whenever more information is needed, including web or papers, questions about the codebase or files, or repo exploration to answer a question.
+- `query`: use for local codebase and file investigation when the system needs repo facts, call paths, interfaces, tests, configs, or implementation context before deciding what to do next.
+- `researcher`: use for external information gathering such as web, papers, datasets, libraries, APIs, similar projects, or broader background that is not primarily answered by searching the local repo.
 - `executer`: use for one-off operational tasks such as shell commands, temporary scripts, and edits to non-code files; not for product code changes.
 - `reporter`: use when the user would benefit from a clear report, demo, visualization, or showcase artifact. Prefer `reporter` not only for final summaries, but also whenever intermediate progress should be made legible, inspectable, and presentable.
 - `critic`: use when you want a challenge or sanity-check on direction, approach, or results.
@@ -107,7 +110,7 @@ When the project is stuck, stagnating, or looping, use `critic` proactively and 
 - Respond with JSON only. No markdown fences.
 - Return exactly one JSON object with these keys: `"worker"`, `"task"`, `"branch"`, `"reason"`, `"roadmap_step"`, `"context_summary"`, `"worker_kwargs"`.
 - `roadmap_step` should be a short label for the active high-level item in `roadmap.md`.
-- `worker` must be one of: `planner`, `researcher`, `executer`, `implementer`, `debugger`, `experimenter`, `critic`, `reviewer`, `reporter`, `skill_writer`, `done`.
+- `worker` must be one of: `planner`, `query`, `researcher`, `executer`, `implementer`, `debugger`, `experimenter`, `critic`, `reviewer`, `reporter`, `skill_writer`, `done`.
 - Use strings for all scalar values; use the empty string for `branch` if unknown.
 - `worker_kwargs` is an object; set `{"persona": "..."}` when routing to `critic`.
 - Do not wrap the answer in a parent key or nested object.

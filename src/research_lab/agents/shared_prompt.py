@@ -7,7 +7,7 @@ MEMORY_AND_TIER_A = """**Tier A** (`state/*.md`) and `memory/extended/`: keep th
 
 **Tier A files** (`state/*.md` — meanings):
 - **`project_brief.md`** — project identity, scope, constraints the repo must respect.
-- **`extended_memory_index.md`** — **you maintain this:** index of `memory/extended/` only. Each entry should point to one long-form file and give a brief description or a few high-level bullets about what the full file contains, so future workers can decide whether to open it. Rules live in this prompt.
+- **`extended_memory_index.md`** — **you maintain this:** index of `memory/extended/` only. Each entry should point to one long-form file and give a brief description or a few high-level bullets about what the full file contains, so future workers can decide whether to open it.
 - **`research_idea.md`** — research brief: goals, approach, and implicit success criteria (what “done” means).
 - **`preferences.md`** — user preferences to guide the project; generally not updated by the agents.
 - **`roadmap.md`** — durable end-to-end plan (phases, milestones); include completed lines; on scope change, retcon the **whole** file into one coherent story.
@@ -19,7 +19,7 @@ MEMORY_AND_TIER_A = """**Tier A** (`state/*.md`) and `memory/extended/`: keep th
 
 **Branch memory** (`data/runtime/memory/branch/<b>.md`): branch name `/`→`__`. Per active branch you touch: diverged-from (SHA/tag), purpose, status/results. Merge to **main** → delete file (optional copy to `extended/`). Abandoned/failed → delete file + note in **`lessons.md`**.
 
-**Episodes** (`data/runtime/memory/episodes/`): run-by-run packets and worker outputs live here. Treat this as a log/history area, not part of `extended_memory_index.md`; mention specific episode paths in Tier A only when a later worker truly needs a pointer.
+**Episodes** (`data/runtime/memory/episodes/`): run-by-run packets and worker outputs are auto-populated here. Do not write to this; it is only for looking up context on past subagents actions, if needed.
 
 **Experiments:** link experiment dirs/metrics from Tier A or extended so the next run can find them.
 

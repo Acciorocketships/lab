@@ -94,6 +94,61 @@ def test_graph_invoke_done_sets_acceptance(tmp_path: Path, monkeypatch) -> None:
     assert out["current_worker"] == "done"
 
 
+def test_execute_worker_query_uses_query_prompt(tmp_path: Path, monkeypatch) -> None:
+    """Routing to query should build a packet with the query worker prompt."""
+    cfg = RunConfig(
+        researcher_root=tmp_path,
+        project_dir=tmp_path / "p",
+        research_idea="x",
+        preferences="z",
+        orchestrator_backend="openai",
+        openai_api_key=None,
+        openai_base_url=None,
+        openai_model="gpt-4o-mini",
+        default_worker_backend="cursor",
+        cursor_agent_model="composer-2",
+    )
+    memory.ensure_memory_layout(tmp_path)
+    cfg.project_dir.mkdir()
+
+    captured: dict[str, str] = {}
+
+    def _fake_run_worker(pkt: str, **kwargs) -> dict[str, object]:
+        captured["packet"] = pkt
+        return {"ok": True, "parsed": {"result": "Mapped the relevant files"}}
+
+    monkeypatch.setattr(research_graph.agents_base, "run_worker", _fake_run_worker)
+
+    state: ResearchState = {
+        "current_goal": "Find where routing decisions are defined",
+        "current_branch": "",
+        "current_worker": "query",
+        "cycle_count": 0,
+        "control_mode": "active",
+        "pending_instructions": [],
+        "last_action_summary": "",
+        "roadmap_step": "",
+        "orchestrator_task": "Find where routing decisions are defined",
+        "orchestrator_reason": "Need codebase facts before planning",
+        "acceptance_satisfied": False,
+        "shutdown_requested": False,
+        "worker_kwargs": {},
+    }
+
+    out = research_graph.execute_worker(
+        state,
+        cfg=cfg,
+        researcher_root=tmp_path,
+        project_dir=cfg.project_dir,
+    )
+
+    assert out["worker_ok"] is True
+    packet = captured["packet"]
+    assert "# Worker: query" in packet
+    assert "You are the Query agent." in packet
+    assert "search the local codebase and researcher files" in packet
+
+
 def test_run_loop_consumes_resume_while_paused(tmp_path: Path, monkeypatch) -> None:
     """Paused loop should process a queued resume before sleeping again."""
     cfg = RunConfig(

@@ -19,6 +19,7 @@ from research_lab.agents import (
     experimenter,
     implementer,
     planner,
+    query,
     reporter as reporter_mod,
     researcher,
     reviewer,
@@ -30,6 +31,7 @@ from research_lab.state import ResearchState
 
 _WORKER_MODULES: dict[str, Any] = {
     "planner": planner,
+    "query": query,
     "researcher": researcher,
     "executer": executer,
     "implementer": implementer,
@@ -120,6 +122,7 @@ def choose_action(
         memory.write_context_summary(researcher_root, dec.context_summary)
     orch_summary = f"{dec.worker}: {dec.reason}"
     cycle = int(state.get("cycle_count", 0)) + 1
+    branch = dec.branch or state.get("current_branch", "") or ""
     conn = _conn(db_path)
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -134,6 +137,17 @@ def choose_action(
             payload=dec.model_dump(),
             packet_path=None,
         )
+        # Align system_state with the new cycle immediately so /status and the
+        # header match the orchestrator run_event (previously only updated after
+        # the worker finished, so they lagged by one cycle during execution).
+        db.set_system_fields(
+            conn,
+            roadmap_step=dec.roadmap_step,
+            task=dec.task,
+            current_branch=branch,
+            current_worker=dec.worker,
+            cycle_count=cycle,
+        )
         conn.commit()
     finally:
         conn.close()
@@ -143,7 +157,7 @@ def choose_action(
         "orchestrator_reason": dec.reason,
         "rolling_context_summary": dec.context_summary,
         "current_worker": dec.worker,
-        "current_branch": dec.branch or state.get("current_branch", ""),
+        "current_branch": branch,
         "last_action_summary": orch_summary,
         "current_goal": dec.task,
         "worker_kwargs": dec.worker_kwargs,
@@ -347,9 +361,29 @@ _log = logging.getLogger(__name__)
 _MAX_CONSECUTIVE_ERRORS = 5
 
 
-def _record_cycle_error(db_path: Path, state: ResearchState, tb: str) -> None:
+def _root_cause(exc: BaseException) -> BaseException:
+    """Walk __cause__ / __context__ chain to find the original exception."""
+    root = exc
+    seen: set[int] = {id(root)}
+    while True:
+        nxt = root.__cause__ if root.__cause__ is not None else root.__context__
+        if nxt is None or id(nxt) in seen:
+            break
+        seen.add(id(nxt))
+        root = nxt
+    return root
+
+
+def _record_cycle_error(
+    db_path: Path, state: ResearchState, tb: str, exc: BaseException | None = None,
+) -> None:
     """Write a run_event so the console can display the cycle failure."""
     try:
+        if exc is not None:
+            root = _root_cause(exc)
+            short = f"{type(root).__qualname__}: {root}"
+        else:
+            short = tb.splitlines()[-1] if tb.strip() else "unknown error"
         conn = _conn(db_path)
         try:
             conn.execute("BEGIN IMMEDIATE")
@@ -362,7 +396,7 @@ def _record_cycle_error(db_path: Path, state: ResearchState, tb: str) -> None:
                 worker=worker,
                 roadmap_step=str(state.get("roadmap_step", "")),
                 task=str(state.get("orchestrator_task", "")),
-                summary=f"cycle crashed: {tb.splitlines()[-1][:200]}",
+                summary=f"cycle crashed: {short[:200]}",
                 payload={"worker_ok": False, "error": tb[-2000:]},
                 packet_path=None,
             )
@@ -423,11 +457,11 @@ def run_loop(
         try:
             out = app.invoke(state)
             consecutive_errors = 0
-        except Exception:
+        except Exception as exc:
             consecutive_errors += 1
             tb = traceback.format_exc()
             _log.error("Cycle %d failed:\n%s", state.get("cycle_count", 0) + 1, tb)
-            _record_cycle_error(db_path, state, tb)
+            _record_cycle_error(db_path, state, tb, exc)
             _revert_to_last_checkpoint(project_dir, db_path)
             if consecutive_errors >= _MAX_CONSECUTIVE_ERRORS:
                 _log.error(

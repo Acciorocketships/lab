@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from research_lab.config import RunConfig
-from research_lab.orchestrator import OrchestratorCredentialsError, decide_orchestrator
+from research_lab.orchestrator import OrchestratorCredentialsError, OrchestratorDecision, decide_orchestrator
 
 
 def test_no_api_key_raises(tmp_path: Path, monkeypatch) -> None:
@@ -25,3 +25,9 @@ def test_no_api_key_raises(tmp_path: Path, monkeypatch) -> None:
     )
     with pytest.raises(OrchestratorCredentialsError):
         decide_orchestrator("context", model="gpt-4o-mini", cfg=cfg)
+
+
+def test_query_worker_is_valid_route() -> None:
+    """The orchestrator schema accepts the codebase investigation worker."""
+    dec = OrchestratorDecision(worker="query", task="Inspect workflow wiring")
+    assert dec.worker == "query"

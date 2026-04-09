@@ -9,6 +9,31 @@ from research_lab.ui import events
 from research_lab.ui.console import ResearchConsole
 
 
+def _console_query_stub(captured: list[str]):
+    """Minimal Textual stand-ins so console methods can mount activity lines."""
+
+    class FakeScroll:
+        def mount(self, w, before=None) -> None:
+            text = getattr(w, "content", None) or getattr(w, "renderable", None)
+            captured.append(str(text) if text is not None else "")
+
+        def scroll_end(self, animate: bool = False) -> None:
+            pass
+
+    class FakeStatic:
+        def update(self, *args, **kwargs) -> None:
+            pass
+
+        display = True
+
+    def fake_query(sel: str, *args, **kwargs):
+        if sel == "#activity-scroll":
+            return FakeScroll()
+        return FakeStatic()
+
+    return fake_query
+
+
 def _cfg(tmp_path: Path) -> RunConfig:
     project_dir = tmp_path / "project"
     researcher_root = project_dir / ".airesearcher"
@@ -39,16 +64,12 @@ def test_cmd_start_enqueues_resume_when_scheduler_is_alive(tmp_path: Path) -> No
 
     writes: list[str] = []
 
-    class FakeLog:
-        def write(self, message: str) -> None:
-            writes.append(message)
-
     class FakeScheduler:
         def is_alive(self) -> bool:
             return True
 
     console._scheduler = FakeScheduler()
-    console.query_one = lambda *args, **kwargs: FakeLog()  # type: ignore[method-assign]
+    console.query_one = _console_query_stub(writes)  # type: ignore[method-assign]
 
     console._cmd_start()
 
@@ -133,17 +154,34 @@ def test_parse_stream_event_plain_text() -> None:
     assert result == ("text", "hello world")
 
 
-def test_format_worker_done_shows_excerpt() -> None:
-    out = events.format_worker_done(42.5, ok=True, result_text="Added slippery flag support")
-    assert "Done" in out
-    assert "42.5s" in out
+def test_format_worker_result_excerpt_shows_text() -> None:
+    out = events.format_worker_result_excerpt(True, result_text="Added slippery flag support")
     assert "slippery" in out
+    assert "Done" not in out
+
+
+def test_format_worker_result_excerpt_ok_empty() -> None:
+    assert events.format_worker_result_excerpt(True, "") == ""
+
+
+def test_format_worker_result_excerpt_fail_empty() -> None:
+    assert "failed" in events.format_worker_result_excerpt(False, "").lower()
 
 
 def test_format_cycle_header_no_truncation() -> None:
     long_task = "A" * 300
     out = events.format_cycle_header(1, "planner", long_task)
     assert long_task in out
+    assert "●" in out
+    assert "0.0s" in out
+
+
+def test_format_cycle_header_done_shows_elapsed() -> None:
+    out = events.format_cycle_header(
+        2, "researcher", "task", elapsed_sec=12.36, status="ok",
+    )
+    assert "12.4s" in out
+    assert "cycle 2" in out
 
 
 # ---------------------------------------------------------------------------
@@ -164,10 +202,6 @@ def test_check_scheduler_health_restarts_dead_process(tmp_path: Path) -> None:
 
     writes: list[str] = []
 
-    class FakeLog:
-        def write(self, message: str) -> None:
-            writes.append(message)
-
     class DeadScheduler:
         def is_alive(self) -> bool:
             return False
@@ -179,7 +213,7 @@ def test_check_scheduler_health_restarts_dead_process(tmp_path: Path) -> None:
         self_console._scheduler = type("Alive", (), {"is_alive": lambda self: True})()
 
     console._scheduler = DeadScheduler()
-    console.query_one = lambda *args, **kwargs: FakeLog()  # type: ignore[method-assign]
+    console.query_one = _console_query_stub(writes)  # type: ignore[method-assign]
     console._restart_scheduler = lambda: fake_restart(console)  # type: ignore[method-assign]
 
     console._check_scheduler_health()
@@ -204,17 +238,13 @@ def test_check_scheduler_health_stops_after_max_restarts(tmp_path: Path) -> None
 
     writes: list[str] = []
 
-    class FakeLog:
-        def write(self, message: str) -> None:
-            writes.append(message)
-
     class DeadScheduler:
         def is_alive(self) -> bool:
             return False
 
     console._scheduler = DeadScheduler()
     console._auto_restarts = console._MAX_AUTO_RESTARTS
-    console.query_one = lambda *args, **kwargs: FakeLog()  # type: ignore[method-assign]
+    console.query_one = _console_query_stub(writes)  # type: ignore[method-assign]
 
     console._check_scheduler_health()
 

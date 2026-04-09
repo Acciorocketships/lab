@@ -10,8 +10,8 @@ from typing import TYPE_CHECKING
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Container, Vertical
-from textual.widgets import RichLog, Static
+from textual.containers import Container, VerticalScroll
+from textual.widgets import Static
 
 from research_lab import db
 from research_lab.runner import reset_project_preserving_research_idea
@@ -35,10 +35,14 @@ Screen {
     padding: 0 2;
 }
 
-#activity {
-    min-height: 1;
+#activity-scroll {
     padding: 0 1;
     scrollbar-size: 1 1;
+}
+
+.activity-line {
+    height: auto;
+    width: 1fr;
 }
 
 #prompt-box {
@@ -49,14 +53,15 @@ Screen {
     min-height: 3;
     margin: 0 1;
     padding: 0 1;
-    border: round $primary;
-    background: $boost;
+    border: round $accent-darken-2;
+    background: $surface-darken-1;
 }
 
 #prompt-indicator {
     width: 2;
     height: 1;
-    color: $accent;
+    color: $success;
+    text-style: bold;
     content-align: left top;
 }
 
@@ -65,6 +70,7 @@ Screen {
     height: 1;
     border: none;
     background: transparent;
+    color: $text;
     padding: 0;
 }
 
@@ -72,11 +78,20 @@ Screen {
     border: none;
 }
 
-#activity-status {
-    dock: bottom;
+.task-prompt {
     height: auto;
-    max-height: 2;
-    padding: 0 2;
+    padding: 0 3;
+    margin: 0 2;
+    border-left: tall $accent;
+}
+
+#stream-text {
+    height: auto;
+    max-height: 6;
+    padding: 1 3;
+    margin: 0 2;
+    background: $boost;
+    border: round $surface-lighten-2;
 }
 """
 
@@ -100,23 +115,20 @@ class ResearchConsole(App[None]):
         self._last_run_event_id = 0
         self._last_cycle = 0
         self._last_worker = ""
-        self._worker_start: float = 0.0
+        self._worker_start_ts: float = 0.0
+        self._last_orchestrator_task = ""
+        self._cycle_header_widget: Static | None = None
         self._project_name = cfg.project_dir.name
         self._model = cfg.openai_model
         self._auto_restarts = 0
         self._MAX_AUTO_RESTARTS = 3
+        self._last_stream_text = ""
+        self._current_cycle_widgets: list[Static] = []
 
     def compose(self) -> ComposeResult:
         yield Static("", id="header")
-        with Vertical():
-            yield RichLog(
-                id="activity",
-                highlight=False,
-                markup=True,
-                wrap=True,
-                auto_scroll=True,
-            )
-        yield Static("", id="activity-status")
+        with VerticalScroll(id="activity-scroll"):
+            yield Static("", id="stream-text")
         with Container(id="prompt-box"):
             yield Static("❯", id="prompt-indicator")
             yield PromptTextArea(
@@ -129,16 +141,65 @@ class ResearchConsole(App[None]):
 
     def on_mount(self) -> None:
         self._refresh_header()
-        log = self.query_one("#activity", RichLog)
-        log.write("")
-        log.write("  [bold]Welcome to lab.[/]")
-        log.write("  Type [bold]/start[/] to begin, or type an instruction.")
-        log.write(
+        self.query_one("#stream-text", Static).display = False
+        self._write_activity("")
+        self._write_activity("  [bold]Welcome to lab.[/]")
+        self._write_activity("  Type [bold]/start[/] to begin, or type an instruction.")
+        self._write_activity(
             "  [dim]Enter[/] sends · [dim]Shift+Enter[/] for newline · "
             "[dim]/help[/] for commands\n"
         )
         self.query_one("#prompt", PromptTextArea).focus()
         self.set_interval(0.3, self._poll)
+
+    # --- activity helpers -----------------------------------------------------
+
+    def _write_activity(self, markup: str) -> None:
+        """Append a permanent line to the activity scroll area."""
+        if not markup:
+            return
+        scroll = self.query_one("#activity-scroll", VerticalScroll)
+        stream = self.query_one("#stream-text", Static)
+        scroll.mount(Static(markup, classes="activity-line"), before=stream)
+        self.call_after_refresh(lambda: scroll.scroll_end(animate=False))
+
+    def _write_task(self, task: str) -> Static | None:
+        """Append a styled task-prompt block to the activity scroll area."""
+        if not task.strip():
+            return None
+        scroll = self.query_one("#activity-scroll", VerticalScroll)
+        stream = self.query_one("#stream-text", Static)
+        w = Static(task, classes="task-prompt")
+        scroll.mount(w, before=stream)
+        self.call_after_refresh(lambda: scroll.scroll_end(animate=False))
+        return w
+
+    def _mount_activity_widget(self, markup: str) -> Static:
+        """Append a line and return the widget so it can be updated later."""
+        scroll = self.query_one("#activity-scroll", VerticalScroll)
+        stream = self.query_one("#stream-text", Static)
+        w = Static(markup, classes="activity-line")
+        scroll.mount(w, before=stream)
+        self.call_after_refresh(lambda: scroll.scroll_end(animate=False))
+        return w
+
+    def _orchestrator_ts_for_cycle(self, cycle: int) -> float | None:
+        """Wall time when the orchestrator logged this cycle (for elapsed on reload)."""
+        try:
+            row = self._conn.execute(
+                "SELECT ts FROM run_events WHERE cycle = ? AND kind = 'orchestrator' "
+                "ORDER BY id DESC LIMIT 1",
+                (cycle,),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return None
+        return float(row["ts"]) if row else None
+
+    def _scroll_to_bottom(self) -> None:
+        scroll = self.query_one("#activity-scroll", VerticalScroll)
+        self.call_after_refresh(lambda: scroll.scroll_end(animate=False))
+
+    # --- polling --------------------------------------------------------------
 
     def _refresh_header(self) -> None:
         try:
@@ -153,6 +214,7 @@ class ResearchConsole(App[None]):
         self._refresh_header()
         self._poll_run_events()
         self._poll_stream()
+        self._refresh_running_cycle_header()
 
     def _check_scheduler_health(self) -> None:
         """Detect a crashed scheduler subprocess and auto-restart when possible."""
@@ -161,8 +223,7 @@ class ResearchConsole(App[None]):
         if self._scheduler.is_alive():
             return
         self._scheduler = None
-        log = self.query_one("#activity", RichLog)
-        self._revert_to_checkpoint(log)
+        self._revert_to_checkpoint()
         try:
             mode = db.get_system_state(self._conn).get("control_mode", "paused")
         except sqlite3.OperationalError:
@@ -170,14 +231,14 @@ class ResearchConsole(App[None]):
         if mode != "active":
             return
         if self._auto_restarts >= self._MAX_AUTO_RESTARTS:
-            log.write(
+            self._write_activity(
                 "\n  [red]⚠ Agent process crashed repeatedly. Use [bold]/start[/] to restart.[/]"
             )
             db.set_control_mode(self._conn, "paused")
             self._conn.commit()
             return
         self._auto_restarts += 1
-        log.write(
+        self._write_activity(
             f"\n  [red]⚠ Agent process exited unexpectedly. "
             f"Restarting… ({self._auto_restarts}/{self._MAX_AUTO_RESTARTS})[/]"
         )
@@ -194,9 +255,24 @@ class ResearchConsole(App[None]):
             self.db_path, researcher_root, self.cfg.project_dir, self.cfg,
         )
 
+    def _refresh_running_cycle_header(self) -> None:
+        """Tick the live duration on the open cycle header while the worker runs."""
+        if self._cycle_header_widget is None or not self._worker_start_ts:
+            return
+        elapsed = events.cycle_header_running_elapsed(self._worker_start_ts)
+        self._cycle_header_widget.update(
+            events.format_cycle_header(
+                self._last_cycle,
+                self._last_worker,
+                self._last_orchestrator_task,
+                elapsed_sec=elapsed,
+                status="running",
+            )
+        )
+
     def _poll_run_events(self) -> None:
         """Check for new orchestrator / worker lifecycle events."""
-        log = self.query_one("#activity", RichLog)
+        status = self.query_one("#stream-text", Static)
         try:
             rows = list(
                 self._conn.execute(
@@ -217,44 +293,104 @@ class ResearchConsole(App[None]):
 
             if kind == "orchestrator":
                 if cycle != self._last_cycle or worker != self._last_worker:
+                    if self._cycle_header_widget is not None:
+                        ps = self._worker_start_ts
+                        pe = max(0.0, time.time() - ps) if ps else 0.0
+                        self._cycle_header_widget.update(
+                            events.format_cycle_header(
+                                self._last_cycle,
+                                self._last_worker,
+                                self._last_orchestrator_task,
+                                elapsed_sec=pe,
+                                status="fail",
+                            )
+                        )
+                        self._cycle_header_widget = None
                     self._last_cycle = cycle
                     self._last_worker = worker
-                    self._worker_start = time.time()
-                    log.write(events.format_cycle_header(cycle, worker, task))
+                    self._worker_start_ts = float(row["ts"])
+                    self._last_orchestrator_task = task
+                    self._last_stream_text = ""
+                    self._current_cycle_widgets = []
+                    elapsed0 = events.cycle_header_running_elapsed(self._worker_start_ts)
+                    self._cycle_header_widget = self._mount_activity_widget(
+                        events.format_cycle_header(
+                            cycle,
+                            worker,
+                            task,
+                            elapsed_sec=elapsed0,
+                            status="running",
+                        )
+                    )
+                    self._current_cycle_widgets.append(self._cycle_header_widget)
+                    task_w = self._write_task(task)
+                    if task_w is not None:
+                        self._current_cycle_widgets.append(task_w)
+                status.update(f"[dim]Running {worker}…[/]")
+                status.display = True
+                self._scroll_to_bottom()
             elif kind == "worker":
-                elapsed = time.time() - self._worker_start if self._worker_start else 0
+                start_ts = self._worker_start_ts
+                if cycle != self._last_cycle or start_ts <= 0:
+                    start_ts = self._orchestrator_ts_for_cycle(cycle) or 0.0
+                end_ts = float(row["ts"])
+                elapsed = max(0.0, end_ts - start_ts) if start_ts else 0.0
                 payload: dict = {}
                 try:
                     payload = json.loads(row["payload_json"]) if row["payload_json"] else {}
                 except (json.JSONDecodeError, TypeError):
                     pass
                 ok = payload.get("worker_ok", True)
-                excerpt = events.extract_result_excerpt(row["summary"] or "")
-                log.write(events.format_worker_done(elapsed, ok, excerpt))
-                self.query_one("#activity-status", Static).update("")
+                stream_excerpt = events.extract_result_excerpt(self._last_stream_text)
+                summary_excerpt = events.extract_result_excerpt(row["summary"] or "")
+                excerpt = stream_excerpt or summary_excerpt
+                status.update("")
+                status.display = False
+                if self._cycle_header_widget is not None and cycle == self._last_cycle:
+                    self._cycle_header_widget.update(
+                        events.format_cycle_header(
+                            cycle,
+                            worker,
+                            task or self._last_orchestrator_task,
+                            elapsed_sec=elapsed,
+                            status="ok" if ok else "fail",
+                        )
+                    )
+                    self._cycle_header_widget = None
+                self._worker_start_ts = 0.0
+                self._write_activity(events.format_worker_result_excerpt(ok, excerpt))
+                self._last_stream_text = ""
 
     def _poll_stream(self) -> None:
-        """Read new streaming chunks from the worker_stream table.
+        """Show the most recent stream event in the inline status panel.
 
-        All stream content updates the live status widget in place rather than
-        appending to the scrollback log, so the UI shows a single continuously-
-        refreshed line instead of an ever-growing list of ``┊`` rows.
+        Only the latest message is displayed (replaced each poll).  Text events
+        are stored so they can be persisted into the activity log when the
+        worker finishes.
         """
-        status = self.query_one("#activity-status", Static)
+        status = self.query_one("#stream-text", Static)
         try:
             rows = db.stream_chunks_since(self._conn, self._last_stream_id)
         except sqlite3.OperationalError:
             return
         for row in rows:
             self._last_stream_id = row["id"]
-            parsed = events.parse_stream_event(row["chunk"])
+            parsed = events.parse_stream_event(row["chunk"], full_text=True)
             if parsed is None:
                 continue
             event_type, text = parsed
-            if event_type == "tool":
-                status.update(f"  [dim]┊[/] [cyan]{text}[/]")
+            if event_type == "tool" and text.strip():
+                status.update(f"[cyan]{text}[/]")
+                if not status.display:
+                    status.display = True
+                self._scroll_to_bottom()
             elif event_type == "text" and text.strip():
-                status.update(f"  [dim]┊ {text.strip()}[/]")
+                clean = text.strip()
+                self._last_stream_text = clean
+                status.update(f"[dim]{clean}[/]")
+                if not status.display:
+                    status.display = True
+                self._scroll_to_bottom()
 
     # --- input handling -------------------------------------------------------
 
@@ -274,13 +410,11 @@ class ResearchConsole(App[None]):
         first = lines[0].strip()
         tail = "\n".join(lines[1:]).strip() if len(lines) > 1 else ""
 
-        log = self.query_one("#activity", RichLog)
-
         if not first.startswith("/"):
             db.enqueue_event(self._conn, "instruction", text)
             self._conn.commit()
             preview = text if len(text) <= 200 else text[:200] + "…"
-            log.write(f"\n  [green]❯[/] {preview}")
+            self._write_activity(f"\n  [green]❯[/] {preview}")
             return
 
         parts = first.split(maxsplit=1)
@@ -290,16 +424,16 @@ class ResearchConsole(App[None]):
         if cmd == "instruction":
             body = (rest + "\n" + tail if tail else rest).strip()
             if not body:
-                log.write("  [red]/instruction[/] requires text")
+                self._write_activity("  [red]/instruction[/] requires text")
                 return
             db.enqueue_event(self._conn, "instruction", body)
             self._conn.commit()
             preview = body if len(body) <= 200 else body[:200] + "…"
-            log.write(f"\n  [green]❯[/] {preview}")
+            self._write_activity(f"\n  [green]❯[/] {preview}")
             return
 
         if tail:
-            log.write(
+            self._write_activity(
                 "  [dim]Note: only the first line is used as a slash command; "
                 "omit the leading / for multi-line instructions.[/]"
             )
@@ -318,10 +452,9 @@ class ResearchConsole(App[None]):
         if handler:
             handler()
         else:
-            log.write(f"  [red]Unknown command:[/] /{cmd}")
+            self._write_activity(f"  [red]Unknown command:[/] /{cmd}")
 
     def _cmd_start(self) -> None:
-        log = self.query_one("#activity", RichLog)
         mode = db.get_system_state(self._conn).get("control_mode", "active")
         scheduler_alive = bool(self._scheduler and self._scheduler.is_alive())
 
@@ -331,53 +464,53 @@ class ResearchConsole(App[None]):
 
         if scheduler_alive:
             if mode == "paused":
-                log.write("  [green]Agent resumed.[/]\n")
+                self._write_activity("  [green]Agent resumed.[/]\n")
             else:
-                log.write("  [dim]Agent is already running.[/]")
+                self._write_activity("  [dim]Agent is already running.[/]")
             return
 
         self._auto_restarts = 0
         self._restart_scheduler()
-        log.write("  [green]Agent started.[/]\n")
+        self._write_activity("  [green]Agent started.[/]\n")
 
     def _cmd_pause(self) -> None:
-        log = self.query_one("#activity", RichLog)
         self._kill_scheduler()
-        self._revert_to_checkpoint(log)
+        self._revert_to_checkpoint()
         db.set_control_mode(self._conn, "paused")
         self._conn.commit()
-        log.write("  [yellow]Agent paused.[/]")
+        status = self.query_one("#stream-text", Static)
+        status.update("")
+        status.display = False
+        self._last_stream_text = ""
+        self._write_activity("  [yellow]Agent paused.[/]")
 
     def _cmd_exit(self) -> None:
-        log = self.query_one("#activity", RichLog)
-        log.write("  [dim]Shutting down...[/]")
+        self._write_activity("  [dim]Shutting down...[/]")
         self._kill_scheduler()
-        self._revert_to_checkpoint(log)
+        self._revert_to_checkpoint()
         db.set_control_mode(self._conn, "paused")
         self._conn.commit()
         self.set_timer(0.3, self.exit)
 
     def _cmd_status(self) -> None:
-        log = self.query_one("#activity", RichLog)
         try:
             st = db.get_system_state(self._conn)
         except sqlite3.OperationalError:
-            log.write("  [red]DB not ready[/]")
+            self._write_activity("  [red]DB not ready[/]")
             return
         mode = st.get("control_mode", "?")
         cycle = st.get("cycle_count", 0)
         worker = st.get("current_worker", "")
         task = (st.get("task", "") or "")[:120]
         roadmap = (st.get("roadmap_step", "") or "")[:60]
-        log.write(
+        self._write_activity(
             f"  [bold]Status[/]  mode={mode}  cycle={cycle}  worker={worker}\n"
             f"  roadmap: {roadmap}\n"
             f"  task: {task}"
         )
 
     def _cmd_help(self) -> None:
-        log = self.query_one("#activity", RichLog)
-        log.write(
+        self._write_activity(
             "\n  [bold]Commands[/]\n"
             "  [bold]/start[/]        Start the background agent\n"
             "  [bold]/pause[/]        Pause the agent\n"
@@ -392,40 +525,44 @@ class ResearchConsole(App[None]):
         )
 
     def _cmd_backlog(self) -> None:
-        log = self.query_one("#activity", RichLog)
         rows = db.list_instructions(self._conn)
         if not rows:
-            log.write("  [dim]No instructions.[/]")
+            self._write_activity("  [dim]No instructions.[/]")
             return
         for r in rows[:15]:
-            log.write(f"  [dim]{r['id']}[/] [{r['status']}] {r['text'][:160]}")
+            self._write_activity(f"  [dim]{r['id']}[/] [{r['status']}] {r['text'][:160]}")
 
     def _cmd_experiments(self) -> None:
-        log = self.query_one("#activity", RichLog)
         rows = db.list_experiments_rows(self._conn)
         if not rows:
-            log.write("  [dim]No experiments.[/]")
+            self._write_activity("  [dim]No experiments.[/]")
             return
         for r in rows[:20]:
-            log.write(f"  {r['exp_id']}: {r['status']} ({r['branch']})")
+            self._write_activity(f"  {r['exp_id']}: {r['status']} ({r['branch']})")
 
     def _cmd_reset(self) -> None:
-        log = self.query_one("#activity", RichLog)
         self._kill_scheduler()
         self._conn.close()
         try:
             reset_project_preserving_research_idea(self.cfg.project_dir)
         except Exception as e:
             self._conn = db.connect_db(self.db_path)
-            log.write(f"  [red]Reset failed:[/] {e}")
+            self._write_activity(f"  [red]Reset failed:[/] {e}")
             return
         self._conn = db.connect_db(self.db_path)
         self._last_stream_id = 0
         self._last_run_event_id = 0
         self._last_cycle = 0
         self._last_worker = ""
-        self._worker_start = 0.0
-        log.write(
+        self._worker_start_ts = 0.0
+        self._last_orchestrator_task = ""
+        self._cycle_header_widget = None
+        self._last_stream_text = ""
+        self._current_cycle_widgets = []
+        status = self.query_one("#stream-text", Static)
+        status.update("")
+        status.display = False
+        self._write_activity(
             "  [green]Reset complete.[/] Kept [bold]research_idea.md[/] and [bold]preferences.md[/]. "
             "Cleared DB, other Tier A files, episodes, extended, branches, skills, experiments."
         )
@@ -438,10 +575,23 @@ class ResearchConsole(App[None]):
             self._scheduler.kill_group()
         self._scheduler = None
 
-    def _revert_to_checkpoint(self, log: RichLog) -> None:
+    def _revert_to_checkpoint(self) -> None:
         """Restore the working tree to the last completed-cycle checkpoint and
-        roll back the DB to match."""
+        roll back the DB to match, removing any UI traces of the interrupted cycle."""
         from research_lab import git_checkpoint
+
+        if self._cycle_header_widget is not None and self._worker_start_ts:
+            elapsed = max(0.0, time.time() - self._worker_start_ts)
+            self._cycle_header_widget.update(
+                events.format_cycle_header(
+                    self._last_cycle,
+                    self._last_worker,
+                    self._last_orchestrator_task,
+                    elapsed_sec=elapsed,
+                    status="fail",
+                )
+            )
+        self._worker_start_ts = 0.0
 
         if not git_checkpoint.has_checkpoint(self.cfg.project_dir):
             return
@@ -457,12 +607,38 @@ class ResearchConsole(App[None]):
                 self._conn.rollback()
             except Exception:
                 pass
-        log.write(f"  [yellow]Reverted to checkpoint (cycle {cycle}).[/]")
+
+        if self._last_cycle > cycle:
+            for w in self._current_cycle_widgets:
+                w.remove()
+            self._current_cycle_widgets.clear()
+            self._cycle_header_widget = None
+            self._last_cycle = cycle
+            self._last_worker = ""
+            self._worker_start_ts = 0.0
+            self._last_orchestrator_task = ""
+            self._last_stream_text = ""
+
+        try:
+            row = self._conn.execute("SELECT MAX(id) FROM run_events").fetchone()
+            self._last_run_event_id = int(row[0]) if row and row[0] is not None else 0
+        except sqlite3.OperationalError:
+            pass
+        try:
+            row = self._conn.execute("SELECT MAX(id) FROM worker_stream").fetchone()
+            self._last_stream_id = int(row[0]) if row and row[0] is not None else 0
+        except sqlite3.OperationalError:
+            pass
+
+        status = self.query_one("#stream-text", Static)
+        status.update("")
+        status.display = False
+
+        self._write_activity(f"  [yellow]Reverted to checkpoint (cycle {cycle}).[/]")
 
     def action_quit(self) -> None:
-        log = self.query_one("#activity", RichLog)
         self._kill_scheduler()
-        self._revert_to_checkpoint(log)
+        self._revert_to_checkpoint()
         db.set_control_mode(self._conn, "paused")
         self._conn.commit()
         self.exit()
