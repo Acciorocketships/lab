@@ -45,6 +45,12 @@ Screen {
     width: 1fr;
 }
 
+.cycle-header {
+    margin: 3 0 0 0;
+    padding: 1 2;
+    border-top: heavy $surface-lighten-2;
+}
+
 #prompt-box {
     dock: bottom;
     layout: horizontal;
@@ -80,16 +86,25 @@ Screen {
 
 .task-prompt {
     height: auto;
-    padding: 0 3;
+    padding: 1 3;
     margin: 0 2;
+    color: $text-muted;
     border-left: tall $accent;
 }
 
 #stream-text {
     height: auto;
-    max-height: 6;
     padding: 1 3;
     margin: 0 2;
+    background: $boost;
+    border: round $surface-lighten-2;
+}
+
+.result-box {
+    height: auto;
+    padding: 1 3;
+    margin: 1 2 0 2;
+    color: $text-muted;
     background: $boost;
     border: round $surface-lighten-2;
 }
@@ -140,6 +155,7 @@ class ResearchConsole(App[None]):
             )
 
     def on_mount(self) -> None:
+        self._cleanup_orphaned_cycles()
         self._refresh_header()
         self.query_one("#stream-text", Static).display = False
         self._write_activity("")
@@ -174,11 +190,13 @@ class ResearchConsole(App[None]):
         self.call_after_refresh(lambda: scroll.scroll_end(animate=False))
         return w
 
-    def _mount_activity_widget(self, markup: str) -> Static:
+    def _mount_activity_widget(
+        self, markup: str, classes: str = "activity-line",
+    ) -> Static:
         """Append a line and return the widget so it can be updated later."""
         scroll = self.query_one("#activity-scroll", VerticalScroll)
         stream = self.query_one("#stream-text", Static)
-        w = Static(markup, classes="activity-line")
+        w = Static(markup, classes=classes)
         scroll.mount(w, before=stream)
         self.call_after_refresh(lambda: scroll.scroll_end(animate=False))
         return w
@@ -194,6 +212,33 @@ class ResearchConsole(App[None]):
         except sqlite3.OperationalError:
             return None
         return float(row["ts"]) if row else None
+
+    def _write_result_box(self, text: str) -> Static | None:
+        """Append a styled result box to the activity scroll area."""
+        if not text.strip():
+            return None
+        scroll = self.query_one("#activity-scroll", VerticalScroll)
+        stream = self.query_one("#stream-text", Static)
+        formatted = events.markdown_to_rich(text)
+        w = Static(formatted, classes="result-box")
+        scroll.mount(w, before=stream)
+        self.call_after_refresh(lambda: scroll.scroll_end(animate=False))
+        return w
+
+    def _fetch_last_stream_text(self, cycle: int) -> str:
+        """Retrieve the last text content from worker_stream for a completed cycle."""
+        try:
+            rows = list(self._conn.execute(
+                "SELECT chunk FROM worker_stream WHERE cycle = ? ORDER BY id DESC LIMIT 50",
+                (cycle,),
+            ))
+        except sqlite3.OperationalError:
+            return ""
+        for row in rows:
+            parsed = events.parse_stream_event(row["chunk"], full_text=True)
+            if parsed and parsed[0] == "text" and parsed[1].strip():
+                return parsed[1].strip()
+        return ""
 
     def _scroll_to_bottom(self) -> None:
         scroll = self.query_one("#activity-scroll", VerticalScroll)
@@ -259,6 +304,19 @@ class ResearchConsole(App[None]):
         """Tick the live duration on the open cycle header while the worker runs."""
         if self._cycle_header_widget is None or not self._worker_start_ts:
             return
+        if self._scheduler is None or not self._scheduler.is_alive():
+            elapsed = max(0.0, time.time() - self._worker_start_ts)
+            self._cycle_header_widget.update(
+                events.format_cycle_header(
+                    self._last_cycle,
+                    self._last_worker,
+                    self._last_orchestrator_task,
+                    elapsed_sec=elapsed,
+                    status="fail",
+                )
+            )
+            self._worker_start_ts = 0.0
+            return
         elapsed = events.cycle_header_running_elapsed(self._worker_start_ts)
         self._cycle_header_widget.update(
             events.format_cycle_header(
@@ -320,7 +378,8 @@ class ResearchConsole(App[None]):
                             task,
                             elapsed_sec=elapsed0,
                             status="running",
-                        )
+                        ),
+                        classes="activity-line cycle-header",
                     )
                     self._current_cycle_widgets.append(self._cycle_header_widget)
                     task_w = self._write_task(task)
@@ -342,6 +401,10 @@ class ResearchConsole(App[None]):
                     pass
                 ok = payload.get("worker_ok", True)
                 stream_excerpt = events.extract_result_excerpt(self._last_stream_text)
+                if not stream_excerpt:
+                    stream_excerpt = events.extract_result_excerpt(
+                        self._fetch_last_stream_text(cycle)
+                    )
                 summary_excerpt = events.extract_result_excerpt(row["summary"] or "")
                 excerpt = stream_excerpt or summary_excerpt
                 status.update("")
@@ -358,8 +421,21 @@ class ResearchConsole(App[None]):
                     )
                     self._cycle_header_widget = None
                 self._worker_start_ts = 0.0
-                self._write_activity(events.format_worker_result_excerpt(ok, excerpt))
+                if excerpt:
+                    result_w = self._write_result_box(excerpt)
+                    if result_w is not None:
+                        self._current_cycle_widgets.append(result_w)
+                elif not ok:
+                    self._write_activity("  [dim](failed — no excerpt)[/]")
                 self._last_stream_text = ""
+                try:
+                    sid_row = self._conn.execute(
+                        "SELECT MAX(id) FROM worker_stream WHERE cycle = ?", (cycle,)
+                    ).fetchone()
+                    if sid_row and sid_row[0] is not None:
+                        self._last_stream_id = max(self._last_stream_id, int(sid_row[0]))
+                except sqlite3.OperationalError:
+                    pass
 
     def _poll_stream(self) -> None:
         """Show the most recent stream event in the inline status panel.
@@ -575,50 +651,60 @@ class ResearchConsole(App[None]):
             self._scheduler.kill_group()
         self._scheduler = None
 
+    def _cleanup_orphaned_cycles(self) -> None:
+        """Delete DB rows for cycles that have an orchestrator event but no worker event."""
+        try:
+            orphaned = [
+                row[0]
+                for row in self._conn.execute(
+                    "SELECT DISTINCT cycle FROM run_events WHERE kind = 'orchestrator' "
+                    "AND cycle NOT IN (SELECT DISTINCT cycle FROM run_events WHERE kind = 'worker')"
+                ).fetchall()
+            ]
+            for c in orphaned:
+                self._conn.execute("DELETE FROM run_events WHERE cycle = ?", (c,))
+                self._conn.execute("DELETE FROM worker_stream WHERE cycle = ?", (c,))
+            if orphaned:
+                self._conn.commit()
+        except sqlite3.OperationalError:
+            pass
+
     def _revert_to_checkpoint(self) -> None:
         """Restore the working tree to the last completed-cycle checkpoint and
         roll back the DB to match, removing any UI traces of the interrupted cycle."""
         from research_lab import git_checkpoint
 
-        if self._cycle_header_widget is not None and self._worker_start_ts:
-            elapsed = max(0.0, time.time() - self._worker_start_ts)
-            self._cycle_header_widget.update(
-                events.format_cycle_header(
-                    self._last_cycle,
-                    self._last_worker,
-                    self._last_orchestrator_task,
-                    elapsed_sec=elapsed,
-                    status="fail",
-                )
-            )
+        # Remove in-progress cycle widgets unconditionally -- the scheduler is
+        # dead at this point so the cycle cannot complete.
+        for w in self._current_cycle_widgets:
+            w.remove()
+        self._current_cycle_widgets.clear()
+        self._cycle_header_widget = None
         self._worker_start_ts = 0.0
+        self._last_worker = ""
+        self._last_orchestrator_task = ""
+        self._last_stream_text = ""
 
-        if not git_checkpoint.has_checkpoint(self.cfg.project_dir):
-            return
-        cycle = git_checkpoint.revert_to_checkpoint(self.cfg.project_dir)
-        if cycle is None:
-            return
-        try:
-            self._conn.execute("BEGIN IMMEDIATE")
-            db.rollback_to_cycle(self._conn, cycle)
-            self._conn.commit()
-        except Exception:
-            try:
-                self._conn.rollback()
-            except Exception:
-                pass
+        # Attempt git-level revert to the last completed-cycle checkpoint.
+        reverted = False
+        if git_checkpoint.has_checkpoint(self.cfg.project_dir):
+            cycle = git_checkpoint.revert_to_checkpoint(self.cfg.project_dir)
+            if cycle is not None:
+                try:
+                    self._conn.execute("BEGIN IMMEDIATE")
+                    db.rollback_to_cycle(self._conn, cycle)
+                    self._conn.commit()
+                    reverted = True
+                except Exception:
+                    try:
+                        self._conn.rollback()
+                    except Exception:
+                        pass
 
-        if self._last_cycle > cycle:
-            for w in self._current_cycle_widgets:
-                w.remove()
-            self._current_cycle_widgets.clear()
-            self._cycle_header_widget = None
-            self._last_cycle = cycle
-            self._last_worker = ""
-            self._worker_start_ts = 0.0
-            self._last_orchestrator_task = ""
-            self._last_stream_text = ""
+        # Purge any remaining orphaned cycles the checkpoint didn't cover.
+        self._cleanup_orphaned_cycles()
 
+        # Resync event/stream IDs with the DB after deletions.
         try:
             row = self._conn.execute("SELECT MAX(id) FROM run_events").fetchone()
             self._last_run_event_id = int(row[0]) if row and row[0] is not None else 0
@@ -629,12 +715,23 @@ class ResearchConsole(App[None]):
             self._last_stream_id = int(row[0]) if row and row[0] is not None else 0
         except sqlite3.OperationalError:
             pass
+        try:
+            row = self._conn.execute("SELECT MAX(cycle) FROM run_events").fetchone()
+            self._last_cycle = int(row[0]) if row and row[0] is not None else 0
+        except sqlite3.OperationalError:
+            pass
 
-        status = self.query_one("#stream-text", Static)
-        status.update("")
-        status.display = False
+        try:
+            status = self.query_one("#stream-text", Static)
+            status.update("")
+            status.display = False
+        except Exception:
+            pass
 
-        self._write_activity(f"  [yellow]Reverted to checkpoint (cycle {cycle}).[/]")
+        if reverted:
+            self._write_activity(
+                f"  [yellow]Reverted to checkpoint (cycle {self._last_cycle}).[/]"
+            )
 
     def action_quit(self) -> None:
         self._kill_scheduler()

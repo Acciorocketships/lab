@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import time
 from typing import Literal
+
+from rich.markup import escape as _rich_escape
 
 from research_lab import db
 
@@ -34,6 +37,19 @@ def header_line(project_name: str, model: str, conn: sqlite3.Connection) -> str:
 CycleHeaderStatus = Literal["running", "ok", "fail"]
 
 
+def _format_duration(seconds: float) -> str:
+    s = max(0.0, seconds)
+    if s < 60:
+        return f"{s:.1f}s"
+    m = int(s // 60)
+    s_rem = s - m * 60
+    if m < 60:
+        return f"{m}m {s_rem:.1f}s"
+    h = m // 60
+    m_rem = m % 60
+    return f"{h}h {m_rem}m {s_rem:.0f}s"
+
+
 def format_cycle_header(
     cycle: int,
     worker: str,
@@ -44,12 +60,8 @@ def format_cycle_header(
 ) -> str:
     """Cycle heading with status dot, duration (like the top header dot), and task line."""
     dot = {"running": "[yellow]●[/]", "ok": "[green]●[/]", "fail": "[red]●[/]"}[status]
-    es = max(0.0, float(elapsed_sec))
-    t = f"{es:.1f}s"
-    return (
-        f"\n  [bold]── cycle {cycle} · {worker}[/] {dot} [dim]{t}[/]\n"
-        f"  [dim]{task}[/]"
-    )
+    t = _format_duration(elapsed_sec)
+    return f"[bold]cycle {cycle} · {worker}[/] {dot} [dim]{t}[/]"
 
 
 def cycle_header_running_elapsed(orchestrator_ts: float) -> float:
@@ -66,8 +78,8 @@ def format_stream_chunk(chunk: str) -> str:
 
 
 def format_worker_result_excerpt(ok: bool, result_text: str = "") -> str:
-    """Optional result line after worker completes (status and time are on the cycle header)."""
-    excerpt = " ".join(result_text.strip().split())[:200] if result_text else ""
+    """Optional result block after worker completes (status and time are on the cycle header)."""
+    excerpt = result_text.strip() if result_text else ""
     if excerpt:
         return f"  [dim]{excerpt}[/]"
     if not ok:
@@ -204,12 +216,91 @@ def parse_stream_event(chunk: str, *, full_text: bool = False) -> tuple[str, str
     return None
 
 
-def extract_result_excerpt(summary: str, max_len: int = 200) -> str:
-    """Collapse a worker summary into a short single-line excerpt."""
-    text = summary.strip()
-    if not text:
-        return ""
-    text = " ".join(text.split())
-    if len(text) > max_len:
-        text = text[: max_len - 1] + "…"
+def _inline_md_to_rich(text: str) -> str:
+    """Convert inline Markdown (bold, code) to Rich markup.
+
+    Input must already be escaped via ``rich.markup.escape``.
+    """
+    text = re.sub(r"\*\*`([^`]+)`\*\*", r"[bold cyan]\1[/bold cyan]", text)
+    text = re.sub(r"\*\*(.+?)\*\*", r"[bold]\1[/bold]", text)
+    text = re.sub(r"`([^`]+)`", r"[cyan]\1[/cyan]", text)
     return text
+
+
+def markdown_to_rich(text: str) -> str:
+    """Convert common Markdown to Rich console markup for terminal display."""
+    text = _rich_escape(text)
+    lines = text.split("\n")
+    result: list[str] = []
+    in_code_block = False
+
+    for line in lines:
+        stripped = line.strip()
+
+        if stripped.startswith("```"):
+            in_code_block = not in_code_block
+            if in_code_block:
+                lang = stripped[3:].strip()
+                label = f" {lang} " if lang else ""
+                result.append(f"  [dim]{'─' * 3}{label}{'─' * max(1, 37 - len(label))}[/dim]")
+            else:
+                result.append(f"  [dim]{'─' * 40}[/dim]")
+            continue
+
+        if in_code_block:
+            result.append(f"  [dim]{line}[/dim]")
+            continue
+
+        if not stripped:
+            result.append("")
+            continue
+
+        if stripped.startswith("### "):
+            result.append(f"[bold]{_inline_md_to_rich(stripped[4:])}[/bold]")
+            continue
+        if stripped.startswith("## "):
+            result.append(f"\n[bold]{_inline_md_to_rich(stripped[3:])}[/bold]")
+            continue
+        if stripped.startswith("# "):
+            result.append(
+                f"\n[bold underline]{_inline_md_to_rich(stripped[2:])}[/bold underline]"
+            )
+            continue
+
+        if re.match(r"^[-*_]{3,}$", stripped):
+            result.append(f"[dim]{'─' * 40}[/dim]")
+            continue
+
+        if re.match(r"^\|[\s\-:]+(\|[\s\-:]+)*\|$", stripped):
+            continue
+
+        if stripped.startswith("|") and stripped.endswith("|"):
+            cells = [c.strip() for c in stripped.strip("|").split("|")]
+            styled = [_inline_md_to_rich(c) for c in cells]
+            result.append("  " + "  [dim]│[/dim]  ".join(styled))
+            continue
+
+        m = re.match(r"^(\s*)([-*+])\s", line)
+        if m:
+            depth = len(m.group(1)) // 2
+            indent = "  " * (depth + 1)
+            item_text = _inline_md_to_rich(line[m.end() :])
+            result.append(f"{indent}[dim]•[/dim] {item_text}")
+            continue
+
+        m = re.match(r"^(\s*)(\d+)\.\s", line)
+        if m:
+            depth = len(m.group(1)) // 2
+            indent = "  " * (depth + 1)
+            item_text = _inline_md_to_rich(line[m.end() :])
+            result.append(f"{indent}{m.group(2)}. {item_text}")
+            continue
+
+        result.append(_inline_md_to_rich(line))
+
+    return "\n".join(result)
+
+
+def extract_result_excerpt(summary: str) -> str:
+    """Clean a worker summary for display (preserves multi-line content)."""
+    return summary.strip()
