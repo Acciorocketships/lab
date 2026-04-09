@@ -54,12 +54,13 @@ Screen {
 #prompt-box {
     dock: bottom;
     layout: horizontal;
+    width: 100%;
     height: 3;
     max-height: 14;
     min-height: 3;
-    margin: 0 1;
+    margin: 1 0 0 0;
     padding: 0 1;
-    border: round $accent-darken-2;
+    border: round $accent;
     background: $surface-darken-1;
 }
 
@@ -73,6 +74,8 @@ Screen {
 
 #prompt {
     width: 1fr;
+    min-width: 0;
+    max-width: 100%;
     height: 1;
     border: none;
     background: transparent;
@@ -89,24 +92,21 @@ Screen {
     padding: 1 3;
     margin: 0 2;
     color: $text-muted;
-    border-left: tall $accent;
+    border-left: tall $surface-lighten-1;
 }
 
 #stream-text {
     height: auto;
-    padding: 1 3;
     margin: 0 2;
-    background: $boost;
-    border: round $surface-lighten-2;
+    width: 1fr;
+    min-width: 0;
 }
 
 .result-box {
     height: auto;
-    padding: 1 3;
     margin: 1 2 0 2;
-    color: $text-muted;
-    background: $boost;
-    border: round $surface-lighten-2;
+    width: 1fr;
+    min-width: 0;
 }
 """
 
@@ -219,11 +219,21 @@ class ResearchConsole(App[None]):
             return None
         scroll = self.query_one("#activity-scroll", VerticalScroll)
         stream = self.query_one("#stream-text", Static)
-        formatted = events.markdown_to_rich(text)
-        w = Static(formatted, classes="result-box")
+        rendered = events.wrap_result_renderable(events.render_markdown(text))
+        w = Static(rendered, classes="result-box", expand=True)
         scroll.mount(w, before=stream)
         self.call_after_refresh(lambda: scroll.scroll_end(animate=False))
         return w
+
+    def _clear_stream_status(self) -> None:
+        status = self.query_one("#stream-text", Static)
+        status.update(events.make_stream_panel(""))
+        status.display = False
+
+    def _set_stream_status(self, markup: str) -> None:
+        status = self.query_one("#stream-text", Static)
+        status.update(events.make_stream_panel(markup))
+        status.display = True
 
     def _fetch_last_stream_text(self, cycle: int) -> str:
         """Retrieve the last text content from worker_stream for a completed cycle."""
@@ -243,6 +253,17 @@ class ResearchConsole(App[None]):
     def _scroll_to_bottom(self) -> None:
         scroll = self.query_one("#activity-scroll", VerticalScroll)
         self.call_after_refresh(lambda: scroll.scroll_end(animate=False))
+
+    def _scroll_cycle_header_to_top(self) -> None:
+        """Scroll so the current cycle-header divider aligns with the viewport top."""
+        scroll = self.query_one("#activity-scroll", VerticalScroll)
+        w = self._cycle_header_widget
+        if w is None:
+            self._scroll_to_bottom()
+            return
+        self.call_after_refresh(
+            lambda: scroll.scroll_to_widget(w, top=True, animate=False, force=True)
+        )
 
     # --- polling --------------------------------------------------------------
 
@@ -330,7 +351,6 @@ class ResearchConsole(App[None]):
 
     def _poll_run_events(self) -> None:
         """Check for new orchestrator / worker lifecycle events."""
-        status = self.query_one("#stream-text", Static)
         try:
             rows = list(
                 self._conn.execute(
@@ -350,7 +370,8 @@ class ResearchConsole(App[None]):
             task = row["task"] or ""
 
             if kind == "orchestrator":
-                if cycle != self._last_cycle or worker != self._last_worker:
+                new_cycle = cycle != self._last_cycle or worker != self._last_worker
+                if new_cycle:
                     if self._cycle_header_widget is not None:
                         ps = self._worker_start_ts
                         pe = max(0.0, time.time() - ps) if ps else 0.0
@@ -385,9 +406,11 @@ class ResearchConsole(App[None]):
                     task_w = self._write_task(task)
                     if task_w is not None:
                         self._current_cycle_widgets.append(task_w)
-                status.update(f"[dim]Running {worker}…[/]")
-                status.display = True
-                self._scroll_to_bottom()
+                self._set_stream_status(f"[dim]Running {worker}...[/]")
+                if new_cycle and self._cycle_header_widget is not None:
+                    self._scroll_cycle_header_to_top()
+                else:
+                    self._scroll_to_bottom()
             elif kind == "worker":
                 start_ts = self._worker_start_ts
                 if cycle != self._last_cycle or start_ts <= 0:
@@ -407,8 +430,7 @@ class ResearchConsole(App[None]):
                     )
                 summary_excerpt = events.extract_result_excerpt(row["summary"] or "")
                 excerpt = stream_excerpt or summary_excerpt
-                status.update("")
-                status.display = False
+                self._clear_stream_status()
                 if self._cycle_header_widget is not None and cycle == self._last_cycle:
                     self._cycle_header_widget.update(
                         events.format_cycle_header(
@@ -444,7 +466,6 @@ class ResearchConsole(App[None]):
         are stored so they can be persisted into the activity log when the
         worker finishes.
         """
-        status = self.query_one("#stream-text", Static)
         try:
             rows = db.stream_chunks_since(self._conn, self._last_stream_id)
         except sqlite3.OperationalError:
@@ -456,16 +477,12 @@ class ResearchConsole(App[None]):
                 continue
             event_type, text = parsed
             if event_type == "tool" and text.strip():
-                status.update(f"[cyan]{text}[/]")
-                if not status.display:
-                    status.display = True
+                self._set_stream_status(f"[cyan]{text}[/]")
                 self._scroll_to_bottom()
             elif event_type == "text" and text.strip():
                 clean = text.strip()
                 self._last_stream_text = clean
-                status.update(f"[dim]{clean}[/]")
-                if not status.display:
-                    status.display = True
+                self._set_stream_status(f"[dim]{clean}[/]")
                 self._scroll_to_bottom()
 
     # --- input handling -------------------------------------------------------
@@ -554,9 +571,7 @@ class ResearchConsole(App[None]):
         self._revert_to_checkpoint()
         db.set_control_mode(self._conn, "paused")
         self._conn.commit()
-        status = self.query_one("#stream-text", Static)
-        status.update("")
-        status.display = False
+        self._clear_stream_status()
         self._last_stream_text = ""
         self._write_activity("  [yellow]Agent paused.[/]")
 
@@ -635,9 +650,7 @@ class ResearchConsole(App[None]):
         self._cycle_header_widget = None
         self._last_stream_text = ""
         self._current_cycle_widgets = []
-        status = self.query_one("#stream-text", Static)
-        status.update("")
-        status.display = False
+        self._clear_stream_status()
         self._write_activity(
             "  [green]Reset complete.[/] Kept [bold]research_idea.md[/] and [bold]preferences.md[/]. "
             "Cleared DB, other Tier A files, episodes, extended, branches, skills, experiments."
@@ -722,9 +735,7 @@ class ResearchConsole(App[None]):
             pass
 
         try:
-            status = self.query_one("#stream-text", Static)
-            status.update("")
-            status.display = False
+            self._clear_stream_status()
         except Exception:
             pass
 

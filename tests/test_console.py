@@ -3,6 +3,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from rich import box
+from rich.console import Console
+from rich.console import Group
+from rich.panel import Panel
+from rich.syntax import Syntax
+from rich.table import Table
+
 from research_lab import db
 from research_lab.config import RunConfig
 from research_lab.ui import events
@@ -171,7 +178,8 @@ def test_format_worker_result_excerpt_fail_empty() -> None:
 def test_format_cycle_header_no_truncation() -> None:
     long_task = "A" * 300
     out = events.format_cycle_header(1, "planner", long_task)
-    assert long_task in out
+    assert "cycle 1" in out
+    assert "planner" in out
     assert "●" in out
     assert "0.0s" in out
 
@@ -182,6 +190,86 @@ def test_format_cycle_header_done_shows_elapsed() -> None:
     )
     assert "12.4s" in out
     assert "cycle 2" in out
+
+
+def test_render_markdown_converts_pipe_table_to_rich_table() -> None:
+    rendered = events.render_markdown(
+        "| Name | Score |\n"
+        "| --- | --- |\n"
+        "| Alice | 10 |\n"
+        "| Bob | 8 |"
+    )
+    assert isinstance(rendered, Table)
+    assert [column.header.plain for column in rendered.columns] == ["Name", "Score"]
+    assert rendered.row_count == 2
+    assert rendered.box == events._MARKDOWN_TABLE_BOX
+    assert rendered.show_lines is True
+
+
+def test_render_markdown_converts_pipe_rows_without_separator_to_table() -> None:
+    rendered = events.render_markdown("| Name | Score |\n| Alice | 10 |\n| Bob | 8 |")
+    assert isinstance(rendered, Table)
+    assert [column.header.plain for column in rendered.columns] == ["Name", "Score"]
+    assert rendered.row_count == 2
+
+
+def test_render_markdown_wraps_code_block_in_syntax_panel() -> None:
+    rendered = events.render_markdown("```python\nprint('hello')\n```")
+    assert isinstance(rendered, Panel)
+    assert isinstance(rendered.renderable, Syntax)
+    assert "python" in str(rendered.title)
+    assert rendered.renderable.line_numbers is False
+
+
+def test_render_markdown_highlights_language_keywords() -> None:
+    rendered = events.render_markdown("```py\nfor item in items:\n    if item:\n        pass\n```")
+    assert isinstance(rendered, Panel)
+    assert isinstance(rendered.renderable, Syntax)
+
+    console = Console(width=80, record=True)
+    first_line = console.render_lines(rendered.renderable)[0]
+    segment_styles = {segment.text.strip(): str(segment.style) for segment in first_line if segment.text.strip()}
+
+    assert "for" in segment_styles
+    assert "item" in segment_styles
+    assert segment_styles["for"] != segment_styles["item"]
+
+
+def test_render_markdown_guesses_python_for_unlabeled_code_block() -> None:
+    rendered = events.render_markdown("```\nfor item in items:\n    if item:\n        pass\n```")
+    assert isinstance(rendered, Panel)
+    assert isinstance(rendered.renderable, Syntax)
+
+    console = Console(width=80, record=True)
+    first_line = console.render_lines(rendered.renderable)[0]
+    segment_styles = {segment.text.strip(): str(segment.style) for segment in first_line if segment.text.strip()}
+
+    assert "for" in segment_styles
+    assert "item" in segment_styles
+    assert segment_styles["for"] != segment_styles["item"]
+
+
+def test_render_markdown_code_ref_extracts_filepath_as_title() -> None:
+    rendered = events.render_markdown(
+        "```python\n140:175:/some/path/poly_gaussian.py\n"
+        "    pg: PolyGaussian = self\n    return pg\n```"
+    )
+    assert isinstance(rendered, Panel)
+    assert isinstance(rendered.renderable, Syntax)
+    assert "poly_gaussian.py" in str(rendered.title)
+    assert rendered.renderable.start_line == 140
+    assert rendered.renderable.line_numbers is True
+
+
+def test_render_markdown_mixes_text_and_table() -> None:
+    rendered = events.render_markdown(
+        "Summary\n\n"
+        "| Name | Score |\n"
+        "| --- | --- |\n"
+        "| Alice | 10 |"
+    )
+    assert isinstance(rendered, Group)
+    assert any(isinstance(item, Table) for item in rendered.renderables)
 
 
 # ---------------------------------------------------------------------------

@@ -6,11 +6,49 @@ import json
 import re
 import sqlite3
 import time
+from pathlib import Path
 from typing import Literal
 
+from rich import box
+from rich.console import Group, RenderableType
 from rich.markup import escape as _rich_escape
+from rich.panel import Panel
+from rich.rule import Rule
+from rich.syntax import Syntax
+from rich.table import Table
+from rich.text import Text
 
 from research_lab import db
+
+_SURFACE_BORDER = "#3a3a3a"
+_SURFACE_BG = "#1c1c1c"
+_CODE_BG = "#141414"
+_MARKDOWN_TABLE_BOX = box.Box(
+    """
+    
+    
+ ━━ 
+    
+ ── 
+ ── 
+    
+    
+""".strip("\n")
+)
+_CODE_LANGUAGE_ALIASES = {
+    "py": "python",
+    "pyi": "python",
+    "js": "javascript",
+    "jsx": "jsx",
+    "ts": "typescript",
+    "tsx": "tsx",
+    "sh": "bash",
+    "shell": "bash",
+    "zsh": "bash",
+    "yml": "yaml",
+    "md": "markdown",
+    "rs": "rust",
+}
 
 
 def header_line(project_name: str, model: str, conn: sqlite3.Connection) -> str:
@@ -227,78 +265,308 @@ def _inline_md_to_rich(text: str) -> str:
     return text
 
 
-def markdown_to_rich(text: str) -> str:
-    """Convert common Markdown to Rich console markup for terminal display."""
-    text = _rich_escape(text)
+def _markup_text(text: str) -> Text:
+    return Text.from_markup(_inline_md_to_rich(_rich_escape(text)))
+
+
+def _append_paragraph(renderables: list[RenderableType], lines: list[str]) -> None:
+    if not lines:
+        return
+    renderables.append(_markup_text("\n".join(lines)))
+    lines.clear()
+
+
+def _is_table_separator(line: str) -> bool:
+    stripped = line.strip()
+    return bool(re.match(r"^\|[\s\-:]+(\|[\s\-:]+)*\|$", stripped))
+
+
+def _is_table_row(line: str) -> bool:
+    stripped = line.strip()
+    return stripped.startswith("|") and stripped.endswith("|")
+
+
+def _split_table_row(line: str) -> list[str]:
+    return [cell.strip() for cell in line.strip().strip("|").split("|")]
+
+
+def _make_markdown_table(block_lines: list[str]) -> Table | None:
+    if len(block_lines) < 2:
+        return None
+    if not _is_table_row(block_lines[0]):
+        return None
+
+    headers = _split_table_row(block_lines[0])
+    row_start = 2 if _is_table_separator(block_lines[1]) else 1
+    rows = [_split_table_row(line) for line in block_lines[row_start:] if _is_table_row(line)]
+    if not headers:
+        return None
+
+    column_count = max([len(headers), *[len(row) for row in rows]] if rows else [len(headers)])
+    while len(headers) < column_count:
+        headers.append("")
+    for row in rows:
+        while len(row) < column_count:
+            row.append("")
+
+    table = Table(
+        box=_MARKDOWN_TABLE_BOX,
+        show_header=True,
+        show_lines=True,
+        header_style="bold cyan",
+        border_style=_SURFACE_BORDER,
+        expand=True,
+        pad_edge=False,
+        padding=(0, 3),
+    )
+    for header in headers:
+        table.add_column(Text.from_markup(_inline_md_to_rich(header)), overflow="fold")
+    for row in rows:
+        table.add_row(*[Text.from_markup(_inline_md_to_rich(cell)) for cell in row])
+    return table
+
+
+_CODE_REF_RE = re.compile(r"^(\d+):(\d+):(.+)$")
+
+
+def _resolve_code_lexer(language: str, title_file: str, code: str) -> str:
+    normalized = _CODE_LANGUAGE_ALIASES.get(language.strip().lower(), language.strip().lower())
+    if normalized:
+        return normalized
+    first_line = code.lstrip().splitlines()[0].strip() if code.strip() else ""
+    if first_line.startswith("#!"):
+        if "python" in first_line:
+            return "python"
+        if any(shell in first_line for shell in ("bash", "sh", "zsh")):
+            return "bash"
+    if title_file:
+        guessed = Syntax.guess_lexer(title_file, code)
+        if guessed:
+            return guessed
+    lowered = code.lower()
+    stripped_lines = [line.strip() for line in code.splitlines() if line.strip()]
+    if any(
+        token in lowered
+        for token in (
+            "def ",
+            "import ",
+            "from ",
+            "class ",
+            "elif ",
+            "except",
+            "lambda ",
+            "pass",
+            "none",
+            "self",
+        )
+    ) or any(
+        line.startswith(("for ", "if ", "while ", "with ", "try:", "return "))
+        and line.endswith(":")
+        for line in stripped_lines
+    ):
+        return "python"
+    if any(
+        token in lowered
+        for token in ("const ", "let ", "function ", "=>", "console.log", "export ")
+    ):
+        return "javascript"
+    if any(
+        token in lowered
+        for token in ("#!/bin/bash", "#!/usr/bin/env bash", "#!/bin/sh", "fi", "then", "echo ")
+    ):
+        return "bash"
+    if stripped_lines and all(":" in line for line in stripped_lines[: min(3, len(stripped_lines))]):
+        return "yaml"
+    return "text"
+
+
+def _make_code_block(code: str, language: str) -> Panel:
+    lines = code.split("\n")
+    start_line = 1
+    title_file = ""
+
+    if lines:
+        m = _CODE_REF_RE.match(lines[0].strip())
+        if m:
+            start_line = int(m.group(1))
+            title_file = m.group(3).strip()
+            lines = lines[1:]
+            code = "\n".join(lines)
+
+    lexer = _resolve_code_lexer(language, title_file, code)
+    show_nums = start_line > 1
+    syntax = Syntax(
+        code,
+        lexer,
+        theme="monokai",
+        code_width=None,
+        word_wrap=True,
+        line_numbers=show_nums,
+        start_line=start_line,
+        indent_guides=False,
+        background_color=_CODE_BG,
+        padding=0,
+    )
+
+    if title_file:
+        short = Path(title_file).name
+        title = f"[dim]{short}[/dim] [dim italic]L{start_line}[/dim italic]"
+    elif language:
+        title = f"[dim]{language}[/dim]"
+    else:
+        title = ""
+
+    return Panel(
+        syntax,
+        box=box.ROUNDED,
+        border_style=_SURFACE_BORDER,
+        style=f"on {_CODE_BG}",
+        title=title,
+        title_align="left",
+        subtitle=f"[dim italic]{Path(title_file).parent}[/dim italic]" if title_file else "",
+        subtitle_align="left",
+        padding=0,
+        expand=True,
+    )
+
+
+def make_stream_panel(markup: str) -> Panel:
+    content = Text.from_markup(markup) if markup else Text("")
+    return Panel(
+        content,
+        box=box.ROUNDED,
+        border_style=_SURFACE_BORDER,
+        style=f"on {_SURFACE_BG}",
+        padding=(0, 2),
+        expand=True,
+    )
+
+
+def wrap_result_renderable(renderable: RenderableType) -> RenderableType:
+    if isinstance(renderable, Panel):
+        return renderable
+    return Panel(
+        renderable,
+        box=box.ROUNDED,
+        border_style=_SURFACE_BORDER,
+        style=f"on {_SURFACE_BG}",
+        padding=(0, 2),
+        expand=True,
+    )
+
+
+def render_markdown(text: str) -> RenderableType:
+    """Convert common Markdown to Rich renderables for terminal display."""
     lines = text.split("\n")
-    result: list[str] = []
+    renderables: list[RenderableType] = []
+    paragraph_lines: list[str] = []
+    table_lines: list[str] = []
+    code_lines: list[str] = []
     in_code_block = False
+    code_language = ""
 
     for line in lines:
         stripped = line.strip()
 
-        if stripped.startswith("```"):
-            in_code_block = not in_code_block
-            if in_code_block:
-                lang = stripped[3:].strip()
-                label = f" {lang} " if lang else ""
-                result.append(f"  [dim]{'─' * 3}{label}{'─' * max(1, 37 - len(label))}[/dim]")
+        if in_code_block:
+            if stripped.startswith("```"):
+                renderables.append(_make_code_block("\n".join(code_lines), code_language))
+                code_lines.clear()
+                code_language = ""
+                in_code_block = False
             else:
-                result.append(f"  [dim]{'─' * 40}[/dim]")
+                code_lines.append(line)
             continue
 
-        if in_code_block:
-            result.append(f"  [dim]{line}[/dim]")
+        if stripped.startswith("```"):
+            _append_paragraph(renderables, paragraph_lines)
+            if table_lines:
+                table = _make_markdown_table(table_lines)
+                if table is not None:
+                    renderables.append(table)
+                table_lines.clear()
+            in_code_block = True
+            code_language = stripped[3:].strip()
             continue
+
+        if _is_table_row(line):
+            _append_paragraph(renderables, paragraph_lines)
+            table_lines.append(line)
+            continue
+
+        if table_lines:
+            if _is_table_separator(line):
+                table_lines.append(line)
+                continue
+            table = _make_markdown_table(table_lines)
+            if table is not None:
+                renderables.append(table)
+            table_lines.clear()
 
         if not stripped:
-            result.append("")
+            _append_paragraph(renderables, paragraph_lines)
             continue
 
         if stripped.startswith("### "):
-            result.append(f"[bold]{_inline_md_to_rich(stripped[4:])}[/bold]")
+            _append_paragraph(renderables, paragraph_lines)
+            renderables.append(Text.from_markup(f"[bold]{_inline_md_to_rich(_rich_escape(stripped[4:]))}[/bold]"))
             continue
         if stripped.startswith("## "):
-            result.append(f"\n[bold]{_inline_md_to_rich(stripped[3:])}[/bold]")
+            _append_paragraph(renderables, paragraph_lines)
+            renderables.append(Text.from_markup(f"[bold]{_inline_md_to_rich(_rich_escape(stripped[3:]))}[/bold]"))
             continue
         if stripped.startswith("# "):
-            result.append(
-                f"\n[bold underline]{_inline_md_to_rich(stripped[2:])}[/bold underline]"
+            _append_paragraph(renderables, paragraph_lines)
+            renderables.append(
+                Text.from_markup(
+                    f"[bold underline]{_inline_md_to_rich(_rich_escape(stripped[2:]))}[/bold underline]"
+                )
             )
             continue
 
         if re.match(r"^[-*_]{3,}$", stripped):
-            result.append(f"[dim]{'─' * 40}[/dim]")
-            continue
-
-        if re.match(r"^\|[\s\-:]+(\|[\s\-:]+)*\|$", stripped):
-            continue
-
-        if stripped.startswith("|") and stripped.endswith("|"):
-            cells = [c.strip() for c in stripped.strip("|").split("|")]
-            styled = [_inline_md_to_rich(c) for c in cells]
-            result.append("  " + "  [dim]│[/dim]  ".join(styled))
+            _append_paragraph(renderables, paragraph_lines)
+            renderables.append(Rule(style="dim"))
             continue
 
         m = re.match(r"^(\s*)([-*+])\s", line)
         if m:
+            _append_paragraph(renderables, paragraph_lines)
             depth = len(m.group(1)) // 2
-            indent = "  " * (depth + 1)
-            item_text = _inline_md_to_rich(line[m.end() :])
-            result.append(f"{indent}[dim]•[/dim] {item_text}")
+            indent = "  " * depth
+            item_text = _inline_md_to_rich(_rich_escape(line[m.end() :]))
+            renderables.append(Text.from_markup(f"{indent}[dim]•[/dim] {item_text}"))
             continue
 
         m = re.match(r"^(\s*)(\d+)\.\s", line)
         if m:
+            _append_paragraph(renderables, paragraph_lines)
             depth = len(m.group(1)) // 2
-            indent = "  " * (depth + 1)
-            item_text = _inline_md_to_rich(line[m.end() :])
-            result.append(f"{indent}{m.group(2)}. {item_text}")
+            indent = "  " * depth
+            item_text = _inline_md_to_rich(_rich_escape(line[m.end() :]))
+            renderables.append(Text.from_markup(f"{indent}{m.group(2)}. {item_text}"))
             continue
 
-        result.append(_inline_md_to_rich(line))
+        paragraph_lines.append(line)
 
-    return "\n".join(result)
+    if in_code_block:
+        renderables.append(_make_code_block("\n".join(code_lines), code_language))
+    if table_lines:
+        table = _make_markdown_table(table_lines)
+        if table is not None:
+            renderables.append(table)
+    _append_paragraph(renderables, paragraph_lines)
+
+    if not renderables:
+        return Text("")
+    if len(renderables) == 1:
+        return renderables[0]
+    return Group(*renderables)
+
+
+def markdown_to_rich(text: str) -> RenderableType:
+    """Backward-compatible alias for the richer markdown renderer."""
+    return render_markdown(text)
 
 
 def extract_result_excerpt(summary: str) -> str:
