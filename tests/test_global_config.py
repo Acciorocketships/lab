@@ -23,7 +23,7 @@ def test_global_config_roundtrip(tmp_path: Path, monkeypatch) -> None:
         base_url="",
         api_key="sk-test-key",
         worker_backend="cursor",
-        cursor_agent_model="composer-2",
+        cursor_agent_model="auto",
         code_style="Clean Python",
     )
     save_global_config(cfg)
@@ -32,7 +32,7 @@ def test_global_config_roundtrip(tmp_path: Path, monkeypatch) -> None:
     assert loaded.model_name == "google/gemini-2.5-flash-lite"
     assert loaded.api_key == "sk-test-key"
     assert loaded.worker_backend == "cursor"
-    assert loaded.cursor_agent_model == "composer-2"
+    assert loaded.cursor_agent_model == "auto"
     assert loaded.code_style == "Clean Python"
 
 
@@ -74,7 +74,7 @@ def test_from_configs_builds_run_config(tmp_path: Path) -> None:
     assert run_cfg.openai_model == "gemini-2.5-flash-lite"
     assert run_cfg.openrouter_api_key == "sk-or"
     assert run_cfg.default_worker_backend == "cursor"
-    assert run_cfg.cursor_agent_model == "composer-2"
+    assert run_cfg.cursor_agent_model == "auto"
     assert run_cfg.researcher_root == project_dir / ".airesearcher"
     assert run_cfg.orchestrator_input_max_chars is None
     assert run_cfg.orchestrator_prev_summary_max_chars is None

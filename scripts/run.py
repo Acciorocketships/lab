@@ -41,7 +41,7 @@ def main() -> None:
         openai_base_url=None,
         openai_model="google/gemini-2.5-flash-lite",
         default_worker_backend="cursor",
-        cursor_agent_model="composer-2",
+        cursor_agent_model="auto",
     )
     RESEARCHER_ROOT.mkdir(parents=True, exist_ok=True)
     PROJECT_DIR.mkdir(parents=True, exist_ok=True)

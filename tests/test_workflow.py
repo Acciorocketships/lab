@@ -336,6 +336,63 @@ def test_run_loop_pauses_after_acceptance_satisfied(tmp_path: Path, monkeypatch)
     conn.close()
 
 
+def test_run_loop_graceful_pause_after_cycle(tmp_path: Path, monkeypatch) -> None:
+    """When graceful_pause_pending is set, one successful cycle should leave mode paused."""
+    cfg = RunConfig(
+        researcher_root=tmp_path,
+        project_dir=tmp_path / "p",
+        orchestrator_backend="openai",
+        openai_api_key=None,
+        openai_base_url=None,
+        openai_model="gpt-4o-mini",
+        default_worker_backend="cursor",
+        cursor_agent_model="composer-2",
+    )
+    memory.ensure_memory_layout(tmp_path)
+    cfg.project_dir.mkdir()
+
+    db_path = tmp_path / "db.sqlite"
+    conn = db.connect_db(db_path)
+    db.get_system_state(conn)
+    db.set_graceful_pause_pending(conn, True)
+    conn.commit()
+    conn.close()
+
+    class CycleApp:
+        def invoke(self, state: ResearchState) -> dict[str, object]:
+            return {"cycle_count": 1, "current_worker": "planner"}
+
+    monkeypatch.setattr(research_graph, "build_graph", lambda *a, **k: CycleApp())
+    monkeypatch.setattr(research_graph.git_checkpoint, "create_checkpoint", lambda *a, **k: None)
+
+    sleeps = 0
+
+    def sleep_side_effect(_: float) -> None:
+        nonlocal sleeps
+        sleeps += 1
+        if sleeps == 1:
+            c = db.connect_db(db_path)
+            db.enqueue_event(c, "shutdown", None)
+            c.commit()
+            c.close()
+
+    monkeypatch.setattr(research_graph.time, "sleep", sleep_side_effect)
+
+    research_graph.run_loop(
+        cfg,
+        db_path=db_path,
+        researcher_root=tmp_path,
+        project_dir=cfg.project_dir,
+        checkpoint_path=tmp_path / "checkpoint.db",
+    )
+
+    conn = db.connect_db(db_path)
+    st = db.get_system_state(conn)
+    assert st["control_mode"] == "shutdown"
+    assert int(st.get("graceful_pause_pending", 0) or 0) == 0
+    conn.close()
+
+
 def test_choose_action_uses_forced_run_before_orchestrator(tmp_path: Path, monkeypatch) -> None:
     cfg = RunConfig(
         researcher_root=tmp_path,

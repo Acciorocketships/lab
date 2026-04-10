@@ -19,7 +19,7 @@ lab init
 lab
 ```
 
-Once in the console, type `/start` to begin the background agent, `/pause` to pause it, or `/exit` to quit. Plain text is queued as an instruction to the agent.
+Once in the console, type `/start` to begin the background agent, `/pause` to pause after the current worker finishes, `/stop` to halt immediately, or `/exit` to quit. Plain text is queued as an instruction to the agent.
 
 ## CLI commands
 
@@ -34,13 +34,12 @@ Once in the console, type `/start` to begin the background agent, `/pause` to pa
 | Command | Action |
 |---------|--------|
 | `/start` | Start the background research agent |
-| `/pause` | Pause the agent |
-| `/exit` | Pause the agent and quit the console |
+| `/pause` | Pause after the current worker (subagent) finishes — no kill, no revert |
+| `/stop` | Stop immediately: kill the worker process and revert any in-flight cycle |
+| `/exit` | Stop the agent and quit the console |
 | `/status` | Show current agent state |
-| `/backlog` | Show recent instructions |
 | `/branches` | Show branch registry |
-| `/experiments` | Show experiment registry |
-| `/reset` | Clear SQLite and runtime memory (Tier A except `research_idea.md` and `preferences.md`, episodes, extended, branches, skills, experiments); syncs `[project]` brief and preferences in `config.toml` from those files |
+| `/reset` | Clear SQLite and runtime memory (Tier A except `research_idea.md` and `preferences.md`, episodes, extended, branches, skills, experiments); syncs `[project]` brief and preferences in `config.toml` from those files; does not change your project code |
 | `/undo` | Stop the scheduler if running, restore the project tree and DB to before the current or last worker (git checkpoints); if the agent was running, restart it for a fresh orchestrator step (if paused, stays paused) |
 | `/help` | List all commands |
 | plain text | Queue as an instruction to the agent |

@@ -115,13 +115,17 @@ def format_cycle_header(
     worker: str,
     task: str,
     *,
+    cursor_model: str | None = None,
     elapsed_sec: float = 0.0,
     status: CycleHeaderStatus = "running",
 ) -> str:
     """Cycle heading with status dot, duration (like the top header dot), and task line."""
     dot = {"running": "[yellow]●[/]", "ok": "[green]●[/]", "fail": "[red]●[/]"}[status]
     t = _format_duration(elapsed_sec)
-    return f"[bold]cycle {cycle} · {worker}[/] {dot} [dim]{t}[/]"
+    model_bit = (
+        f' [dim]({cursor_model})[/]' if (cursor_model is not None and cursor_model != "") else ""
+    )
+    return f"[bold]cycle {cycle} · {worker}[/]{model_bit} {dot} [dim]{t}[/]"
 
 
 def cycle_header_running_elapsed(orchestrator_ts: float) -> float:
@@ -315,49 +319,136 @@ def format_worker_result_excerpt(ok: bool, result_text: str = "") -> str:
 # Stream-JSON chunk parsing (tool call activity for the live status line)
 # ---------------------------------------------------------------------------
 
-_TOOL_LABELS: dict[str, tuple[str, tuple[str, ...]]] = {
-    "Read": ("Reading", ("file_path", "path")),
-    "View": ("Reading", ("file_path", "path")),
-    "Write": ("Writing", ("file_path", "path")),
-    "Create": ("Creating", ("file_path", "path")),
-    "Edit": ("Editing", ("file_path", "path")),
-    "Replace": ("Editing", ("file_path", "path")),
-    "StrReplace": ("Editing", ("file_path", "path")),
-    "MultiEdit": ("Editing", ("file_path", "path")),
-    "Bash": ("Running", ("command",)),
-    "Shell": ("Running", ("command",)),
-    "Execute": ("Running", ("command",)),
-    "Grep": ("Searching", ("pattern", "query")),
-    "Search": ("Searching", ("pattern", "query")),
-    "RipGrep": ("Searching", ("pattern", "query")),
-    "Glob": ("Finding files", ("pattern", "glob_pattern")),
-    "ListFiles": ("Listing", ("path", "directory")),
-    "TodoWrite": ("Planning", ()),
-    "WebSearch": ("Web search", ("search_term", "query")),
-    "WebFetch": ("Fetching", ("url",)),
-    "Task": ("Dispatching agent", ("description",)),
-    "SemanticSearch": ("Semantic search", ("query",)),
+_TOOL_LABELS: dict[str, tuple[str, str, tuple[str, ...]]] = {
+    "Read": ("📖", "Reading", ("file_path", "path")),
+    "View": ("📖", "Reading", ("file_path", "path")),
+    "Write": ("✍️", "Writing", ("file_path", "path")),
+    "Create": ("🆕", "Creating", ("file_path", "path")),
+    "Edit": ("✍️", "Editing", ("file_path", "path")),
+    "Replace": ("✍️", "Editing", ("file_path", "path")),
+    "StrReplace": ("✍️", "Editing", ("file_path", "path")),
+    "MultiEdit": ("✍️", "Editing", ("file_path", "path")),
+    "Bash": ("▶️", "Running", ("command",)),
+    "Shell": ("▶️", "Running", ("command",)),
+    "Execute": ("▶️", "Running", ("command",)),
+    "Grep": ("🔎", "Searching", ("pattern", "query")),
+    "Search": ("🔎", "Searching", ("pattern", "query")),
+    "RipGrep": ("🔎", "Searching", ("pattern", "query")),
+    "Glob": ("📂", "Finding files", ("pattern", "glob_pattern")),
+    "ListFiles": ("📂", "Listing", ("path", "directory")),
+    "TodoWrite": ("🧭", "Planning", ()),
+    "WebSearch": ("🌐", "Web search", ("search_term", "query")),
+    "WebFetch": ("🌐", "Fetching", ("url",)),
+    "Task": ("🤖", "Dispatching agent", ("description",)),
+    "SemanticSearch": ("🧠", "Semantic search", ("query",)),
+    "Git": ("🌿", "Git", ("command",)),
+    "ReadLints": ("🩺", "Checking lints", ("paths", "path")),
 }
 
 
+def _normalize_tool_name(name: str) -> str:
+    raw = (name or "").strip()
+    if not raw:
+        return ""
+    if raw.endswith("ToolCall"):
+        raw = raw.removesuffix("ToolCall")
+    mapping = {
+        "edit": "Edit",
+        "read": "Read",
+        "view": "View",
+        "write": "Write",
+        "create": "Create",
+        "shell": "Shell",
+        "bash": "Bash",
+        "grep": "Grep",
+        "search": "Search",
+        "glob": "Glob",
+        "listfiles": "ListFiles",
+        "todolistwrite": "TodoWrite",
+        "todowrite": "TodoWrite",
+        "websearch": "WebSearch",
+        "webfetch": "WebFetch",
+        "task": "Task",
+        "semsearch": "SemanticSearch",
+        "semanticsearch": "SemanticSearch",
+        "readlints": "ReadLints",
+        "git": "Git",
+    }
+    key = raw.lower()
+    if key in mapping:
+        return mapping[key]
+    return raw[:1].upper() + raw[1:]
+
+
+def _format_tool_arg(name: str, value: object) -> str:
+    if isinstance(value, list):
+        joined = ", ".join(str(v) for v in value[:3] if v)
+        if len(value) > 3:
+            joined += ", …"
+        value_str = joined
+    else:
+        value_str = str(value)
+    if name in {"Read", "View", "Write", "Create", "Edit", "Replace", "StrReplace", "MultiEdit", "ListFiles"}:
+        try:
+            path = Path(value_str)
+            if path.name:
+                value_str = str(path)
+        except Exception:
+            pass
+    if len(value_str) > 100:
+        value_str = value_str[:97] + "…"
+    return value_str
+
+
 def _format_tool_use(name: str, input_data: dict) -> str:
-    label_info = _TOOL_LABELS.get(name)
+    normalized = _normalize_tool_name(name)
+    if normalized in {"Shell", "Bash", "Execute"}:
+        command = str(input_data.get("command", "")).strip()
+        if command:
+            lowered = command.lower()
+            if " git " in f" {lowered} " or lowered.startswith("git "):
+                normalized = "Git"
+    label_info = _TOOL_LABELS.get(normalized)
     if label_info is None:
-        return name
-    verb, keys = label_info
+        return normalized or name
+    emoji, verb, keys = label_info
+    if normalized == "Grep":
+        pattern = input_data.get("pattern") or input_data.get("query")
+        path = input_data.get("path") or input_data.get("directory")
+        if pattern and path:
+            return f"{emoji} {verb} {_format_tool_arg(normalized, pattern)} in {_format_tool_arg('Read', path)}"
+    if normalized == "Glob":
+        pattern = input_data.get("pattern") or input_data.get("glob_pattern") or input_data.get("globPattern")
+        target = input_data.get("path") or input_data.get("directory") or input_data.get("targetDirectory")
+        if pattern and target:
+            return f"{emoji} {verb} {_format_tool_arg(normalized, pattern)} in {_format_tool_arg('Read', target)}"
+    if normalized == "SemanticSearch":
+        query = input_data.get("query")
+        targets = input_data.get("targetDirectories")
+        if query and targets:
+            return f"{emoji} {verb} {_format_tool_arg(normalized, query)}"
     for key in keys:
         val = input_data.get(key, "")
         if val:
-            val_str = str(val)
-            if len(val_str) > 80:
-                val_str = val_str[:77] + "…"
-            return f"{verb} {val_str}"
-    return verb
+            return f"{emoji} {verb} {_format_tool_arg(normalized, val)}"
+    return f"{emoji} {verb}"
+
+
+def _format_tool_use_with_description(name: str, input_data: dict, description: str | None = None) -> str:
+    formatted = _format_tool_use(name, input_data)
+    desc = (description or "").strip()
+    if not desc:
+        return formatted
+    normalized = _normalize_tool_name(name)
+    if normalized in {"Shell", "Bash", "Execute", "Git"}:
+        return f"{formatted} ({desc})"
+    return formatted
 
 
 def parse_stream_event(chunk: str, *, full_text: bool = False) -> tuple[str, str] | None:
     """Parse a stream-json chunk and return ``(event_type, display_text)`` or
-    *None* to skip.  ``event_type`` is ``"tool"`` or ``"text"``.
+    *None* to skip. ``event_type`` is ``"tool"``, ``"text"``, ``"message"``,
+    or ``"boundary"``.
 
     When *full_text* is True the complete text content is returned (multi-line,
     no truncation).  When False (default) a single-line ≤160-char excerpt is
@@ -385,12 +476,16 @@ def parse_stream_event(chunk: str, *, full_text: bool = False) -> tuple[str, str
             if block.get("type") == "tool_use":
                 return ("tool", _format_tool_use(block.get("name", ""), block.get("input", {})))
             if block.get("type") == "text":
-                t = block.get("text", "").strip()
-                if t:
+                raw_text = block.get("text", "")
+                if isinstance(raw_text, str) and raw_text.strip():
+                    t = raw_text if full_text else raw_text.strip()
                     parts.append(t)
         if parts:
             combined = "\n".join(parts) if full_text else " ".join(parts).split("\n")[0][:160]
-            return ("text", combined) if combined.strip() else None
+            return ("message", combined) if combined.strip() else None
+        return None
+
+    if typ == "thinking":
         return None
 
     if typ == "content_block_delta":
@@ -412,16 +507,29 @@ def parse_stream_event(chunk: str, *, full_text: bool = False) -> tuple[str, str
         return None
 
     if typ in ("tool_use", "tool_call"):
+        raw_name = data.get("name", "") or data.get("tool", "")
+        raw_input = data.get("input", {}) or data.get("arguments", {})
+        raw_description = data.get("description", "")
+        tool_payload = data.get("tool_call", {})
+        if isinstance(tool_payload, dict) and tool_payload:
+            nested_name, nested_value = next(iter(tool_payload.items()))
+            if isinstance(nested_value, dict):
+                raw_name = raw_name or _normalize_tool_name(nested_name)
+                raw_input = nested_value.get("args", raw_input)
+                raw_description = nested_value.get("description", raw_description)
         return (
             "tool",
-            _format_tool_use(
-                data.get("name", "") or data.get("tool", ""),
-                data.get("input", {}) or data.get("arguments", {}),
+            _format_tool_use_with_description(
+                raw_name,
+                raw_input if isinstance(raw_input, dict) else {},
+                raw_description if isinstance(raw_description, str) else None,
             ),
         )
 
-    if typ in ("result", "system", "tool_result", "message_start", "message_stop",
-               "content_block_stop", "ping", "message_delta"):
+    if typ in ("message_start", "message_stop", "content_block_stop", "result"):
+        return ("boundary", "")
+
+    if typ in ("system", "tool_result", "ping", "message_delta"):
         return None
 
     # Fallback: try to extract text from any unrecognized JSON event.

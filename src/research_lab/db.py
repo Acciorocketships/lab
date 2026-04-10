@@ -29,7 +29,8 @@ CREATE TABLE IF NOT EXISTS system_state (
   control_mode TEXT NOT NULL DEFAULT 'active',
   last_message TEXT NOT NULL DEFAULT '',
   roadmap_step TEXT NOT NULL DEFAULT '',
-  task TEXT NOT NULL DEFAULT ''
+  task TEXT NOT NULL DEFAULT '',
+  graceful_pause_pending INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS run_events (
@@ -86,12 +87,22 @@ def obliterate_runtime_db(db_path: Path) -> None:
             pass
 
 
+def _ensure_system_state_columns(conn: sqlite3.Connection) -> None:
+    """Apply lightweight migrations for ``system_state`` (existing DBs)."""
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(system_state)").fetchall()}
+    if "graceful_pause_pending" not in cols:
+        conn.execute(
+            "ALTER TABLE system_state ADD COLUMN graceful_pause_pending INTEGER NOT NULL DEFAULT 0"
+        )
+
+
 def connect_db(db_path: Path) -> sqlite3.Connection:
     """Open SQLite with WAL; shared across processes for TUI + scheduler."""
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path), check_same_thread=False, timeout=30.0)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
+    _ensure_system_state_columns(conn)
     conn.execute(
         "INSERT OR IGNORE INTO forced_run (id, worker, task) VALUES (1, '', '')"
     )
@@ -138,6 +149,14 @@ def get_system_state(conn: sqlite3.Connection) -> dict[str, Any]:
 def set_control_mode(conn: sqlite3.Connection, mode: str) -> None:
     """Update control_mode (active, paused, shutdown, watch)."""
     conn.execute("UPDATE system_state SET control_mode = ? WHERE id = 1", (mode,))
+
+
+def set_graceful_pause_pending(conn: sqlite3.Connection, pending: bool) -> None:
+    """When true, the scheduler sets control_mode to paused after the current graph cycle."""
+    conn.execute(
+        "UPDATE system_state SET graceful_pause_pending = ? WHERE id = 1",
+        (1 if pending else 0,),
+    )
 
 
 def set_system_fields(
@@ -281,7 +300,7 @@ def rollback_to_cycle(conn: sqlite3.Connection, cycle: int) -> None:
     """Reset system_state to *cycle* and purge run_events / stream rows beyond it."""
     conn.execute(
         "UPDATE system_state SET cycle_count = ?, control_mode = 'paused', "
-        "current_worker = '', last_message = '' WHERE id = 1",
+        "current_worker = '', last_message = '', graceful_pause_pending = 0 WHERE id = 1",
         (cycle,),
     )
     conn.execute("DELETE FROM run_events WHERE cycle > ?", (cycle,))

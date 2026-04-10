@@ -86,6 +86,97 @@ def test_cmd_start_enqueues_resume_when_scheduler_is_alive(tmp_path: Path) -> No
     console._conn.close()
 
 
+def test_cmd_start_clears_graceful_pause_pending(tmp_path: Path) -> None:
+    db_path = tmp_path / "runtime.db"
+    cfg = _cfg(tmp_path)
+    console = ResearchConsole(db_path, cfg)
+    conn = console._conn
+    db.get_system_state(conn)
+    db.set_control_mode(conn, "active")
+    db.set_graceful_pause_pending(conn, True)
+    conn.commit()
+
+    class FakeScheduler:
+        def is_alive(self) -> bool:
+            return True
+
+    console._scheduler = FakeScheduler()
+    writes: list[str] = []
+    console.query_one = _console_query_stub(writes)  # type: ignore[method-assign]
+
+    console._cmd_start()
+
+    assert int(db.get_system_state(conn).get("graceful_pause_pending", 0) or 0) == 0
+    console._conn.close()
+
+
+def test_submit_prompt_text_enqueues_instruction_then_runs_start(tmp_path: Path) -> None:
+    db_path = tmp_path / "runtime.db"
+    cfg = _cfg(tmp_path)
+    console = ResearchConsole(db_path, cfg)
+    conn = console._conn
+    db.get_system_state(conn)
+    db.set_control_mode(conn, "paused")
+    conn.commit()
+
+    writes: list[str] = []
+    console.query_one = _console_query_stub(writes)  # type: ignore[method-assign]
+
+    class FakeScheduler:
+        def is_alive(self) -> bool:
+            return True
+
+    console._scheduler = FakeScheduler()
+
+    console._submit_prompt_text("Please investigate the flaky test.\n/start")
+
+    pending = db.fetch_pending_events(conn)
+    assert [row["kind"] for row in pending] == ["instruction", "resume"]
+    assert pending[0]["payload"] == "Please investigate the flaky test."
+    assert console._orchestrating is True
+
+    console._conn.close()
+
+
+def test_cmd_pause_when_idle_sets_paused(tmp_path: Path) -> None:
+    db_path = tmp_path / "runtime.db"
+    cfg = _cfg(tmp_path)
+    cfg.project_dir.mkdir(parents=True, exist_ok=True)
+    console = ResearchConsole(db_path, cfg)
+    conn = console._conn
+    db.get_system_state(conn)
+    db.set_control_mode(conn, "active")
+    conn.commit()
+    writes: list[str] = []
+    console.query_one = _console_query_stub(writes)  # type: ignore[method-assign]
+    console._cmd_pause()
+    assert db.get_system_state(conn)["control_mode"] == "paused"
+    assert int(db.get_system_state(conn).get("graceful_pause_pending", 0) or 0) == 0
+    console._conn.close()
+
+
+def test_cmd_pause_when_running_sets_graceful_pending(tmp_path: Path) -> None:
+    db_path = tmp_path / "runtime.db"
+    cfg = _cfg(tmp_path)
+    cfg.project_dir.mkdir(parents=True, exist_ok=True)
+    console = ResearchConsole(db_path, cfg)
+    conn = console._conn
+    db.get_system_state(conn)
+    db.set_control_mode(conn, "active")
+    conn.commit()
+
+    class FakeScheduler:
+        def is_alive(self) -> bool:
+            return True
+
+    console._scheduler = FakeScheduler()
+    writes: list[str] = []
+    console.query_one = _console_query_stub(writes)  # type: ignore[method-assign]
+    console._cmd_pause()
+    assert int(db.get_system_state(conn).get("graceful_pause_pending", 0) or 0) == 1
+    console._conn.close()
+
+
 def test_cmd_undo_after_pause_restores_pre_first_checkpoint_state(tmp_path: Path) -> None:
     db_path = tmp_path / "runtime.db"
     cfg = _cfg(tmp_path)
@@ -124,7 +215,7 @@ def test_cmd_undo_after_pause_restores_pre_first_checkpoint_state(tmp_path: Path
     (cfg.project_dir / "f.txt").write_text("after cycle 1\n", encoding="utf-8")
     git_checkpoint.create_checkpoint(cfg.project_dir, 1, "planner")
 
-    console._cmd_pause()
+    console._cmd_stop()
     assert (cfg.project_dir / "f.txt").read_text(encoding="utf-8") == "after cycle 1\n"
     assert git_checkpoint.has_checkpoint(cfg.project_dir) is True
 
@@ -176,7 +267,7 @@ def test_cmd_undo_after_pause_rewinds_completed_checkpoint_chain(tmp_path: Path)
         (cfg.project_dir / "f.txt").write_text(f"cycle {cycle}\n", encoding="utf-8")
         git_checkpoint.create_checkpoint(cfg.project_dir, cycle, "planner")
 
-    console._cmd_pause()
+    console._cmd_stop()
     console._cmd_undo()
 
     assert (cfg.project_dir / "f.txt").read_text(encoding="utf-8") == "cycle 3\n"
@@ -248,7 +339,7 @@ def test_cmd_undo_twice_while_paused_rebuilds_visible_cycles(tmp_path: Path) -> 
         (cfg.project_dir / "f.txt").write_text(f"cycle {cycle}\n", encoding="utf-8")
         git_checkpoint.create_checkpoint(cfg.project_dir, cycle, "planner")
 
-    console._cmd_pause()
+    console._cmd_stop()
     visible_headers.clear()
     console._cmd_undo()
     visible_headers.clear()
@@ -300,7 +391,7 @@ def test_cmd_redo_restores_last_undone_checkpoint(tmp_path: Path) -> None:
         (cfg.project_dir / "f.txt").write_text(f"cycle {cycle}\n", encoding="utf-8")
         git_checkpoint.create_checkpoint(cfg.project_dir, cycle, "planner")
 
-    console._cmd_pause()
+    console._cmd_stop()
     console._cmd_undo()
     console._cmd_redo()
 
@@ -345,7 +436,7 @@ def test_cmd_redo_reapplies_local_changes_on_top(tmp_path: Path) -> None:
     conn.commit()
     git_checkpoint.create_checkpoint(cfg.project_dir, 2, "planner")
 
-    console._cmd_pause()
+    console._cmd_stop()
     console._cmd_undo()
     (cfg.project_dir / "notes.txt").write_text("local edit\n", encoding="utf-8")
     console._cmd_redo()
@@ -476,14 +567,181 @@ def test_parse_stream_event_tool_use() -> None:
     assert "train.py" in result[1]
 
 
+def test_parse_stream_event_nested_tool_call_includes_argument() -> None:
+    chunk = json.dumps({
+        "type": "tool_call",
+        "tool_call": {
+            "readToolCall": {
+                "args": {
+                    "path": "/tmp/project/src/train.py",
+                }
+            }
+        },
+    })
+    result = events.parse_stream_event(chunk)
+    assert result == ("tool", "📖 Reading /tmp/project/src/train.py")
+
+
+def test_parse_stream_event_shell_tool_call_includes_command() -> None:
+    chunk = json.dumps({
+        "type": "tool_call",
+        "tool_call": {
+            "shellToolCall": {
+                "args": {
+                    "command": "pytest tests/test_console.py -q",
+                }
+            }
+        },
+    })
+    result = events.parse_stream_event(chunk)
+    assert result == ("tool", "▶️ Running pytest tests/test_console.py -q")
+
+
+def test_parse_stream_event_git_shell_tool_call_uses_git_label() -> None:
+    chunk = json.dumps({
+        "type": "tool_call",
+        "tool_call": {
+            "shellToolCall": {
+                "args": {
+                    "command": "git status --short",
+                }
+            }
+        },
+    })
+    result = events.parse_stream_event(chunk)
+    assert result == ("tool", "🌿 Git git status --short")
+
+
+def test_parse_stream_event_shell_tool_call_keeps_description() -> None:
+    chunk = json.dumps({
+        "type": "tool_call",
+        "tool_call": {
+            "shellToolCall": {
+                "args": {
+                    "command": "python -m pytest -q --tb=line",
+                },
+                "description": "Run full pytest suite",
+            }
+        },
+    })
+    result = events.parse_stream_event(chunk)
+    assert result == ("tool", "▶️ Running python -m pytest -q --tb=line (Run full pytest suite)")
+
+
+def test_parse_stream_event_semsearch_tool_call_formats_query() -> None:
+    chunk = json.dumps({
+        "type": "tool_call",
+        "tool_call": {
+            "semSearchToolCall": {
+                "args": {
+                    "query": "Where is train_extrinsic_baseline defined?",
+                    "targetDirectories": ["/tmp/project"],
+                }
+            }
+        },
+    })
+    result = events.parse_stream_event(chunk)
+    assert result == ("tool", "🧠 Semantic search Where is train_extrinsic_baseline defined?")
+
+
+def test_parse_stream_event_grep_tool_call_formats_pattern_and_path() -> None:
+    chunk = json.dumps({
+        "type": "tool_call",
+        "tool_call": {
+            "grepToolCall": {
+                "args": {
+                    "pattern": "train_iters|frames_per_batch",
+                    "path": "/tmp/project/scripts",
+                }
+            }
+        },
+    })
+    result = events.parse_stream_event(chunk)
+    assert result == ("tool", "🔎 Searching train_iters|frames_per_batch in /tmp/project/scripts")
+
+
+def test_parse_stream_event_read_lints_tool_call_formats_paths() -> None:
+    chunk = json.dumps({
+        "type": "tool_call",
+        "tool_call": {
+            "readLintsToolCall": {
+                "args": {
+                    "paths": [
+                        "/tmp/project/a.py",
+                        "/tmp/project/b.py",
+                    ],
+                }
+            }
+        },
+    })
+    result = events.parse_stream_event(chunk)
+    assert result == ("tool", "🩺 Checking lints /tmp/project/a.py, /tmp/project/b.py")
+
+
 def test_parse_stream_event_skips_result() -> None:
     chunk = json.dumps({"type": "result", "subtype": "success", "is_error": False})
-    assert events.parse_stream_event(chunk) is None
+    assert events.parse_stream_event(chunk) == ("boundary", "")
+
+
+def test_parse_stream_event_message_stop_is_boundary() -> None:
+    chunk = json.dumps({"type": "message_stop"})
+    assert events.parse_stream_event(chunk) == ("boundary", "")
+
+
+def test_parse_stream_event_thinking_is_skipped() -> None:
+    chunk = json.dumps({"type": "thinking", "subtype": "delta", "text": "internal"})
+    assert events.parse_stream_event(chunk, full_text=True) is None
 
 
 def test_parse_stream_event_plain_text() -> None:
     result = events.parse_stream_event("hello world")
     assert result == ("text", "hello world")
+
+
+def test_parse_stream_event_assistant_is_complete_message() -> None:
+    chunk = json.dumps({
+        "type": "assistant",
+        "message": {
+            "content": [
+                {"type": "text", "text": "Hello world\n\nMore detail"}
+            ]
+        },
+    })
+    assert events.parse_stream_event(chunk, full_text=True) == ("message", "Hello world\n\nMore detail")
+
+
+def test_stream_buffer_replaces_closed_message(tmp_path: Path) -> None:
+    console = ResearchConsole(tmp_path / "runtime.db", _cfg(tmp_path))
+
+    console._append_stream_text_delta("First message")
+    console._stream_message_closed = True
+    console._append_stream_text_delta("Second message")
+
+    assert console._stream_text_live == "Second message"
+    assert console._last_stream_text == "First messageSecond message"
+
+    console._conn.close()
+
+
+def test_replace_stream_message_overwrites_visible_text(tmp_path: Path) -> None:
+    console = ResearchConsole(tmp_path / "runtime.db", _cfg(tmp_path))
+
+    console._append_stream_text_delta("partial")
+    console._replace_stream_message("final message")
+
+    assert console._stream_text_live == "final message"
+    assert console._stream_message_closed is True
+
+    console._conn.close()
+
+
+def test_format_stream_rows_drop_vertical_bars(tmp_path: Path) -> None:
+    console = ResearchConsole(tmp_path / "runtime.db", _cfg(tmp_path))
+
+    assert "┊" not in console._format_stream_tool_row("📖 Reading src/train.py")
+    assert "┊" not in console._format_stream_text_block("hello\nworld")
+
+    console._conn.close()
 
 
 def test_format_worker_result_excerpt_shows_text() -> None:
@@ -515,6 +773,13 @@ def test_format_cycle_header_done_shows_elapsed() -> None:
     )
     assert "12.4s" in out
     assert "cycle 2" in out
+
+
+def test_format_cycle_header_shows_cursor_model_dim() -> None:
+    out = events.format_cycle_header(3, "reporter", "t", cursor_model="auto", status="running")
+    assert "cycle 3" in out
+    assert "reporter" in out
+    assert "[dim](auto)[/]" in out
 
 
 def test_render_markdown_converts_pipe_table_to_rich_table() -> None:

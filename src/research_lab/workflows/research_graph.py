@@ -61,10 +61,13 @@ def ingest_events(state: ResearchState, *, db_path: Path, researcher_root: Path)
             kid = ev["kind"]
             payload = ev["payload"]
             if kid == "pause":
+                db.set_graceful_pause_pending(conn, False)
                 db.set_control_mode(conn, "paused")
             elif kid == "resume":
+                db.set_graceful_pause_pending(conn, False)
                 db.set_control_mode(conn, "active")
             elif kid == "shutdown":
+                db.set_graceful_pause_pending(conn, False)
                 db.set_control_mode(conn, "shutdown")
             elif kid == "instruction":
                 control.apply_instruction_event(conn, researcher_root, payload)
@@ -503,6 +506,7 @@ def run_loop(
                 conn = _conn(db_path)
                 try:
                     conn.execute("BEGIN IMMEDIATE")
+                    db.set_graceful_pause_pending(conn, False)
                     db.set_control_mode(conn, "paused")
                     conn.commit()
                 finally:
@@ -519,8 +523,20 @@ def run_loop(
             conn = _conn(db_path)
             try:
                 conn.execute("BEGIN IMMEDIATE")
+                db.set_graceful_pause_pending(conn, False)
                 db.set_control_mode(conn, "paused")
                 conn.commit()
             finally:
                 conn.close()
             break
+
+        conn = _conn(db_path)
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            st = db.get_system_state(conn)
+            if int(st.get("graceful_pause_pending", 0) or 0):
+                db.set_graceful_pause_pending(conn, False)
+                db.set_control_mode(conn, "paused")
+            conn.commit()
+        finally:
+            conn.close()

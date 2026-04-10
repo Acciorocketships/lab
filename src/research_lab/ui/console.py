@@ -14,7 +14,7 @@ from rich.markup import escape as rich_escape
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, VerticalScroll
-from textual.widgets import Static
+from textual.widgets import Static, TextArea
 
 from research_lab import db
 from research_lab.global_config import project_researcher_root
@@ -26,10 +26,6 @@ from research_lab.ui.prompt_text_area import PromptSubmitted, PromptTextArea
 if TYPE_CHECKING:
     from research_lab.config import RunConfig
     from research_lab.loop import SchedulerProcessHandle
-
-# Cap live stream history so one long run cannot grow the Rich panel without bound.
-_MAX_STREAM_MESSAGE_LINES = 120
-
 
 @dataclass
 class _RedoSnapshot:
@@ -162,9 +158,11 @@ class ResearchConsole(App[None]):
         self._auto_restarts = 0
         self._MAX_AUTO_RESTARTS = 3
         self._last_stream_text = ""
-        self._stream_line_markups: list[str] = []
+        self._stream_tool_markup = ""
         self._stream_text_live = ""
         self._cumulative_stream_text = ""
+        self._stream_message_closed = False
+        self._stream_last_event_was_tool = False
         self._current_cycle_widgets: list[Static] = []
         self._file_changes_widget: Static | None = None
         self._last_file_changes_ts: float = 0.0
@@ -174,6 +172,14 @@ class ResearchConsole(App[None]):
         self._running_worker_tick = 0
         self._welcome_widgets: list[Static] = []
         self._redo_stack: list[_RedoSnapshot] = []
+        self._checkpoint_notice_widget: Static | None = None
+
+    def _cycle_header_cursor_model(self) -> str | None:
+        """Cursor CLI ``--model`` value for cycle headers (only when workers use Cursor)."""
+        if self.cfg.default_worker_backend != "cursor":
+            return None
+        m = (self.cfg.cursor_agent_model or "").strip()
+        return m or None
 
     def compose(self) -> ComposeResult:
         yield Static("", id="header")
@@ -222,6 +228,7 @@ class ResearchConsole(App[None]):
     def _clear_activity_log(self) -> None:
         """Remove all lines from the scroll area except the live stream panel."""
         self._welcome_widgets = []
+        self._checkpoint_notice_widget = None
         scroll = self.query_one("#activity-scroll", VerticalScroll)
         stream = self.query_one("#stream-text", Static)
         children = list(getattr(scroll, "children", []))
@@ -279,7 +286,12 @@ class ResearchConsole(App[None]):
             task = (worker_row["task"] or "") or (orch_row["task"] if orch_row else "") or ""
             header = self._mount_activity_widget(
                 events.format_cycle_header(
-                    cycle, worker, task, elapsed_sec=elapsed, status="ok" if ok else "fail"
+                    cycle,
+                    worker,
+                    task,
+                    cursor_model=self._cycle_header_cursor_model(),
+                    elapsed_sec=elapsed,
+                    status="ok" if ok else "fail",
                 ),
                 classes="activity-line cycle-header",
             )
@@ -318,6 +330,28 @@ class ResearchConsole(App[None]):
         scroll = self.query_one("#activity-scroll", VerticalScroll)
         stream = self.query_one("#stream-text", Static)
         scroll.mount(Static(markup, classes="activity-line"), before=stream)
+        self.call_after_refresh(lambda: scroll.scroll_end(animate=False))
+
+    def _dismiss_checkpoint_notice(self) -> None:
+        w = self._checkpoint_notice_widget
+        if w is None:
+            return
+        self._checkpoint_notice_widget = None
+        try:
+            w.remove()
+        except Exception:
+            pass
+
+    def _write_checkpoint_notice(self, markup: str) -> None:
+        """Ephemeral undo/redo checkpoint line; removed when the prompt buffer changes."""
+        if not markup:
+            return
+        self._dismiss_checkpoint_notice()
+        scroll = self.query_one("#activity-scroll", VerticalScroll)
+        stream = self.query_one("#stream-text", Static)
+        notice = Static(markup, classes="activity-line")
+        self._checkpoint_notice_widget = notice
+        scroll.mount(notice, before=stream)
         self.call_after_refresh(lambda: scroll.scroll_end(animate=False))
 
     def _write_task(self, task: str) -> Static | None:
@@ -367,55 +401,62 @@ class ResearchConsole(App[None]):
         return w
 
     def _reset_stream_message_buffers(self) -> None:
-        self._stream_line_markups.clear()
+        self._stream_tool_markup = ""
         self._stream_text_live = ""
         self._cumulative_stream_text = ""
+        self._stream_message_closed = False
+        self._stream_last_event_was_tool = False
 
     def _format_stream_tool_row(self, text: str) -> str:
         t = text.strip()
         if not t:
             return ""
-        return f"[cyan]┊ {rich_escape(t)}[/]"
+        return f"[cyan]{rich_escape(t)}[/]"
 
-    def _format_stream_text_row(self, text: str) -> str:
-        t = text.strip()
-        if not t:
+    def _format_stream_text_block(self, text: str) -> str:
+        cleaned = text.strip("\n")
+        if not cleaned.strip():
             return ""
-        return f"[dim]┊ {rich_escape(t)}[/]"
-
-    def _trim_stream_line_markups(self) -> None:
-        overflow = len(self._stream_line_markups) - _MAX_STREAM_MESSAGE_LINES
-        if overflow > 0:
-            del self._stream_line_markups[:overflow]
+        rows: list[str] = []
+        for line in cleaned.splitlines():
+            if line.strip():
+                rows.append(f"[dim]{rich_escape(line.rstrip())}[/]")
+            else:
+                rows.append("")
+        return "\n".join(rows)
 
     def _append_stream_text_delta(self, chunk: str) -> None:
-        """Accumulate assistant text; completed \\n-terminated rows become discrete lines."""
+        """Accumulate assistant text as one visible message block."""
         if not chunk:
             return
+        if self._stream_message_closed or self._stream_last_event_was_tool:
+            self._stream_text_live = ""
+            self._stream_message_closed = False
         self._stream_text_live += chunk
         self._cumulative_stream_text += chunk
         self._last_stream_text = self._cumulative_stream_text.strip()
-        while "\n" in self._stream_text_live:
-            head, _, tail = self._stream_text_live.partition("\n")
-            row = self._format_stream_text_row(head)
-            if row:
-                self._stream_line_markups.append(row)
-            self._stream_text_live = tail
-        self._trim_stream_line_markups()
+        self._stream_last_event_was_tool = False
 
-    def _flush_stream_text_tail(self) -> None:
-        """Finalize in-progress text (no trailing newline) as its own row."""
-        row = self._format_stream_text_row(self._stream_text_live)
-        if row:
-            self._stream_line_markups.append(row)
-        self._stream_text_live = ""
-        self._trim_stream_line_markups()
+    def _replace_stream_message(self, text: str) -> None:
+        """Replace the visible message with one complete assistant message."""
+        self._stream_text_live = text
+        if text:
+            if self._cumulative_stream_text and not self._cumulative_stream_text.endswith("\n"):
+                self._cumulative_stream_text += "\n"
+            self._cumulative_stream_text += text
+        self._last_stream_text = self._cumulative_stream_text.strip()
+        self._stream_message_closed = True
+        self._stream_last_event_was_tool = False
 
     def _rebuild_stream_panel_from_buffers(self) -> None:
-        parts = list(self._stream_line_markups)
-        live_row = self._format_stream_text_row(self._stream_text_live)
-        if live_row:
-            parts.append(live_row)
+        parts: list[str] = []
+        if self._stream_tool_markup:
+            parts.append(self._stream_tool_markup)
+        message_block = self._format_stream_text_block(self._stream_text_live)
+        if message_block:
+            if parts:
+                parts.append("")
+            parts.append(message_block)
         inner = "\n".join(parts)
         status = self.query_one("#stream-text", Static)
         status.update(events.make_stream_panel(inner))
@@ -527,6 +568,15 @@ class ResearchConsole(App[None]):
             self._orchestrating = False
             self._stream_is_running_placeholder = False
             return
+        try:
+            if db.get_system_state(self._conn).get("control_mode", "paused") != "active":
+                self._orchestrating = False
+                self._stream_is_running_placeholder = False
+                return
+        except sqlite3.OperationalError:
+            self._orchestrating = False
+            self._stream_is_running_placeholder = False
+            return
         if self._orchestrating:
             self._orchestrating_tick += 1
             dots = "." * ((self._orchestrating_tick % 3) + 1)
@@ -592,6 +642,7 @@ class ResearchConsole(App[None]):
                     self._last_cycle,
                     self._last_worker,
                     self._last_orchestrator_task,
+                    cursor_model=self._cycle_header_cursor_model(),
                     elapsed_sec=elapsed,
                     status="fail",
                 )
@@ -604,6 +655,7 @@ class ResearchConsole(App[None]):
                 self._last_cycle,
                 self._last_worker,
                 self._last_orchestrator_task,
+                cursor_model=self._cycle_header_cursor_model(),
                 elapsed_sec=elapsed,
                 status="running",
             )
@@ -641,6 +693,7 @@ class ResearchConsole(App[None]):
                                 self._last_cycle,
                                 self._last_worker,
                                 self._last_orchestrator_task,
+                                cursor_model=self._cycle_header_cursor_model(),
                                 elapsed_sec=pe,
                                 status="fail",
                             )
@@ -659,6 +712,7 @@ class ResearchConsole(App[None]):
                             cycle,
                             worker,
                             task,
+                            cursor_model=self._cycle_header_cursor_model(),
                             elapsed_sec=elapsed0,
                             status="running",
                         ),
@@ -711,6 +765,7 @@ class ResearchConsole(App[None]):
                             cycle,
                             worker,
                             task or self._last_orchestrator_task,
+                            cursor_model=self._cycle_header_cursor_model(),
                             elapsed_sec=elapsed,
                             status="ok" if ok else "fail",
                         )
@@ -736,10 +791,11 @@ class ResearchConsole(App[None]):
                     self._orchestrating = True
 
     def _poll_stream(self) -> None:
-        """Append stream events to the live panel as discrete rows (┊-prefixed).
+        """Append stream events to the live panel.
 
-        Assistant text deltas accumulate; newline-terminated segments become
-        separate rows. Tool calls flush any in-progress text then add a row.
+        Tool activity is shown as a short trail above a single active assistant
+        message block. Message boundaries rotate the text buffer so we do not
+        accumulate the whole transcript in the live panel.
         """
         try:
             rows = db.stream_chunks_since(self._conn, self._last_stream_id)
@@ -755,11 +811,10 @@ class ResearchConsole(App[None]):
             if event_type == "tool" and text.strip():
                 had_tool = True
                 self._stream_is_running_placeholder = False
-                self._flush_stream_text_tail()
                 tool_row = self._format_stream_tool_row(text)
                 if tool_row:
-                    self._stream_line_markups.append(tool_row)
-                self._trim_stream_line_markups()
+                    self._stream_tool_markup = tool_row
+                self._stream_last_event_was_tool = True
                 self._rebuild_stream_panel_from_buffers()
                 self._scroll_to_bottom()
             elif event_type == "text" and text.strip():
@@ -767,10 +822,23 @@ class ResearchConsole(App[None]):
                 self._append_stream_text_delta(text)
                 self._rebuild_stream_panel_from_buffers()
                 self._scroll_to_bottom()
+            elif event_type == "message" and text.strip():
+                self._stream_is_running_placeholder = False
+                self._replace_stream_message(text)
+                self._rebuild_stream_panel_from_buffers()
+                self._scroll_to_bottom()
+            elif event_type == "boundary":
+                self._stream_message_closed = bool(self._stream_text_live.strip())
+                self._stream_last_event_was_tool = False
         if had_tool:
             self._last_file_changes_ts = 0.0
 
     # --- input handling -------------------------------------------------------
+
+    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+        if event.text_area.id != "prompt":
+            return
+        self._dismiss_checkpoint_notice()
 
     def on_prompt_submitted(self, event: PromptSubmitted) -> None:
         ta = event.sender
@@ -788,7 +856,34 @@ class ResearchConsole(App[None]):
 
         lines = text.splitlines()
         first = lines[0].strip()
-        tail = "\n".join(lines[1:]).strip() if len(lines) > 1 else ""
+        instruction_text = ""
+
+        # Support the common flow where the user writes an instruction, then puts
+        # `/start` on the final line in the same submission.
+        if not first.startswith("/") and len(lines) > 1:
+            last_idx = -1
+            for idx in range(len(lines) - 1, -1, -1):
+                if lines[idx].strip():
+                    last_idx = idx
+                    break
+            if last_idx > 0:
+                last = lines[last_idx].strip()
+                leading = "\n".join(lines[:last_idx]).strip()
+                if last.startswith("/") and leading:
+                    instruction_text = leading
+                    first = last
+                    tail = ""
+                else:
+                    tail = "\n".join(lines[1:]).strip() if len(lines) > 1 else ""
+            else:
+                tail = "\n".join(lines[1:]).strip() if len(lines) > 1 else ""
+        else:
+            tail = "\n".join(lines[1:]).strip() if len(lines) > 1 else ""
+
+        if instruction_text:
+            db.enqueue_event(self._conn, "instruction", instruction_text)
+            preview = instruction_text if len(instruction_text) <= 200 else instruction_text[:200] + "…"
+            self._write_activity(f"\n  [green]❯[/] {preview}")
 
         if not first.startswith("/"):
             db.enqueue_event(self._conn, "instruction", text)
@@ -821,11 +916,10 @@ class ResearchConsole(App[None]):
         handler = {
             "start": self._cmd_start,
             "pause": self._cmd_pause,
+            "stop": self._cmd_stop,
             "exit": self._cmd_exit,
             "status": self._cmd_status,
             "help": self._cmd_help,
-            "backlog": self._cmd_backlog,
-            "experiments": self._cmd_experiments,
             "reset": self._cmd_reset,
             "undo": self._cmd_undo,
             "redo": self._cmd_redo,
@@ -867,12 +961,13 @@ class ResearchConsole(App[None]):
             self._restart_scheduler()
 
     def _cmd_start(self) -> None:
+        db.set_graceful_pause_pending(self._conn, False)
         mode = db.get_system_state(self._conn).get("control_mode", "active")
         scheduler_alive = bool(self._scheduler and self._scheduler.is_alive())
 
         if mode != "active" or not scheduler_alive:
             db.enqueue_event(self._conn, "resume", None)
-            self._conn.commit()
+        self._conn.commit()
 
         if scheduler_alive:
             if mode == "paused":
@@ -884,7 +979,9 @@ class ResearchConsole(App[None]):
         self._auto_restarts = 0
         self._restart_scheduler()
 
-    def _cmd_pause(self) -> None:
+    def _cmd_stop(self) -> None:
+        """Kill the scheduler immediately and revert any in-flight cycle."""
+        db.set_graceful_pause_pending(self._conn, False)
         self._kill_scheduler()
         self._revert_to_checkpoint()
         db.set_control_mode(self._conn, "paused")
@@ -892,8 +989,28 @@ class ResearchConsole(App[None]):
         self._clear_stream_status()
         self._last_stream_text = ""
 
+    def _cmd_pause(self) -> None:
+        """Pause after the current worker finishes (no kill, no revert)."""
+        alive = bool(self._scheduler and self._scheduler.is_alive())
+        mode = db.get_system_state(self._conn).get("control_mode", "paused")
+        if not alive:
+            db.set_graceful_pause_pending(self._conn, False)
+            if mode != "active":
+                self._write_activity("  [dim]Already paused.[/]")
+            else:
+                db.set_control_mode(self._conn, "paused")
+                self._write_activity("  [yellow]Paused.[/]")
+            self._conn.commit()
+            return
+        db.set_graceful_pause_pending(self._conn, True)
+        self._conn.commit()
+        self._write_activity(
+            "  [yellow]Pausing after the current worker finishes…[/]"
+        )
+
     def _cmd_exit(self) -> None:
         self._write_activity("  [dim]Shutting down...[/]")
+        db.set_graceful_pause_pending(self._conn, False)
         self._kill_scheduler()
         self._revert_to_checkpoint()
         db.set_control_mode(self._conn, "paused")
@@ -921,34 +1038,17 @@ class ResearchConsole(App[None]):
         self._write_activity(
             "\n  [bold]Commands[/]\n"
             "  [bold]/start[/]        Start the background agent\n"
-            "  [bold]/pause[/]        Pause the agent\n"
-            "  [bold]/exit[/]         Pause agent and quit\n"
+            "  [bold]/pause[/]        Pause after the current worker finishes\n"
+            "  [bold]/stop[/]         Stop immediately (kill worker, revert in-flight cycle)\n"
+            "  [bold]/exit[/]         Stop agent and quit\n"
             "  [bold]/status[/]       Show current agent state\n"
-            "  [bold]/backlog[/]      Show recent instructions\n"
-            "  [bold]/experiments[/]  Show experiments\n"
-            "  [bold]/reset[/]        Clear DB and runtime memory; keep research_idea.md + preferences.md\n"
+            "  [bold]/reset[/]        Clear DB and runtime memory; keep research_idea.md + preferences.md; project code unchanged\n"
             "  [bold]/undo[/]         Revert since last worker; restarts orchestrator only if agent was running\n"
             "  [bold]/redo[/]         Restore the last undone checkpoint and replay local edits on top\n"
             "  [bold]/help[/]         This message\n"
             "\n  Plain text is queued as an instruction.\n"
             "  [dim]Enter[/] sends · [dim]Shift+Enter[/] for newline · navigate lines with arrows\n"
         )
-
-    def _cmd_backlog(self) -> None:
-        rows = db.list_instructions(self._conn)
-        if not rows:
-            self._write_activity("  [dim]No instructions.[/]")
-            return
-        for r in rows[:15]:
-            self._write_activity(f"  [dim]{r['id']}[/] [{r['status']}] {r['text'][:160]}")
-
-    def _cmd_experiments(self) -> None:
-        rows = db.list_experiments_rows(self._conn)
-        if not rows:
-            self._write_activity("  [dim]No experiments.[/]")
-            return
-        for r in rows[:20]:
-            self._write_activity(f"  {r['exp_id']}: {r['status']} ({r['branch']})")
 
     def _cmd_reset(self) -> None:
         self._kill_scheduler()
@@ -1174,7 +1274,7 @@ class ResearchConsole(App[None]):
                     else:
                         self._write_activity("  [red]/redo failed:[/] could not replay local changes.")
                         return False
-            self._write_activity(
+            self._write_checkpoint_notice(
                 f"  [yellow]Redid checkpoint (cycle {db.get_system_state(self._conn).get('cycle_count', 0)}).[/]"
             )
             return True
@@ -1368,11 +1468,12 @@ class ResearchConsole(App[None]):
             pass
 
         if reverted and emit_activity_message:
-            self._write_activity(
+            self._write_checkpoint_notice(
                 f"  [yellow]Reverted to checkpoint (cycle {self._last_cycle}).[/]"
             )
 
     def action_quit(self) -> None:
+        db.set_graceful_pause_pending(self._conn, False)
         self._kill_scheduler()
         self._revert_to_checkpoint()
         db.set_control_mode(self._conn, "paused")
