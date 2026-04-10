@@ -61,7 +61,7 @@ class SchedulerProcessHandle:
 
 def _run_scheduler(db_path: Path, researcher_root: Path, project_dir: Path, cfg: RunConfig) -> None:
     """Child process entry: LangGraph research loop."""
-    ckpt = researcher_root / "data" / "langgraph_checkpoint.db"
+    ckpt = researcher_root / "langgraph_checkpoint.db"
     research_graph.run_loop(
         cfg,
         db_path=db_path,
@@ -114,7 +114,7 @@ def spawn_scheduler(
     the Textual TUI.
     """
     memory.ensure_memory_layout(researcher_root, project_dir=project_dir)
-    log_path = researcher_root / "data" / "scheduler.log"
+    log_path = researcher_root / "scheduler.log"
     log_fh = open(log_path, "a")  # noqa: SIM115
     proc = subprocess.Popen(
         [

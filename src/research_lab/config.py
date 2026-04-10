@@ -7,17 +7,20 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from research_lab.global_config import GlobalConfig, ProjectConfig
+    from research_lab.global_config import GlobalConfig
 
 
 @dataclass(frozen=True)
 class RunConfig:
-    """All knobs for a researcher session."""
+    """All knobs for a researcher session.
+
+    Research brief and preferences are stored in Tier A markdown files
+    (``.airesearcher/state/research_idea.md`` and ``preferences.md``) rather than here.
+    Agents read those files directly; ``RunConfig`` carries only infrastructure settings.
+    """
 
     researcher_root: Path
     project_dir: Path
-    research_idea: str
-    preferences: str
     orchestrator_backend: str  # openai | openrouter | local
     openai_api_key: str | None
     openai_base_url: str | None
@@ -50,14 +53,13 @@ class RunConfig:
     def from_configs(
         cls,
         gcfg: GlobalConfig,
-        pcfg: ProjectConfig,
         project_dir: Path,
     ) -> RunConfig:
-        """Build a RunConfig from global + project TOML.
+        """Build a RunConfig from global config.
 
-        Model/auth/worker fields come from global config. Research brief and **preferences**
-        come only from the project file (``lab init`` copies global ``code_style`` into
-        ``[project] preferences`` as a starting point).
+        Model/auth/worker fields come from global config.  Research brief and preferences
+        live in Tier A markdown (``state/research_idea.md``, ``state/preferences.md``) and
+        are not stored here — agents read those files directly.
         """
         from research_lab.global_config import GLOBAL_OAUTH_PATH, project_researcher_root
 
@@ -71,8 +73,6 @@ class RunConfig:
         return cls(
             researcher_root=researcher_root,
             project_dir=project_dir,
-            research_idea=pcfg.research_idea,
-            preferences=pcfg.preferences,
             orchestrator_backend=gcfg.provider,
             openai_api_key=api_key if gcfg.provider != "openrouter" else None,
             openai_base_url=gcfg.base_url or None,

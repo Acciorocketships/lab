@@ -47,8 +47,6 @@ def _cfg(tmp_path: Path) -> RunConfig:
     return RunConfig(
         researcher_root=researcher_root,
         project_dir=project_dir,
-        research_idea="idea",
-        preferences="prefs",
         orchestrator_backend="openrouter",
         openai_api_key=None,
         openai_base_url=None,

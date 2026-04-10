@@ -13,8 +13,6 @@ def _cfg(tmp_path: Path) -> RunConfig:
     return RunConfig(
         researcher_root=researcher_root,
         project_dir=project_dir,
-        research_idea="idea",
-        preferences="prefs",
         orchestrator_backend="openrouter",
         openai_api_key=None,
         openai_base_url=None,
@@ -63,7 +61,6 @@ def test_spawn_scheduler_launches_subprocess(monkeypatch, tmp_path: Path) -> Non
     assert cmd[4] == str(db_path)
     payload = json.loads(cmd[5])
     assert payload["project_dir"] == str(cfg.project_dir)
-    assert payload["research_idea"] == cfg.research_idea
     handle.terminate()
     handle.join(timeout=1)
     assert not handle.is_alive()

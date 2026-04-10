@@ -30,8 +30,6 @@ def _cfg(tmp_path: Path) -> RunConfig:
     return RunConfig(
         researcher_root=tmp_path,
         project_dir=tmp_path / "project",
-        research_idea="Compute the 10th Fibonacci number and verify the result is 55",
-        preferences="Use Python, keep it simple",
         orchestrator_backend="openai",
         openai_api_key=None,
         openai_base_url=None,

@@ -36,7 +36,7 @@ needed; then start fresh immediate_plan.md for what comes next.
 **User instructions** (`user_instructions.md`, **`## New`**): merge each item into `immediate_plan.md` and/or `roadmap.md`,
 then **delete those bullets from `## New`** (use `## In progress` / `## Completed` if helpful). Do this **immediately**
 when you run—do not leave the queue populated after planning.
-Put committed project deliverables in the **project directory** (the repo under study); keep researcher-only notes under Tier A / `.airesearcher/data/runtime/memory/extended/`. Propose branch strategy.
-Follow the shared instructions for branch files (`.airesearcher/data/runtime/memory/branch/`) and Tier A pointers to `.airesearcher/data/runtime/memory/extended/`. Be concise.
+Put committed project deliverables in the **project directory** (the repo under study); keep researcher-only notes under Tier A / `.airesearcher/memory/extended/`. Propose branch strategy.
+Follow the shared instructions for branch files (`.airesearcher/memory/branch/`) and Tier A pointers to `.airesearcher/memory/extended/`. Be concise.
 
 Other agents exist for implementation, debugging, experimentation, reporting, and research. Use them as part of a quick iterative cycle: plan the next minimal step, hand off to the right specialist, inspect results, then replan. Do not execute substantial work from those roles yourself beyond what is needed to plan well. When the plan is ready, return with a clear recommendation for which agent should handle the next step."""

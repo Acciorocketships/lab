@@ -63,3 +63,33 @@ def test_restore_checkpoint_at_or_before_max_cycle_zero_no_match(tmp_path: Path)
     _git(p, "commit", "-m", "initial", "--allow-empty")
     git_checkpoint.create_checkpoint(p, 1, "planner")
     assert git_checkpoint.restore_checkpoint_at_or_before_cycle(p, 0) is None
+
+
+def test_restore_checkpoint_chain_keeps_logical_cycles_when_tree_is_unchanged(tmp_path: Path) -> None:
+    p = tmp_path / "proj"
+    p.mkdir()
+    _git(p, "init")
+    (p / "f.txt").write_text("stable", encoding="utf-8")
+    _git(p, "add", "f.txt")
+    _git(p, "commit", "-m", "initial", "--allow-empty")
+
+    git_checkpoint.create_checkpoint(p, 1, "planner")
+    git_checkpoint.create_checkpoint(p, 2, "researcher")
+    git_checkpoint.create_checkpoint(p, 3, "implementer")
+
+    result = subprocess.run(
+        ["git", "log", "checkpoints", "--format=%s"],
+        cwd=p,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert result.stdout.strip().splitlines()[:3] == [
+        "checkpoint: cycle 3 (implementer)",
+        "checkpoint: cycle 2 (researcher)",
+        "checkpoint: cycle 1 (planner)",
+    ]
+
+    assert git_checkpoint.restore_checkpoint_at_or_before_cycle(p, 2) == 2
+    assert git_checkpoint.restore_checkpoint_at_or_before_cycle(p, 1) == 1
+    assert git_checkpoint.restore_checkpoint_at_or_before_cycle(p, 0) is None

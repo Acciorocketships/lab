@@ -26,4 +26,4 @@ Keep the work investigative. Do not implement product features, do not run broad
 **Output**
 - Produce a concise, path-referenced summary of findings.
 - Emphasize facts the orchestrator can use immediately to make a decision or write a stronger task.
-- Update memory when the findings are useful beyond this one turn, using `.airesearcher/data/runtime/memory/extended/` for longer notes when needed."""
+- Update memory when the findings are useful beyond this one turn, using `.airesearcher/memory/extended/` for longer notes when needed."""

@@ -7,7 +7,6 @@ from pathlib import Path
 import click
 
 from research_lab.global_config import (
-    ProjectConfig,
     global_config_exists,
     load_global_config,
     project_is_initialized,
@@ -84,10 +83,10 @@ def init() -> None:
         raise SystemExit(1)
 
     gcfg = load_global_config()
-    pcfg = ProjectConfig(research_idea=brief, preferences=gcfg.code_style)
+    preferences = gcfg.code_style
 
     try:
-        root = init_project_at(project_dir, pcfg, overwrite=overwrite)
+        root = init_project_at(project_dir, research_idea=brief, preferences=preferences, overwrite=overwrite)
     except LabConfigError as e:
         click.echo(f"Error: {e}", err=True)
         raise SystemExit(1)
@@ -95,8 +94,8 @@ def init() -> None:
     click.echo(f"\nProject initialized at {root}")
     click.echo("Run `lab` to start the console.")
     click.echo(
-        f"Preferences are under [project] in {root / 'config.toml'} "
-        "(copied from global [preferences] code_style; edit per project as needed)."
+        f"Preferences are in {root / 'state' / 'preferences.md'} "
+        "(seeded from global [preferences] code_style; edit directly as needed)."
     )
 
 

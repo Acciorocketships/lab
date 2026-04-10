@@ -30,14 +30,12 @@ def main() -> None:
     sys.path.insert(0, str(repo_root / "src"))
 
     from research_lab.config import RunConfig
-    from research_lab.runner import run_console_session, seed_tier_a_from_run_config
+    from research_lab.runner import run_console_session, seed_tier_a_from_run_config, write_tier_a_brief
     from research_lab import memory
 
     cfg = RunConfig(
         researcher_root=RESEARCHER_ROOT,
         project_dir=PROJECT_DIR,
-        research_idea=RESEARCH_BRIEF,
-        preferences=PREFERENCES,
         orchestrator_backend="openrouter",
         openai_api_key=None,
         openai_base_url=None,
@@ -48,9 +46,10 @@ def main() -> None:
     RESEARCHER_ROOT.mkdir(parents=True, exist_ok=True)
     PROJECT_DIR.mkdir(parents=True, exist_ok=True)
     memory.ensure_memory_layout(RESEARCHER_ROOT, project_dir=PROJECT_DIR)
+    write_tier_a_brief(RESEARCHER_ROOT, research_idea=RESEARCH_BRIEF, preferences=PREFERENCES)
     seed_tier_a_from_run_config(RESEARCHER_ROOT, cfg)
 
-    db_path = RESEARCHER_ROOT / "data" / "runtime.db"
+    db_path = RESEARCHER_ROOT / "runtime.db"
     run_console_session(db_path, cfg)
 
 

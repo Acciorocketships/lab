@@ -1,16 +1,15 @@
-"""Tests for global and project config TOML persistence."""
+"""Tests for global config TOML persistence and project initialization detection."""
 
 from pathlib import Path
 
 from research_lab.config import RunConfig
 from research_lab.global_config import (
     GlobalConfig,
-    ProjectConfig,
+    global_config_exists,
     load_global_config,
-    load_project_config,
+    mark_project_initialized,
     project_is_initialized,
     save_global_config,
-    save_project_config,
 )
 
 
@@ -37,27 +36,29 @@ def test_global_config_roundtrip(tmp_path: Path, monkeypatch) -> None:
     assert loaded.code_style == "Clean Python"
 
 
-def test_project_config_roundtrip(tmp_path: Path) -> None:
-    project_dir = tmp_path / "my_project"
-    project_dir.mkdir()
-
-    cfg = ProjectConfig(
-        research_idea="Train Q-learning on FrozenLake\n\n## Success criteria\n\nSuccess rate > 90%",
-        preferences="numpy only",
-    )
-    save_project_config(project_dir, cfg)
-    assert project_is_initialized(project_dir)
-
-    loaded = load_project_config(project_dir)
-    assert loaded.research_idea == "Train Q-learning on FrozenLake\n\n## Success criteria\n\nSuccess rate > 90%"
-    assert loaded.preferences == "numpy only"
-
-
 def test_project_not_initialized(tmp_path: Path) -> None:
     assert not project_is_initialized(tmp_path)
 
 
-def test_from_configs_uses_project_preferences_only(tmp_path: Path) -> None:
+def test_project_is_initialized_new_sentinel(tmp_path: Path) -> None:
+    project_dir = tmp_path / "proj"
+    project_dir.mkdir()
+    assert not project_is_initialized(project_dir)
+    mark_project_initialized(project_dir)
+    assert project_is_initialized(project_dir)
+
+
+def test_project_is_initialized_legacy_config_toml(tmp_path: Path) -> None:
+    """Projects with a legacy per-project config.toml are still recognized as initialized."""
+    project_dir = tmp_path / "proj"
+    (project_dir / ".airesearcher").mkdir(parents=True)
+    (project_dir / ".airesearcher" / "config.toml").write_text(
+        '[project]\nresearch_idea = "old"\n', encoding="utf-8"
+    )
+    assert project_is_initialized(project_dir)
+
+
+def test_from_configs_builds_run_config(tmp_path: Path) -> None:
     gcfg = GlobalConfig(
         provider="openrouter",
         model_name="gemini-2.5-flash-lite",
@@ -65,21 +66,15 @@ def test_from_configs_uses_project_preferences_only(tmp_path: Path) -> None:
         worker_backend="cursor",
         code_style="type hints",
     )
-    pcfg = ProjectConfig(
-        research_idea="Do X\n\n## Success criteria\n\nY works",
-        preferences="",
-    )
     project_dir = tmp_path / "proj"
     project_dir.mkdir()
-    run_cfg = RunConfig.from_configs(gcfg, pcfg, project_dir)
+    run_cfg = RunConfig.from_configs(gcfg, project_dir)
 
     assert run_cfg.orchestrator_backend == "openrouter"
     assert run_cfg.openai_model == "gemini-2.5-flash-lite"
     assert run_cfg.openrouter_api_key == "sk-or"
     assert run_cfg.default_worker_backend == "cursor"
     assert run_cfg.cursor_agent_model == "composer-2"
-    assert run_cfg.research_idea == "Do X\n\n## Success criteria\n\nY works"
-    assert run_cfg.preferences == ""
     assert run_cfg.researcher_root == project_dir / ".airesearcher"
     assert run_cfg.orchestrator_input_max_chars is None
     assert run_cfg.orchestrator_prev_summary_max_chars is None
@@ -87,31 +82,6 @@ def test_from_configs_uses_project_preferences_only(tmp_path: Path) -> None:
     assert run_cfg.orchestrator_tier_file_max_chars is None
     assert run_cfg.orchestrator_branch_memory_max_chars is None
     assert run_cfg.worker_packet_max_chars is None
-
-
-def test_from_configs_project_preferences_not_global(tmp_path: Path) -> None:
-    gcfg = GlobalConfig(code_style="global style")
-    pcfg = ProjectConfig(
-        research_idea="x",
-        preferences="project style",
-    )
-    project_dir = tmp_path / "proj"
-    project_dir.mkdir()
-    run_cfg = RunConfig.from_configs(gcfg, pcfg, project_dir)
-    assert run_cfg.preferences == "project style"
-
-
-def test_toml_escaping_roundtrip(tmp_path: Path) -> None:
-    """Values with quotes and newlines survive TOML round-trip."""
-    project_dir = tmp_path / "proj"
-    project_dir.mkdir()
-    cfg = ProjectConfig(
-        research_idea='Test "quoted" idea\n\n## Success criteria\n\nline1\nline2',
-        preferences="",
-    )
-    save_project_config(project_dir, cfg)
-    loaded = load_project_config(project_dir)
-    assert loaded.research_idea == 'Test "quoted" idea\n\n## Success criteria\n\nline1\nline2'
 
 
 def test_global_code_style_multiline_roundtrip(tmp_path: Path, monkeypatch) -> None:
@@ -126,28 +96,12 @@ def test_global_code_style_multiline_roundtrip(tmp_path: Path, monkeypatch) -> N
     assert loaded.code_style == "Rule A\nRule B\n- use types"
 
 
-def test_multiline_config_backslashes_roundtrip(tmp_path: Path, monkeypatch) -> None:
-    """Backslashes in multiline values must not break TOML (regression: basic \"\"\" strings)."""
+def test_global_config_backslashes_roundtrip(tmp_path: Path, monkeypatch) -> None:
+    """Backslashes in multiline values must not break TOML."""
     monkeypatch.setattr("research_lab.global_config.GLOBAL_DIR", tmp_path)
     monkeypatch.setattr("research_lab.global_config.GLOBAL_CONFIG_PATH", tmp_path / "config.toml")
 
-    project_dir = tmp_path / "proj"
-    project_dir.mkdir()
-    idea = "Work in C:\\Users\\dev\\analyticgmm\nUse \\alpha in notes\n\n## Done\nOK"
     gcfg = GlobalConfig(code_style="See C:\\tools\\bin\nOr \\n is fine")
-    pcfg = ProjectConfig(research_idea=idea, preferences="")
-
     save_global_config(gcfg)
-    save_project_config(project_dir, pcfg)
-
     assert load_global_config().code_style == gcfg.code_style
-    assert load_project_config(project_dir).research_idea == idea
 
-
-def test_project_config_triple_single_quote_fallback_roundtrip(tmp_path: Path) -> None:
-    """If the brief contains ''' we fall back to escaped double-quoted form."""
-    project_dir = tmp_path / "proj"
-    project_dir.mkdir()
-    cfg = ProjectConfig(research_idea="prefix ''' rare\nsecond line", preferences="")
-    save_project_config(project_dir, cfg)
-    assert load_project_config(project_dir).research_idea == cfg.research_idea

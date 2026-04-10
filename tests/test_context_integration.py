@@ -21,8 +21,6 @@ def _cfg(tmp_path: Path, **overrides: Any) -> RunConfig:
     cfg = RunConfig(
         researcher_root=tmp_path,
         project_dir=tmp_path / "project",
-        research_idea="test idea",
-        preferences="none",
         orchestrator_backend="openai",
         openai_api_key=None,
         openai_base_url=None,

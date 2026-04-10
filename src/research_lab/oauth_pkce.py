@@ -45,7 +45,7 @@ def oauth_token_file(cfg: RunConfig) -> Path:
     """Where access/refresh tokens are stored (chmod 600 recommended)."""
     if cfg.oauth_token_path is not None:
         return cfg.oauth_token_path
-    return cfg.researcher_root / "data" / "oauth_openai_tokens.json"
+    return cfg.researcher_root / "oauth_openai_tokens.json"
 
 
 def fetch_oidc_discovery(issuer: str) -> dict[str, Any]:

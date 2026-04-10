@@ -11,14 +11,12 @@ from research_lab.global_config import (
     GLOBAL_DIR,
     GLOBAL_OAUTH_PATH,
     GlobalConfig,
-    ProjectConfig,
     global_config_exists,
     load_global_config,
-    load_project_config,
+    mark_project_initialized,
     project_is_initialized,
     project_researcher_root,
     save_global_config,
-    save_project_config,
 )
 
 
@@ -96,8 +94,7 @@ def run_auth_test(project_dir: Path) -> None:
         )
 
     gcfg = load_global_config()
-    pcfg = load_project_config(project_dir)
-    cfg = RunConfig.from_configs(gcfg, pcfg, project_dir)
+    cfg = RunConfig.from_configs(gcfg, project_dir)
 
     base = llm.resolve_llm_base_url(cfg)
     print(f"Project: {project_dir.resolve()}")
@@ -123,9 +120,9 @@ def run_auth_test(project_dir: Path) -> None:
 
 
 def ensure_console_ready(project_dir: Path) -> tuple[Path, RunConfig]:
-    """Load global + project config, ensure memory layout, pause active scheduler row, return db path and RunConfig.
+    """Load global config, ensure memory layout, pause active scheduler row, return db path and RunConfig.
 
-    Requires ``~/.airesearcher/config.toml`` and ``<project_dir>/.airesearcher/config.toml``.
+    Requires ``~/.airesearcher/config.toml`` and an initialized project (see ``lab init``).
     """
     if not global_config_exists():
         raise LabConfigError("Global config not found. Run `lab setup` first (or `runner.run_interactive_global_setup()`).")
@@ -137,13 +134,12 @@ def ensure_console_ready(project_dir: Path) -> tuple[Path, RunConfig]:
     from research_lab.git_checkpoint import ensure_git_repo
 
     gcfg = load_global_config()
-    pcfg = load_project_config(project_dir)
-    run_cfg = RunConfig.from_configs(gcfg, pcfg, project_dir)
+    run_cfg = RunConfig.from_configs(gcfg, project_dir)
     researcher_root = project_researcher_root(project_dir)
     ensure_git_repo(project_dir)
     memory.ensure_memory_layout(researcher_root, project_dir=project_dir)
 
-    db_path = researcher_root / "data" / "runtime.db"
+    db_path = researcher_root / "runtime.db"
     conn = db.connect_db(db_path)
     try:
         st = db.get_system_state(conn)
@@ -191,18 +187,35 @@ def run_console_session(
     run_console(db_path, cfg)
 
 
-def seed_tier_a_from_run_config(researcher_root: Path, cfg: RunConfig) -> None:
-    """Write core Tier A markdown files from *cfg* (overwrites if present)."""
-    state = researcher_root / "data" / "runtime" / "state"
+def write_tier_a_brief(
+    researcher_root: Path,
+    *,
+    research_idea: str,
+    preferences: str,
+) -> None:
+    """Write ``research_idea.md`` and ``preferences.md`` in Tier A state.
+
+    Called at ``lab init`` (and ``scripts/run.py``) to seed the project brief.
+    Overwrites existing files.
+    """
+    state = researcher_root / "state"
     state.mkdir(parents=True, exist_ok=True)
     (state / "research_idea.md").write_text(
-        f"# Research brief\n\n{cfg.research_idea}\n", encoding="utf-8"
+        f"# Research brief\n\n{research_idea}\n", encoding="utf-8"
     )
-    (state / "preferences.md").write_text(f"# Preferences\n\n{cfg.preferences}\n", encoding="utf-8")
+    (state / "preferences.md").write_text(
+        f"# Preferences\n\n{preferences}\n", encoding="utf-8"
+    )
+
+
+def seed_tier_a_from_run_config(researcher_root: Path, cfg: RunConfig) -> None:
+    """Write ``project_brief.md`` in Tier A state from *cfg* (overwrites if present)."""
+    state = researcher_root / "state"
+    state.mkdir(parents=True, exist_ok=True)
     (state / "project_brief.md").write_text(
         "# Project\n\n"
         f"Implementation directory: `{cfg.project_dir}`\n\n"
-        f"Tier A memory directory: `{researcher_root / 'data' / 'runtime' / 'state'}`\n"
+        f"Tier A memory directory: `{researcher_root / 'state'}`\n"
         "Tier A files such as `roadmap.md`, `immediate_plan.md`, and `status.md` belong there, not in a project-root `state/` folder.\n\n"
         f"User-facing reports and demos should be saved in the project directory, preferably `{cfg.project_dir / 'reports'}`.\n",
         encoding="utf-8",
@@ -211,11 +224,12 @@ def seed_tier_a_from_run_config(researcher_root: Path, cfg: RunConfig) -> None:
 
 def init_project_at(
     project_dir: Path,
-    pcfg: ProjectConfig,
     *,
+    research_idea: str,
+    preferences: str = "",
     overwrite: bool = False,
 ) -> Path:
-    """Create ``.airesearcher/``, project ``config.toml``, memory layout, and seed Tier A.
+    """Create ``.airesearcher/``, memory layout, and seed Tier A.
 
     Requires global config to exist. Returns the researcher root path.
     """
@@ -230,13 +244,14 @@ def init_project_at(
     from research_lab.git_checkpoint import ensure_git_repo
 
     gcfg = load_global_config()
-    save_project_config(project_dir, pcfg)
-    run_cfg = RunConfig.from_configs(gcfg, pcfg, project_dir)
+    run_cfg = RunConfig.from_configs(gcfg, project_dir)
     researcher_root = project_researcher_root(project_dir)
     researcher_root.mkdir(parents=True, exist_ok=True)
     ensure_git_repo(project_dir)
     memory.ensure_memory_layout(researcher_root, project_dir=project_dir)
+    write_tier_a_brief(researcher_root, research_idea=research_idea, preferences=preferences)
     seed_tier_a_from_run_config(researcher_root, run_cfg)
+    mark_project_initialized(project_dir)
     return researcher_root
 
 
@@ -248,8 +263,6 @@ def run_oauth_browser_for_global(client_id: str | None = None) -> Path:
     tmp_cfg = RunConfig(
         researcher_root=GLOBAL_DIR,
         project_dir=GLOBAL_DIR,
-        research_idea="",
-        preferences="",
         orchestrator_backend="openai",
         openai_api_key=None,
         openai_base_url=None,
@@ -339,60 +352,48 @@ def bootstrap_bench_project(
     project_dir: Path,
     *,
     gcfg: GlobalConfig,
-    pcfg: ProjectConfig,
+    research_idea: str = "",
+    preferences: str = "",
 ) -> tuple[Path, RunConfig]:
-    """Write global + project TOML and initialize memory (for scripts/tests without prior ``lab setup``).
+    """Write global config and initialize memory (for scripts/tests without prior ``lab setup``).
 
-    Overwrites global config at ``~/.airesearcher/config.toml`` and project config under *project_dir*.
-    Returns ``(db_path, RunConfig)`` suitable for :func:`run_console_session`.
+    Overwrites global config at ``~/.airesearcher/config.toml`` and initializes the project
+    under *project_dir*.  Returns ``(db_path, RunConfig)`` suitable for :func:`run_console_session`.
     """
     save_global_config(gcfg)
-    save_project_config(project_dir, pcfg)
-    run_cfg = RunConfig.from_configs(gcfg, pcfg, project_dir)
+    run_cfg = RunConfig.from_configs(gcfg, project_dir)
     researcher_root = project_researcher_root(project_dir)
     researcher_root.mkdir(parents=True, exist_ok=True)
     memory.ensure_memory_layout(researcher_root, project_dir=project_dir)
+    write_tier_a_brief(researcher_root, research_idea=research_idea, preferences=preferences)
     seed_tier_a_from_run_config(researcher_root, run_cfg)
-    db_path = researcher_root / "data" / "runtime.db"
+    mark_project_initialized(project_dir)
+    db_path = researcher_root / "runtime.db"
     return db_path, run_cfg
 
 
 def reset_project_preserving_research_idea(project_dir: Path) -> None:
     """Clear SQLite runtime data and on-disk memory except Tier A ``research_idea.md`` and ``preferences.md``
-    under ``.airesearcher/data/runtime/state/``.
-
-    Syncs ``[project]`` ``research_idea`` and ``preferences`` in TOML from those files (Markdown body
-    after stripping an optional leading H1).
+    under ``.airesearcher/state/``.
     """
     if not project_is_initialized(project_dir):
         raise LabConfigError(
             f"Project not initialized at {project_dir}. Run `lab init` first."
         )
-    pcfg = load_project_config(project_dir)
     researcher_root = project_researcher_root(project_dir)
     sd = memory.state_dir(researcher_root)
     idea_path = sd / "research_idea.md"
-    if idea_path.is_file():
-        preserved = idea_path.read_text(encoding="utf-8")
-    else:
-        preserved = f"# Research brief\n\n{pcfg.research_idea}\n"
+    preserved = idea_path.read_text(encoding="utf-8") if idea_path.is_file() else "# Research brief\n\n"
 
     prefs_path = sd / "preferences.md"
-    if prefs_path.is_file():
-        preserved_prefs = prefs_path.read_text(encoding="utf-8")
-    else:
-        preserved_prefs = f"# Preferences\n\n{pcfg.preferences}\n"
-
-    idea_body = memory.research_idea_body_for_project_config(preserved)
-    prefs_body = memory.research_idea_body_for_project_config(preserved_prefs)
-    save_project_config(project_dir, ProjectConfig(research_idea=idea_body, preferences=prefs_body))
+    preserved_prefs = prefs_path.read_text(encoding="utf-8") if prefs_path.is_file() else "# Preferences\n\n"
 
     from research_lab.git_checkpoint import delete_checkpoint_branch
 
-    db_path = researcher_root / "data" / "runtime.db"
+    db_path = researcher_root / "runtime.db"
     db.obliterate_runtime_db(db_path)
     delete_checkpoint_branch(project_dir)
-    log_path = researcher_root / "data" / "scheduler.log"
+    log_path = researcher_root / "scheduler.log"
     if log_path.is_file():
         log_path.unlink()
     memory.reset_runtime_artifacts(
@@ -402,13 +403,3 @@ def reset_project_preserving_research_idea(project_dir: Path) -> None:
         project_dir=project_dir,
     )
     memory.ensure_memory_layout(researcher_root, project_dir=project_dir)
-
-    sd = memory.state_dir(researcher_root)
-    (sd / "project_brief.md").write_text(
-        "# Project\n\n"
-        f"Implementation directory: `{project_dir}`\n\n"
-        f"Tier A memory directory: `{sd}`\n"
-        "Tier A files such as `roadmap.md`, `immediate_plan.md`, and `status.md` belong there, not in a project-root `state/` folder.\n\n"
-        f"User-facing reports and demos should be saved in the project directory, preferably `{project_dir / 'reports'}`.\n",
-        encoding="utf-8",
-    )

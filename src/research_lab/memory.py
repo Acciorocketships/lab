@@ -28,12 +28,12 @@ TIER_A_FILES = [
 
 def state_dir(researcher_root: Path) -> Path:
     """Tier A operating memory directory."""
-    return researcher_root / "data" / "runtime" / "state"
+    return researcher_root / "state"
 
 
 def worker_diff_baseline_path(researcher_root: Path) -> Path:
     """JSON snapshot of the project tree at worker start (for live TUI diffs)."""
-    return researcher_root / "data" / "runtime" / "worker_diff_baseline.json"
+    return researcher_root / "worker_diff_baseline.json"
 
 
 def write_worker_diff_baseline(researcher_root: Path, payload: dict[str, Any]) -> None:
@@ -149,17 +149,6 @@ def capture_worker_diff_baseline(project_dir: Path, cycle: int) -> dict[str, Any
         return None
 
 
-def research_idea_body_for_project_config(markdown: str) -> str:
-    """Strip a leading Markdown H1 if present; used to sync ``[project].research_idea`` in TOML."""
-    text = markdown.strip()
-    if not text:
-        return ""
-    lines = text.splitlines()
-    if lines and lines[0].lstrip().startswith("#"):
-        return "\n".join(lines[1:]).lstrip("\n").rstrip()
-    return text
-
-
 def experiments_dir(project_dir: Path) -> Path:
     """Experiment artifacts live in the project directory (visible and git-checkpointed)."""
     return project_dir / "experiments"
@@ -186,7 +175,7 @@ def reset_runtime_artifacts(
 ) -> None:
     """Remove episodic memory and Tier A except ``research_idea.md`` and ``preferences.md``."""
     _clear_dir_contents(extended_dir(researcher_root))
-    _clear_dir_contents(researcher_root / "data" / "runtime" / "memory" / "branch")
+    _clear_dir_contents(researcher_root / "memory" / "branch")
     _clear_dir_contents(episodes_dir(researcher_root), keep=frozenset({"README.md"}))
     _clear_dir_contents(skills_dir(researcher_root))
     if project_dir is not None:
@@ -214,17 +203,17 @@ def reset_runtime_artifacts(
 
 def extended_dir(researcher_root: Path) -> Path:
     """Long-form supplementary memory: logs, experiments, extra context."""
-    return researcher_root / "data" / "runtime" / "memory" / "extended"
+    return researcher_root / "memory" / "extended"
 
 
 def episodes_dir(researcher_root: Path) -> Path:
     """Per-cycle worker artifacts: packet.md + worker_output.json under cycle_*/<worker>/."""
-    return researcher_root / "data" / "runtime" / "memory" / "episodes"
+    return researcher_root / "memory" / "episodes"
 
 
 def episodes_cycle_relpath(*, cycle: int, worker: str) -> str:
     """Path under researcher root to one worker episode directory (POSIX-style for DB / logs)."""
-    return f"data/runtime/memory/episodes/cycle_{cycle:06d}/{worker}"
+    return f"memory/episodes/cycle_{cycle:06d}/{worker}"
 
 
 def episode_cycle_dir(researcher_root: Path, cycle: int, worker: str) -> Path:
@@ -234,12 +223,11 @@ def episode_cycle_dir(researcher_root: Path, cycle: int, worker: str) -> Path:
 
 def skills_dir(researcher_root: Path) -> Path:
     """Reusable skill writeups (markdown), indexed from Tier A."""
-    return researcher_root / "data" / "runtime" / "memory" / "skills"
+    return researcher_root / "memory" / "skills"
 
 
 def ensure_memory_layout(researcher_root: Path, *, project_dir: Path | None = None) -> None:
-    """Create runtime dirs and empty Tier A files if missing."""
-    base = researcher_root / "data" / "runtime"
+    """Create dirs and empty Tier A files if missing."""
     for sub in (
         "state",
         "memory/extended",
@@ -247,7 +235,7 @@ def ensure_memory_layout(researcher_root: Path, *, project_dir: Path | None = No
         "memory/episodes",
         "memory/skills",
     ):
-        helpers.ensure_dir(base / sub)
+        helpers.ensure_dir(researcher_root / sub)
     # experiments/ under project_dir is created on first experiment (see experiments.new_experiment_id).
     for name in TIER_A_FILES:
         p = state_dir(researcher_root) / name
@@ -319,9 +307,9 @@ def _default_tier_a_content(name: str) -> str:
 def _default_extended_memory_index() -> str:
     return """# Extended memory index
 
-Index of long-form files under `.airesearcher/data/runtime/memory/extended/`. This file is included **in full** in orchestrator and worker context alongside other Tier A files, so keep it concise and high-signal: path plus a short description, or a few one-line bullets, for what the full file contains. Use it to point from Tier A to longer logs, artifacts, findings, notes, or transcripts that are too large to inline. Layout rules are in the shared prompt (`MEMORY_AND_TIER_A` in `agents/shared_prompt.py`).
+Index of long-form files under `.airesearcher/memory/extended/`. This file is included **in full** in orchestrator and worker context alongside other Tier A files, so keep it concise and high-signal: path plus a short description, or a few one-line bullets, for what the full file contains. Use it to point from Tier A to longer logs, artifacts, findings, notes, or transcripts that are too large to inline. Layout rules are in the shared prompt (`MEMORY_AND_TIER_A` in `agents/shared_prompt.py`).
 
-## `.airesearcher/data/runtime/memory/extended/`
+## `.airesearcher/memory/extended/`
 
 - *(path + what it contains / why it matters)*
 """
@@ -331,11 +319,11 @@ Index of long-form files under `.airesearcher/data/runtime/memory/extended/`. Th
 def _default_skills_index() -> str:
     return (
         "# Skills index\n\n"
-        "List each skill file under `.airesearcher/data/runtime/memory/skills/` with its path and purpose. "
+        "List each skill file under `.airesearcher/memory/skills/` with its path and purpose. "
         "Keep this table aligned with files on disk; `skill_writer` commonly does this, but any worker that adds or changes skills should update it.\n\n"
         "| Path | Purpose |\n"
         "|------|--------|\n"
-        "| *(add rows as you add `.airesearcher/data/runtime/memory/skills/*.md`)* | |\n\n"
+        "| *(add rows as you add `.airesearcher/memory/skills/*.md`)* | |\n\n"
     )
 
 
@@ -431,7 +419,7 @@ def append_episode_index_entry(
     idx = episodes_dir(researcher_root) / "index.md"
     helpers.ensure_dir(idx.parent)
     base = episode_relpath.strip().rstrip("/")
-    prefix = "data/runtime/memory/episodes/"
+    prefix = "memory/episodes/"
     if base.startswith(prefix):
         rel = base[len(prefix) :]
     else:

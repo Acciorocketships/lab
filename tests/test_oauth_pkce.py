@@ -26,8 +26,6 @@ def test_resolve_prefers_explicit_api_key(tmp_path: Path) -> None:
     cfg = RunConfig(
         researcher_root=tmp_path,
         project_dir=tmp_path,
-        research_idea="x",
-        preferences="z",
         orchestrator_backend="openai",
         openai_api_key="sk-test",
         openai_base_url=None,
@@ -36,7 +34,7 @@ def test_resolve_prefers_explicit_api_key(tmp_path: Path) -> None:
         cursor_agent_model="composer-2",
     )
     assert resolve_openai_bearer(cfg) == "sk-test"
-    assert oauth_token_file(cfg) == tmp_path / "data" / "oauth_openai_tokens.json"
+    assert oauth_token_file(cfg) == tmp_path / "oauth_openai_tokens.json"
 
 
 def test_auth_openai_issuer_uses_codex_endpoints_not_oidc_discovery(tmp_path: Path) -> None:
@@ -44,8 +42,6 @@ def test_auth_openai_issuer_uses_codex_endpoints_not_oidc_discovery(tmp_path: Pa
     cfg = RunConfig(
         researcher_root=tmp_path,
         project_dir=tmp_path,
-        research_idea="x",
-        preferences="z",
         orchestrator_backend="openai",
         openai_api_key=None,
         openai_base_url=None,
@@ -66,8 +62,6 @@ def test_existing_codex_token_file_is_upgraded_to_api_bearer(tmp_path: Path, mon
     cfg = RunConfig(
         researcher_root=tmp_path,
         project_dir=tmp_path,
-        research_idea="x",
-        preferences="z",
         orchestrator_backend="openai",
         openai_api_key=None,
         openai_base_url=None,

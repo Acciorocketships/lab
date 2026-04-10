@@ -14,8 +14,6 @@ def test_no_api_key_raises(tmp_path: Path, monkeypatch) -> None:
     cfg = RunConfig(
         researcher_root=tmp_path,
         project_dir=tmp_path,
-        research_idea="x",
-        preferences="z",
         orchestrator_backend="openai",
         openai_api_key=None,
         openai_base_url=None,

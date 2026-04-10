@@ -70,7 +70,7 @@ from research_lab import memory
 cfg = RunConfig(...)  # researcher_root, project_dir, model, etc.
 memory.ensure_memory_layout(cfg.researcher_root)
 seed_tier_a_from_run_config(cfg.researcher_root, cfg)
-run_console_session(cfg.researcher_root / "data" / "runtime.db", cfg)
+run_console_session(cfg.researcher_root / "runtime.db", cfg)
 ```
 
 ## Layout
@@ -131,9 +131,9 @@ If you want to reintroduce limits, set the optional limit fields on `RunConfig`:
 1. **Console (Textual)** and **scheduler** share **SQLite** (`control_events`, `system_state`, `run_events`, `worker_stream`).
 2. Each **cycle**, the **LangGraph** in `workflows/research_graph.py` runs: `ingest` → `choose` → `worker` → `update`.
 3. **Choose** calls `orchestrator.decide_orchestrator()` (LLM with structured output).
-4. **Worker** builds a **packet**, writes `packet.md` and `worker_output.json` under `data/runtime/memory/episodes/cycle_*/<worker>/`, and runs `agents.base.run_worker()` → Claude or Cursor CLI.
+4. **Worker** builds a **packet**, writes `packet.md` and `worker_output.json` under `memory/episodes/cycle_*/<worker>/`, and runs `agents.base.run_worker()` → Claude or Cursor CLI.
 5. Worker output is **streamed** line-by-line to the `worker_stream` table; the console displays chunks in real time.
-6. **Memory** — Tier A files under `data/runtime/state/` are the default operating context.
+6. **Memory** — Tier A files under `state/` are the default operating context.
 
 ## Agents
 
@@ -155,7 +155,7 @@ If you want to reintroduce limits, set the optional limit fields on `RunConfig`:
 
 File-based memory lives under the **researcher root** (`<project_dir>/.airesearcher/`). See `src/research_lab/memory.py` for the canonical list of Tier A filenames.
 
-- **A** — `data/runtime/state/*.md` — operating memory (loaded every cycle).
+- **A** — `state/*.md` — operating memory (loaded every cycle).
 - **B** — `memory/extended/` — long-form notes; describe them in Tier A `extended_memory_index.md` (included in context with other Tier A files).
 - **C** — `memory/branch/<branch>.md` — one file per active branch.
 - **D** — `memory/episodes/` — per worker run + `index.md`.
@@ -176,5 +176,5 @@ pytest -q
 
 ## Recovery
 
-- SQLite and Tier A files under `<project_dir>/.airesearcher/data/runtime/state/` hold durable control and operating memory.
+- SQLite and Tier A files under `<project_dir>/.airesearcher/state/` hold durable control and operating memory.
 - LangGraph checkpoint wiring is reserved; the default loop re-invokes the graph each cycle.

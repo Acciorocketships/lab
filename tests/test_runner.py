@@ -5,9 +5,8 @@ from pathlib import Path
 import pytest
 
 from research_lab.config import RunConfig
-from research_lab.global_config import GlobalConfig, ProjectConfig
+from research_lab.global_config import GlobalConfig
 from research_lab import db, memory
-from research_lab.global_config import load_project_config
 from research_lab.runner import (
     LabConfigError,
     bootstrap_bench_project,
@@ -39,20 +38,22 @@ def test_bootstrap_bench_project_writes_configs(tmp_path: Path, monkeypatch) -> 
     project_dir = tmp_path / "proj"
     project_dir.mkdir()
     gcfg = GlobalConfig(provider="openrouter", model_name="m", api_key="k")
-    pcfg = ProjectConfig(research_idea="idea", preferences="")
-    db_path, run_cfg = bootstrap_bench_project(project_dir, gcfg=gcfg, pcfg=pcfg)
+    db_path, run_cfg = bootstrap_bench_project(
+        project_dir, gcfg=gcfg, research_idea="idea", preferences=""
+    )
 
-    assert db_path == project_dir / ".airesearcher" / "data" / "runtime.db"
-    assert run_cfg.research_idea == "idea"
+    assert db_path == project_dir / ".airesearcher" / "runtime.db"
     assert run_cfg.openrouter_api_key == "k"
     assert (gdir / "config.toml").is_file()
-    assert (project_dir / ".airesearcher" / "config.toml").is_file()
+    # Research idea lives in Tier A, not config.toml
+    idea_md = (memory.state_dir(project_dir / ".airesearcher") / "research_idea.md").read_text(encoding="utf-8")
+    assert "idea" in idea_md
 
 
 def test_init_project_at_requires_global(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr("research_lab.runner.global_config_exists", lambda: False)
     with pytest.raises(LabConfigError, match="Global config"):
-        init_project_at(tmp_path, ProjectConfig(research_idea="a"))
+        init_project_at(tmp_path, research_idea="a")
 
 
 def test_run_console_session_accepts_explicit_config(tmp_path: Path, monkeypatch) -> None:
@@ -63,8 +64,6 @@ def test_run_console_session_accepts_explicit_config(tmp_path: Path, monkeypatch
     cfg = RunConfig(
         researcher_root=rr,
         project_dir=pdir,
-        research_idea="x",
-        preferences="z",
         orchestrator_backend="openrouter",
         openai_api_key=None,
         openai_base_url=None,
@@ -73,7 +72,7 @@ def test_run_console_session_accepts_explicit_config(tmp_path: Path, monkeypatch
         cursor_agent_model="composer-2",
         openrouter_api_key="k",
     )
-    db_path = rr / "data" / "runtime.db"
+    db_path = rr / "runtime.db"
 
     called: list[tuple[Path, RunConfig]] = []
 
@@ -96,8 +95,9 @@ def test_reset_project_preserving_research_idea(tmp_path: Path, monkeypatch) -> 
     project_dir = tmp_path / "proj"
     project_dir.mkdir()
     gcfg = GlobalConfig(provider="openrouter", model_name="m", api_key="k")
-    pcfg = ProjectConfig(research_idea="original idea", preferences="keep pref")
-    db_path, _ = bootstrap_bench_project(project_dir, gcfg=gcfg, pcfg=pcfg)
+    db_path, _ = bootstrap_bench_project(
+        project_dir, gcfg=gcfg, research_idea="original idea", preferences="keep pref"
+    )
 
     conn = db.connect_db(db_path)
     db.add_instruction(conn, "do something")
@@ -105,7 +105,7 @@ def test_reset_project_preserving_research_idea(tmp_path: Path, monkeypatch) -> 
     conn.close()
 
     rr = project_dir / ".airesearcher"
-    (rr / "data" / "runtime" / "memory" / "extended" / "notes.md").write_text("x", encoding="utf-8")
+    (rr / "memory" / "extended" / "notes.md").write_text("x", encoding="utf-8")
     (memory.state_dir(rr) / "research_idea.md").write_text(
         "# Research brief\n\nMy preserved brief\n", encoding="utf-8"
     )
@@ -115,15 +115,7 @@ def test_reset_project_preserving_research_idea(tmp_path: Path, monkeypatch) -> 
 
     reset_project_preserving_research_idea(project_dir)
 
-    loaded = load_project_config(project_dir)
-    assert "My preserved brief" in loaded.research_idea
-    assert loaded.preferences == "Custom prefs line"
-
-    conn = db.connect_db(db_path)
-    assert conn.execute("SELECT COUNT(*) FROM instructions").fetchone()[0] == 0
-    conn.close()
-
-    assert not (rr / "data" / "runtime" / "memory" / "extended" / "notes.md").exists()
+    # Tier A files are preserved directly
     assert (
         (memory.state_dir(rr) / "research_idea.md").read_text(encoding="utf-8")
         == "# Research brief\n\nMy preserved brief\n"
@@ -132,3 +124,9 @@ def test_reset_project_preserving_research_idea(tmp_path: Path, monkeypatch) -> 
         (memory.state_dir(rr) / "preferences.md").read_text(encoding="utf-8")
         == "# Preferences\n\nCustom prefs line\n"
     )
+
+    conn = db.connect_db(db_path)
+    assert conn.execute("SELECT COUNT(*) FROM instructions").fetchone()[0] == 0
+    conn.close()
+
+    assert not (rr / "memory" / "extended" / "notes.md").exists()

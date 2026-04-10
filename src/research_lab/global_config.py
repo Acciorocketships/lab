@@ -1,4 +1,4 @@
-"""Global (~/.airesearcher/) and per-project (.airesearcher/) configuration with TOML persistence."""
+"""Global (~/.airesearcher/) configuration with TOML persistence."""
 
 from __future__ import annotations
 
@@ -12,6 +12,8 @@ GLOBAL_CONFIG_PATH = GLOBAL_DIR / "config.toml"
 GLOBAL_OAUTH_PATH = GLOBAL_DIR / "oauth_tokens.json"
 
 PROJECT_DIR_NAME = ".airesearcher"
+# Sentinel written by `init_project_at`; presence means the project is initialized.
+_PROJECT_INITIALIZED_SENTINEL = ".initialized"
 
 
 @dataclass
@@ -66,32 +68,6 @@ class GlobalConfig:
         )
 
 
-@dataclass
-class ProjectConfig:
-    """Persisted in <project>/.airesearcher/config.toml."""
-
-    research_idea: str = ""
-    preferences: str = ""
-
-    def to_toml(self) -> str:
-        return (
-            "[project]\n"
-            f"research_idea = {_format_toml_string_value(self.research_idea)}\n"
-            f"preferences = {_format_toml_string_value(self.preferences)}\n"
-        )
-
-    @classmethod
-    def from_toml(cls, path: Path) -> ProjectConfig:
-        with open(path, "rb") as f:
-            data = tomllib.load(f)
-        proj = data.get("project", {})
-        idea = str(proj.get("research_idea", ""))
-        return cls(
-            research_idea=idea,
-            preferences=str(proj.get("preferences", "")),
-        )
-
-
 def _escape_toml(s: str) -> str:
     """Escape special chars for a TOML double-quoted string."""
     return s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
@@ -130,29 +106,28 @@ def save_global_config(cfg: GlobalConfig) -> Path:
     return GLOBAL_CONFIG_PATH
 
 
-def project_config_path(project_dir: Path) -> Path:
-    return project_dir / PROJECT_DIR_NAME / "config.toml"
-
-
 def project_researcher_root(project_dir: Path) -> Path:
     return project_dir / PROJECT_DIR_NAME
 
 
 def project_is_initialized(project_dir: Path) -> bool:
-    return project_config_path(project_dir).is_file()
+    """True if this project directory has been initialized with ``lab init``.
+
+    Checks for the new ``.initialized`` sentinel first (written by the current
+    ``init_project_at``), then falls back to the legacy per-project ``config.toml``
+    for projects initialized before this refactor.
+    """
+    airesearcher = project_dir / PROJECT_DIR_NAME
+    if (airesearcher / _PROJECT_INITIALIZED_SENTINEL).is_file():
+        return True
+    # Legacy compatibility: pre-refactor projects used a per-project config.toml.
+    if (airesearcher / "config.toml").is_file():
+        return True
+    return False
 
 
-def load_project_config(project_dir: Path) -> ProjectConfig:
-    path = project_config_path(project_dir)
-    if not path.is_file():
-        raise FileNotFoundError(
-            f"Project not initialized (no {path}). Run `lab init` in the project directory."
-        )
-    return ProjectConfig.from_toml(path)
-
-
-def save_project_config(project_dir: Path, cfg: ProjectConfig) -> Path:
-    path = project_config_path(project_dir)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(cfg.to_toml(), encoding="utf-8")
-    return path
+def mark_project_initialized(project_dir: Path) -> None:
+    """Write the ``.initialized`` sentinel under ``.airesearcher/``."""
+    sentinel = project_dir / PROJECT_DIR_NAME / _PROJECT_INITIALIZED_SENTINEL
+    sentinel.parent.mkdir(parents=True, exist_ok=True)
+    sentinel.write_text("", encoding="utf-8")

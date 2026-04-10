@@ -14,8 +14,6 @@ def _base_cfg(tmp_path: Path, **kwargs: object) -> RunConfig:
     defaults: dict[str, object] = {
         "researcher_root": tmp_path,
         "project_dir": tmp_path,
-        "research_idea": "x",
-        "preferences": "z",
         "orchestrator_backend": "openai",
         "openai_api_key": None,
         "openai_base_url": None,

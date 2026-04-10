@@ -17,8 +17,6 @@ def test_graph_invoke_raises_without_credentials(tmp_path: Path, monkeypatch) ->
     cfg = RunConfig(
         researcher_root=tmp_path,
         project_dir=tmp_path / "p",
-        research_idea="x",
-        preferences="z",
         orchestrator_backend="openai",
         openai_api_key=None,
         openai_base_url=None,
@@ -64,8 +62,6 @@ def test_graph_invoke_done_sets_acceptance(tmp_path: Path, monkeypatch) -> None:
     cfg = RunConfig(
         researcher_root=tmp_path,
         project_dir=tmp_path / "p",
-        research_idea="x",
-        preferences="z",
         orchestrator_backend="openai",
         openai_api_key=None,
         openai_base_url=None,
@@ -99,8 +95,6 @@ def test_execute_worker_query_uses_query_prompt(tmp_path: Path, monkeypatch) -> 
     cfg = RunConfig(
         researcher_root=tmp_path,
         project_dir=tmp_path / "p",
-        research_idea="x",
-        preferences="z",
         orchestrator_backend="openai",
         openai_api_key=None,
         openai_base_url=None,
@@ -154,8 +148,6 @@ def test_run_loop_consumes_resume_while_paused(tmp_path: Path, monkeypatch) -> N
     cfg = RunConfig(
         researcher_root=tmp_path,
         project_dir=tmp_path / "p",
-        research_idea="x",
-        preferences="z",
         orchestrator_backend="openai",
         openai_api_key=None,
         openai_base_url=None,
@@ -209,8 +201,6 @@ def test_run_loop_survives_cycle_error(tmp_path: Path, monkeypatch) -> None:
     cfg = RunConfig(
         researcher_root=tmp_path,
         project_dir=tmp_path / "p",
-        research_idea="x",
-        preferences="z",
         orchestrator_backend="openai",
         openai_api_key=None,
         openai_base_url=None,
@@ -264,8 +254,6 @@ def test_run_loop_pauses_after_max_consecutive_errors(tmp_path: Path, monkeypatc
     cfg = RunConfig(
         researcher_root=tmp_path,
         project_dir=tmp_path / "p",
-        research_idea="x",
-        preferences="z",
         orchestrator_backend="openai",
         openai_api_key=None,
         openai_base_url=None,
@@ -313,8 +301,6 @@ def test_run_loop_pauses_after_acceptance_satisfied(tmp_path: Path, monkeypatch)
     cfg = RunConfig(
         researcher_root=tmp_path,
         project_dir=tmp_path / "p",
-        research_idea="x",
-        preferences="z",
         orchestrator_backend="openai",
         openai_api_key=None,
         openai_base_url=None,

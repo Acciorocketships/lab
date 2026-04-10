@@ -10,7 +10,7 @@ from research_lab import helpers
 def branch_memory_path(researcher_root: Path, branch: str) -> Path:
     """Per-branch memory file (slashes in branch name → ``__``)."""
     safe = branch.replace("/", "__")
-    return researcher_root / "data" / "runtime" / "memory" / "branch" / f"{safe}.md"
+    return researcher_root / "memory" / "branch" / f"{safe}.md"
 
 
 def default_branch_memory_body(branch: str) -> str:
@@ -26,7 +26,7 @@ def default_branch_memory_body(branch: str) -> str:
         "- Status: \n"
         "- Results so far: \n\n"
         "<!-- Keep this file in sync with git. Delete when merged to main or when the branch is removed. "
-        "If the approach fails, delete this file and record learnings in .airesearcher/data/runtime/state/lessons.md. -->\n"
+        "If the approach fails, delete this file and record learnings in .airesearcher/state/lessons.md. -->\n"
     )
 
 

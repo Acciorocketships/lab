@@ -115,13 +115,6 @@ def create_checkpoint(project_dir: Path, cycle: int, worker: str) -> str | None:
 
         if parent.returncode == 0:
             parent_sha = parent.stdout.strip()
-            parent_tree = subprocess.run(
-                ["git", "rev-parse", f"{parent_sha}^{{tree}}"],
-                cwd=project_dir, capture_output=True, text=True,
-            )
-            if parent_tree.returncode == 0 and parent_tree.stdout.strip() == tree_sha:
-                _log.debug("Checkpoint tree unchanged at cycle %d; skipping.", cycle)
-                return parent_sha
             commit_cmd.extend(["-p", parent_sha])
 
         commit_sha = subprocess.run(
