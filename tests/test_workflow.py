@@ -334,3 +334,62 @@ def test_run_loop_pauses_after_acceptance_satisfied(tmp_path: Path, monkeypatch)
     conn = db.connect_db(db_path)
     assert db.get_system_state(conn)["control_mode"] == "paused"
     conn.close()
+
+
+def test_choose_action_uses_forced_run_before_orchestrator(tmp_path: Path, monkeypatch) -> None:
+    cfg = RunConfig(
+        researcher_root=tmp_path,
+        project_dir=tmp_path / "p",
+        orchestrator_backend="openai",
+        openai_api_key=None,
+        openai_base_url=None,
+        openai_model="gpt-4o-mini",
+        default_worker_backend="cursor",
+        cursor_agent_model="composer-2",
+    )
+    memory.ensure_memory_layout(tmp_path)
+    cfg.project_dir.mkdir()
+
+    db_path = tmp_path / "db.sqlite"
+    conn = db.connect_db(db_path)
+    db.get_system_state(conn)
+    db.set_forced_run(conn, "implementer", "Resolve merge conflicts")
+    conn.commit()
+    conn.close()
+
+    def _unexpected_decide(*args, **kwargs):
+        raise AssertionError("orchestrator should not run when a forced worker is pending")
+
+    monkeypatch.setattr(research_graph.orchestrator, "decide_orchestrator", _unexpected_decide)
+
+    state: ResearchState = {
+        "current_goal": "t",
+        "current_branch": "",
+        "current_worker": "planner",
+        "cycle_count": 0,
+        "control_mode": "active",
+        "pending_instructions": [],
+        "last_action_summary": "",
+        "roadmap_step": "",
+        "orchestrator_task": "",
+        "acceptance_satisfied": False,
+        "shutdown_requested": False,
+        "worker_kwargs": {},
+    }
+
+    out = research_graph.choose_action(
+        state,
+        cfg=cfg,
+        researcher_root=tmp_path,
+        db_path=db_path,
+    )
+
+    assert out["current_worker"] == "implementer"
+    assert out["current_goal"] == "Resolve merge conflicts"
+
+    conn = db.connect_db(db_path)
+    assert db.get_forced_run(conn) is None
+    rows = list(conn.execute("SELECT worker, task FROM run_events WHERE kind = 'orchestrator'"))
+    conn.close()
+    assert len(rows) == 1
+    assert rows[0]["worker"] == "implementer"

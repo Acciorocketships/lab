@@ -72,6 +72,18 @@ def _checkpoint_env(tmp_index: Path | None = None) -> dict[str, str]:
     return env
 
 
+def _snapshot_paths(project_dir: Path) -> list[str]:
+    """Tracked + untracked non-ignored paths to stage into a snapshot index."""
+    result = subprocess.run(
+        ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+        cwd=project_dir, capture_output=True,
+    )
+    if result.returncode != 0 or not result.stdout:
+        return []
+    raw = result.stdout.decode("utf-8", errors="ignore")
+    return [part for part in raw.split("\x00") if part and part != ".airesearcher"]
+
+
 # ---------------------------------------------------------------------------
 # Checkpoint creation
 # ---------------------------------------------------------------------------
@@ -91,13 +103,15 @@ def create_checkpoint(project_dir: Path, cycle: int, worker: str) -> str | None:
     git_dir = project_dir / ".git"
     tmp_index = git_dir / "checkpoint_index_tmp"
     env = _checkpoint_env(tmp_index)
+    paths = _snapshot_paths(project_dir)
 
     try:
-        subprocess.run(
-            ["git", "add", "-A", "--", ".", _EXCLUDE_PATHSPEC],
-            cwd=project_dir, env=env, check=True,
-            capture_output=True,
-        )
+        add_cmd = ["git", "add", "-A", "--"]
+        if paths:
+            add_cmd.extend(paths)
+        else:
+            add_cmd.append(".")
+        subprocess.run(add_cmd, cwd=project_dir, env=env, check=True, capture_output=True)
 
         tree_sha = subprocess.run(
             ["git", "write-tree"],
@@ -204,6 +218,139 @@ def _restore_working_tree_to_treeish(project_dir: Path, treeish: str) -> bool:
         return False
 
 
+def get_ref_sha(project_dir: Path, ref_name: str) -> str | None:
+    """Resolve *ref_name* to a SHA, or None if it doesn't exist."""
+    result = subprocess.run(
+        ["git", "rev-parse", "--verify", ref_name],
+        cwd=project_dir, capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        return None
+    sha = result.stdout.strip()
+    return sha or None
+
+
+def update_ref(project_dir: Path, ref_name: str, sha: str) -> bool:
+    """Point *ref_name* at *sha*."""
+    result = subprocess.run(
+        ["git", "update-ref", ref_name, sha],
+        cwd=project_dir, capture_output=True,
+    )
+    return result.returncode == 0
+
+
+def delete_ref(project_dir: Path, ref_name: str) -> bool:
+    """Delete *ref_name* if present."""
+    result = subprocess.run(
+        ["git", "update-ref", "-d", ref_name],
+        cwd=project_dir, capture_output=True,
+    )
+    return result.returncode == 0
+
+
+def snapshot_ref(
+    project_dir: Path,
+    ref_name: str,
+    message: str,
+    *,
+    parent: str | None = None,
+) -> str | None:
+    """Snapshot the current working tree into an arbitrary git ref."""
+    if not is_git_repo(project_dir):
+        return None
+
+    _ensure_airesearcher_excluded(project_dir)
+
+    git_dir = project_dir / ".git"
+    tmp_index = git_dir / "snapshot_index_tmp"
+    env = _checkpoint_env(tmp_index)
+    paths = _snapshot_paths(project_dir)
+
+    try:
+        add_cmd = ["git", "add", "-A", "--"]
+        if paths:
+            add_cmd.extend(paths)
+        else:
+            add_cmd.append(".")
+        subprocess.run(add_cmd, cwd=project_dir, env=env, check=True, capture_output=True)
+        tree_sha = subprocess.run(
+            ["git", "write-tree"],
+            cwd=project_dir, env=env, check=True, capture_output=True, text=True,
+        ).stdout.strip()
+
+        parent_sha = parent if parent else get_ref_sha(project_dir, ref_name)
+        commit_cmd = ["git", "commit-tree", tree_sha, "-m", message]
+        if parent_sha:
+            commit_cmd.extend(["-p", parent_sha])
+        commit_sha = subprocess.run(
+            commit_cmd,
+            cwd=project_dir, env=env, check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        if not update_ref(project_dir, ref_name, commit_sha):
+            return None
+        return commit_sha
+    except subprocess.CalledProcessError as exc:
+        _log.error("Snapshot ref failed: %s\nstderr: %s", exc, getattr(exc, "stderr", ""))
+        return None
+    finally:
+        tmp_index.unlink(missing_ok=True)
+
+
+def restore_working_tree(project_dir: Path, treeish: str) -> bool:
+    """Public wrapper to restore working tree/index to *treeish*."""
+    _ensure_airesearcher_excluded(project_dir)
+    return _restore_working_tree_to_treeish(project_dir, treeish)
+
+
+def has_worktree_changes(project_dir: Path) -> bool:
+    """True when tracked or untracked files differ from the current tree."""
+    result = subprocess.run(
+        ["git", "status", "--porcelain", "--untracked-files=all"],
+        cwd=project_dir, capture_output=True, text=True,
+    )
+    return result.returncode == 0 and bool(result.stdout.strip())
+
+
+def has_worktree_changes_since(project_dir: Path, treeish: str) -> bool:
+    """True when tracked or untracked files differ from *treeish*."""
+    tracked = subprocess.run(
+        ["git", "diff", "--quiet", treeish, "--"],
+        cwd=project_dir, capture_output=True,
+    )
+    if tracked.returncode == 1:
+        return True
+    if tracked.returncode not in (0, 1):
+        return False
+    untracked = subprocess.run(
+        ["git", "ls-files", "--others", "--exclude-standard"],
+        cwd=project_dir, capture_output=True, text=True,
+    )
+    return untracked.returncode == 0 and bool(untracked.stdout.strip())
+
+
+def cherry_pick_no_commit(project_dir: Path, commit_sha: str) -> bool:
+    """Apply *commit_sha* onto the current working tree without creating a commit."""
+    result = subprocess.run(
+        ["git", "cherry-pick", "--no-commit", commit_sha],
+        cwd=project_dir, capture_output=True, text=True,
+    )
+    if result.returncode == 0:
+        return True
+    _log.warning("git cherry-pick failed: %s", result.stderr.strip())
+    return False
+
+
+def list_unmerged_paths(project_dir: Path) -> list[str]:
+    """Return paths with unresolved merge conflicts."""
+    result = subprocess.run(
+        ["git", "diff", "--name-only", "--diff-filter=U"],
+        cwd=project_dir, capture_output=True, text=True,
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        return []
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
 def revert_to_checkpoint(project_dir: Path) -> int | None:
     """Restore the working tree to the latest checkpoint.
 
@@ -225,6 +372,24 @@ def revert_to_checkpoint(project_dir: Path) -> int | None:
 
     _log.info("Reverted working tree to checkpoint cycle %s", cycle)
     return cycle
+
+
+def restore_pre_checkpoint_state(project_dir: Path) -> bool:
+    """Restore the working tree to ``HEAD`` and drop checkpoint history.
+
+    This is used when undoing back to logical cycle 0, meaning "before the
+    first completed worker checkpoint".
+    """
+    if not is_git_repo(project_dir):
+        return False
+
+    _ensure_airesearcher_excluded(project_dir)
+    if not _restore_working_tree_to_treeish(project_dir, "HEAD"):
+        return False
+
+    delete_checkpoint_branch(project_dir)
+    _log.info("Restored working tree to HEAD and deleted checkpoints branch")
+    return True
 
 
 def restore_checkpoint_at_or_before_cycle(project_dir: Path, max_cycle: int) -> int | None:

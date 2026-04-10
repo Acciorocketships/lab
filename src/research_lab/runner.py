@@ -215,8 +215,7 @@ def seed_tier_a_from_run_config(researcher_root: Path, cfg: RunConfig) -> None:
     (state / "project_brief.md").write_text(
         "# Project\n\n"
         f"Implementation directory: `{cfg.project_dir}`\n\n"
-        f"Tier A memory directory: `{researcher_root / 'state'}`\n"
-        "Tier A files such as `roadmap.md`, `immediate_plan.md`, and `status.md` belong there, not in a project-root `state/` folder.\n\n"
+        f"Tier A memory directory: `{researcher_root / 'state'}`\n\n"
         f"User-facing reports and demos should be saved in the project directory, preferably `{cfg.project_dir / 'reports'}`.\n",
         encoding="utf-8",
     )

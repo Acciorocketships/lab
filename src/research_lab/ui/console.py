@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sqlite3
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from rich.markup import escape as rich_escape
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, VerticalScroll
@@ -23,6 +26,18 @@ from research_lab.ui.prompt_text_area import PromptSubmitted, PromptTextArea
 if TYPE_CHECKING:
     from research_lab.config import RunConfig
     from research_lab.loop import SchedulerProcessHandle
+
+# Cap live stream history so one long run cannot grow the Rich panel without bound.
+_MAX_STREAM_MESSAGE_LINES = 120
+
+
+@dataclass
+class _RedoSnapshot:
+    token: str
+    tree_ref: str
+    checkpoint_sha: str | None
+    snapshot_dir: Path
+    cycle: int
 
 CSS = """
 Screen {
@@ -147,6 +162,9 @@ class ResearchConsole(App[None]):
         self._auto_restarts = 0
         self._MAX_AUTO_RESTARTS = 3
         self._last_stream_text = ""
+        self._stream_line_markups: list[str] = []
+        self._stream_text_live = ""
+        self._cumulative_stream_text = ""
         self._current_cycle_widgets: list[Static] = []
         self._file_changes_widget: Static | None = None
         self._last_file_changes_ts: float = 0.0
@@ -155,6 +173,7 @@ class ResearchConsole(App[None]):
         self._stream_is_running_placeholder = False
         self._running_worker_tick = 0
         self._welcome_widgets: list[Static] = []
+        self._redo_stack: list[_RedoSnapshot] = []
 
     def compose(self) -> ComposeResult:
         yield Static("", id="header")
@@ -174,7 +193,7 @@ class ResearchConsole(App[None]):
         self._cleanup_orphaned_cycles()
         self._refresh_header()
         self.query_one("#stream-text", Static).display = False
-        self._write_welcome_lines()
+        self._rebuild_activity_from_db()
         self.query_one("#prompt", PromptTextArea).focus()
         self.set_interval(0.3, self._poll)
 
@@ -205,9 +224,92 @@ class ResearchConsole(App[None]):
         self._welcome_widgets = []
         scroll = self.query_one("#activity-scroll", VerticalScroll)
         stream = self.query_one("#stream-text", Static)
-        for child in list(scroll.children):
+        children = list(getattr(scroll, "children", []))
+        for child in children:
             if child is not stream:
-                child.remove()
+                try:
+                    child.remove()
+                except Exception:
+                    pass
+
+    def _rebuild_activity_from_db(self) -> None:
+        """Re-render completed cycles from DB so undo/redo immediately refresh the UI."""
+        self._clear_activity_log()
+        self._current_cycle_widgets = []
+        self._cycle_header_widget = None
+        self._file_changes_widget = None
+        self._last_file_changes_ts = 0.0
+        self._worker_start_ts = 0.0
+        self._last_worker = ""
+        self._last_orchestrator_task = ""
+
+        try:
+            rows = list(
+                self._conn.execute(
+                    "SELECT cycle, ts, kind, worker, task, summary, payload_json "
+                    "FROM run_events ORDER BY cycle ASC, id ASC"
+                )
+            )
+        except sqlite3.OperationalError:
+            rows = []
+
+        by_cycle: dict[int, dict[str, sqlite3.Row]] = {}
+        for row in rows:
+            bucket = by_cycle.setdefault(int(row["cycle"]), {})
+            bucket[str(row["kind"])] = row
+
+        if not by_cycle:
+            self._write_welcome_lines()
+            return
+
+        for cycle in sorted(by_cycle):
+            worker_row = by_cycle[cycle].get("worker")
+            if worker_row is None:
+                continue
+            orch_row = by_cycle[cycle].get("orchestrator")
+            payload: dict = {}
+            try:
+                payload = json.loads(worker_row["payload_json"]) if worker_row["payload_json"] else {}
+            except (json.JSONDecodeError, TypeError):
+                payload = {}
+            ok = payload.get("worker_ok", True)
+            start_ts = float(orch_row["ts"]) if orch_row else float(worker_row["ts"])
+            elapsed = max(0.0, float(worker_row["ts"]) - start_ts)
+            worker = worker_row["worker"]
+            task = (worker_row["task"] or "") or (orch_row["task"] if orch_row else "") or ""
+            header = self._mount_activity_widget(
+                events.format_cycle_header(
+                    cycle, worker, task, elapsed_sec=elapsed, status="ok" if ok else "fail"
+                ),
+                classes="activity-line cycle-header",
+            )
+            self._current_cycle_widgets.append(header)
+            task_w = self._write_task(task)
+            if task_w is not None:
+                self._current_cycle_widgets.append(task_w)
+
+            excerpt = events.extract_result_excerpt(self._fetch_last_stream_text(cycle))
+            if not excerpt:
+                excerpt = events.extract_result_excerpt(worker_row["summary"] or "")
+            if excerpt:
+                result_w = self._write_result_box(excerpt)
+                if result_w is not None:
+                    self._current_cycle_widgets.append(result_w)
+            elif not ok:
+                self._write_activity("  [dim](failed — no excerpt)[/]")
+
+        self._last_cycle = max(by_cycle)
+        try:
+            row = self._conn.execute("SELECT MAX(id) FROM run_events").fetchone()
+            self._last_run_event_id = int(row[0]) if row and row[0] is not None else 0
+        except sqlite3.OperationalError:
+            self._last_run_event_id = 0
+        try:
+            row = self._conn.execute("SELECT MAX(id) FROM worker_stream").fetchone()
+            self._last_stream_id = int(row[0]) if row and row[0] is not None else 0
+        except sqlite3.OperationalError:
+            self._last_stream_id = 0
+        self._scroll_to_bottom()
 
     def _write_activity(self, markup: str) -> None:
         """Append a permanent line to the activity scroll area."""
@@ -264,13 +366,70 @@ class ResearchConsole(App[None]):
         self.call_after_refresh(lambda: scroll.scroll_end(animate=False))
         return w
 
+    def _reset_stream_message_buffers(self) -> None:
+        self._stream_line_markups.clear()
+        self._stream_text_live = ""
+        self._cumulative_stream_text = ""
+
+    def _format_stream_tool_row(self, text: str) -> str:
+        t = text.strip()
+        if not t:
+            return ""
+        return f"[cyan]┊ {rich_escape(t)}[/]"
+
+    def _format_stream_text_row(self, text: str) -> str:
+        t = text.strip()
+        if not t:
+            return ""
+        return f"[dim]┊ {rich_escape(t)}[/]"
+
+    def _trim_stream_line_markups(self) -> None:
+        overflow = len(self._stream_line_markups) - _MAX_STREAM_MESSAGE_LINES
+        if overflow > 0:
+            del self._stream_line_markups[:overflow]
+
+    def _append_stream_text_delta(self, chunk: str) -> None:
+        """Accumulate assistant text; completed \\n-terminated rows become discrete lines."""
+        if not chunk:
+            return
+        self._stream_text_live += chunk
+        self._cumulative_stream_text += chunk
+        self._last_stream_text = self._cumulative_stream_text.strip()
+        while "\n" in self._stream_text_live:
+            head, _, tail = self._stream_text_live.partition("\n")
+            row = self._format_stream_text_row(head)
+            if row:
+                self._stream_line_markups.append(row)
+            self._stream_text_live = tail
+        self._trim_stream_line_markups()
+
+    def _flush_stream_text_tail(self) -> None:
+        """Finalize in-progress text (no trailing newline) as its own row."""
+        row = self._format_stream_text_row(self._stream_text_live)
+        if row:
+            self._stream_line_markups.append(row)
+        self._stream_text_live = ""
+        self._trim_stream_line_markups()
+
+    def _rebuild_stream_panel_from_buffers(self) -> None:
+        parts = list(self._stream_line_markups)
+        live_row = self._format_stream_text_row(self._stream_text_live)
+        if live_row:
+            parts.append(live_row)
+        inner = "\n".join(parts)
+        status = self.query_one("#stream-text", Static)
+        status.update(events.make_stream_panel(inner))
+        status.display = bool(inner.strip())
+
     def _clear_stream_status(self) -> None:
         self._stream_is_running_placeholder = False
+        self._reset_stream_message_buffers()
         status = self.query_one("#stream-text", Static)
         status.update(events.make_stream_panel(""))
         status.display = False
 
-    def _set_stream_status(self, markup: str) -> None:
+    def _set_stream_placeholder(self, markup: str) -> None:
+        """Single-line animated status (Running… / Orchestrating…), not the message log."""
         status = self.query_one("#stream-text", Static)
         status.update(events.make_stream_panel(markup))
         status.display = True
@@ -371,12 +530,12 @@ class ResearchConsole(App[None]):
         if self._orchestrating:
             self._orchestrating_tick += 1
             dots = "." * ((self._orchestrating_tick % 3) + 1)
-            self._set_stream_status(f"[dim]Orchestrating{dots}[/]")
+            self._set_stream_placeholder(f"[dim]Orchestrating{dots}[/]")
             return
         if self._stream_is_running_placeholder and self._worker_start_ts > 0:
             self._running_worker_tick += 1
             dots = "." * ((self._running_worker_tick % 3) + 1)
-            self._set_stream_status(f"[dim]Running {self._last_worker}{dots}[/]")
+            self._set_stream_placeholder(f"[dim]Running {self._last_worker}{dots}[/]")
 
     def _check_scheduler_health(self) -> None:
         """Detect a crashed scheduler subprocess and auto-restart when possible."""
@@ -492,6 +651,7 @@ class ResearchConsole(App[None]):
                     self._worker_start_ts = float(row["ts"])
                     self._last_orchestrator_task = task
                     self._last_stream_text = ""
+                    self._reset_stream_message_buffers()
                     self._current_cycle_widgets = []
                     elapsed0 = events.cycle_header_running_elapsed(self._worker_start_ts)
                     self._cycle_header_widget = self._mount_activity_widget(
@@ -517,12 +677,13 @@ class ResearchConsole(App[None]):
                 self._stream_is_running_placeholder = True
                 self._running_worker_tick = 0
                 wdots = "." * ((self._running_worker_tick % 3) + 1)
-                self._set_stream_status(f"[dim]Running {worker}{wdots}[/]")
+                self._set_stream_placeholder(f"[dim]Running {worker}{wdots}[/]")
                 if new_cycle and self._cycle_header_widget is not None:
                     self._scroll_cycle_header_to_top()
                 else:
                     self._scroll_to_bottom()
             elif kind == "worker":
+                self._clear_redo_stack()
                 start_ts = self._worker_start_ts
                 if cycle != self._last_cycle or start_ts <= 0:
                     start_ts = self._orchestrator_ts_for_cycle(cycle) or 0.0
@@ -575,11 +736,10 @@ class ResearchConsole(App[None]):
                     self._orchestrating = True
 
     def _poll_stream(self) -> None:
-        """Show the most recent stream event in the inline status panel.
+        """Append stream events to the live panel as discrete rows (┊-prefixed).
 
-        Only the latest message is displayed (replaced each poll).  Text events
-        are stored so they can be persisted into the activity log when the
-        worker finishes.
+        Assistant text deltas accumulate; newline-terminated segments become
+        separate rows. Tool calls flush any in-progress text then add a row.
         """
         try:
             rows = db.stream_chunks_since(self._conn, self._last_stream_id)
@@ -595,13 +755,17 @@ class ResearchConsole(App[None]):
             if event_type == "tool" and text.strip():
                 had_tool = True
                 self._stream_is_running_placeholder = False
-                self._set_stream_status(f"[cyan]{text}[/]")
+                self._flush_stream_text_tail()
+                tool_row = self._format_stream_tool_row(text)
+                if tool_row:
+                    self._stream_line_markups.append(tool_row)
+                self._trim_stream_line_markups()
+                self._rebuild_stream_panel_from_buffers()
                 self._scroll_to_bottom()
             elif event_type == "text" and text.strip():
-                clean = text.strip()
-                self._last_stream_text = clean
                 self._stream_is_running_placeholder = False
-                self._set_stream_status(f"[dim]{clean}[/]")
+                self._append_stream_text_delta(text)
+                self._rebuild_stream_panel_from_buffers()
                 self._scroll_to_bottom()
         if had_tool:
             self._last_file_changes_ts = 0.0
@@ -664,6 +828,7 @@ class ResearchConsole(App[None]):
             "experiments": self._cmd_experiments,
             "reset": self._cmd_reset,
             "undo": self._cmd_undo,
+            "redo": self._cmd_redo,
         }.get(cmd)
 
         if handler:
@@ -674,13 +839,31 @@ class ResearchConsole(App[None]):
     def _cmd_undo(self) -> None:
         """Drop in-flight or last finished worker changes; restart only if the agent was running."""
         was_running = bool(self._scheduler and self._scheduler.is_alive())
+        snap = self._capture_redo_snapshot()
+        if snap is None:
+            self._write_activity("  [red]/undo failed:[/] could not snapshot current state for /redo.")
+            return
         self._kill_scheduler()
-        self._revert_to_checkpoint(
-            undo_last_completed_worker=True,
-            emit_activity_message=False,
-        )
+        self._revert_to_checkpoint(undo_last_completed_worker=True)
+        self._redo_stack.append(snap)
         self._auto_restarts = 0
         if was_running:
+            self._restart_scheduler()
+
+    def _cmd_redo(self) -> None:
+        """Restore the most recently undone checkpoint and reapply local changes."""
+        if not self._redo_stack:
+            self._write_activity("  [dim]Nothing to redo.[/]")
+            return
+        was_running = bool(self._scheduler and self._scheduler.is_alive())
+        self._kill_scheduler()
+        snap = self._redo_stack.pop()
+        if not self._restore_redo_snapshot(snap):
+            self._write_activity("  [red]/redo failed:[/] could not restore the saved snapshot.")
+            self._drop_redo_snapshot(snap)
+            return
+        self._auto_restarts = 0
+        if was_running and not (self._scheduler and self._scheduler.is_alive()):
             self._restart_scheduler()
 
     def _cmd_start(self) -> None:
@@ -745,6 +928,7 @@ class ResearchConsole(App[None]):
             "  [bold]/experiments[/]  Show experiments\n"
             "  [bold]/reset[/]        Clear DB and runtime memory; keep research_idea.md + preferences.md\n"
             "  [bold]/undo[/]         Revert since last worker; restarts orchestrator only if agent was running\n"
+            "  [bold]/redo[/]         Restore the last undone checkpoint and replay local edits on top\n"
             "  [bold]/help[/]         This message\n"
             "\n  Plain text is queued as an instruction.\n"
             "  [dim]Enter[/] sends · [dim]Shift+Enter[/] for newline · navigate lines with arrows\n"
@@ -793,6 +977,7 @@ class ResearchConsole(App[None]):
         self._clear_activity_log()
         self._clear_stream_status()
         self._refresh_header()
+        self._clear_redo_stack()
         self._write_activity(
             "  [green]Reset complete.[/] Kept [bold]research_idea.md[/] and [bold]preferences.md[/]. "
             "Cleared DB, other Tier A files, episodes, extended, branches, skills, experiments."
@@ -800,6 +985,203 @@ class ResearchConsole(App[None]):
         self._write_welcome_lines()
 
     # --- lifecycle ------------------------------------------------------------
+
+    def _redo_snapshot_root(self) -> Path:
+        return project_researcher_root(self.cfg.project_dir) / "redo"
+
+    def _clear_redo_stack(self) -> None:
+        for snap in self._redo_stack:
+            self._drop_redo_snapshot(snap)
+        self._redo_stack.clear()
+
+    def _capture_redo_snapshot(self) -> _RedoSnapshot | None:
+        """Save enough state to reverse the next /undo via /redo."""
+        from research_lab import git_checkpoint
+
+        token = f"{time.time_ns()}"
+        tree_ref = f"refs/lab/redo/{token}"
+        tree_sha = git_checkpoint.snapshot_ref(
+            self.cfg.project_dir,
+            tree_ref,
+            f"redo snapshot {token}",
+        )
+        if tree_sha is None:
+            return None
+
+        checkpoint_sha = git_checkpoint.get_ref_sha(
+            self.cfg.project_dir, f"refs/heads/{git_checkpoint.CHECKPOINT_BRANCH}"
+        )
+        snapshot_dir = self._redo_snapshot_root() / token
+        runtime_copy = snapshot_dir / "runtime"
+        runtime_copy.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            if runtime_copy.exists():
+                shutil.rmtree(runtime_copy)
+            live_root = project_researcher_root(self.cfg.project_dir)
+            if live_root.is_dir():
+                runtime_copy.mkdir(parents=True, exist_ok=True)
+                for child in live_root.iterdir():
+                    if child.name == "redo":
+                        continue
+                    dst = runtime_copy / child.name
+                    if child.is_dir():
+                        shutil.copytree(child, dst)
+                    else:
+                        shutil.copy2(child, dst)
+            else:
+                runtime_copy.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            git_checkpoint.delete_ref(self.cfg.project_dir, tree_ref)
+            shutil.rmtree(snapshot_dir, ignore_errors=True)
+            return None
+
+        try:
+            db_copy = sqlite3.connect(str(snapshot_dir / "runtime.db"))
+            try:
+                self._conn.backup(db_copy)
+                db_copy.commit()
+            finally:
+                db_copy.close()
+        except sqlite3.Error:
+            git_checkpoint.delete_ref(self.cfg.project_dir, tree_ref)
+            shutil.rmtree(snapshot_dir, ignore_errors=True)
+            return None
+
+        return _RedoSnapshot(
+            token=token,
+            tree_ref=tree_ref,
+            checkpoint_sha=checkpoint_sha,
+            snapshot_dir=snapshot_dir,
+            cycle=self._last_cycle,
+        )
+
+    def _drop_redo_snapshot(self, snap: _RedoSnapshot) -> None:
+        from research_lab import git_checkpoint
+
+        git_checkpoint.delete_ref(self.cfg.project_dir, snap.tree_ref)
+        shutil.rmtree(snap.snapshot_dir, ignore_errors=True)
+
+    def _restore_runtime_snapshot(self, snap: _RedoSnapshot) -> bool:
+        runtime_copy = snap.snapshot_dir / "runtime"
+        if not runtime_copy.is_dir():
+            return False
+        live_root = project_researcher_root(self.cfg.project_dir)
+        self._conn.close()
+        try:
+            live_root.mkdir(parents=True, exist_ok=True)
+            for child in list(live_root.iterdir()):
+                if child.name == "redo":
+                    continue
+                if child.is_dir():
+                    shutil.rmtree(child)
+                else:
+                    child.unlink()
+            for child in runtime_copy.iterdir():
+                dst = live_root / child.name
+                if child.is_dir():
+                    shutil.copytree(child, dst)
+                else:
+                    shutil.copy2(child, dst)
+        except OSError:
+            self._conn = db.connect_db(self.db_path)
+            return False
+
+        try:
+            for dst in (
+                self.db_path,
+                Path(str(self.db_path) + "-wal"),
+                Path(str(self.db_path) + "-shm"),
+            ):
+                try:
+                    dst.unlink()
+                except FileNotFoundError:
+                    pass
+            shutil.copy2(snap.snapshot_dir / "runtime.db", self.db_path)
+        except OSError:
+            self._conn = db.connect_db(self.db_path)
+            return False
+
+        self._conn = db.connect_db(self.db_path)
+        return True
+
+    def _start_implementer_merge_fix(self, conflicts: list[str]) -> None:
+        task = (
+            "Resolve merge conflicts created while replaying local changes after /redo. "
+            "Keep the restored checkpoint intent, preserve compatible local edits, remove conflict markers, "
+            "and leave the working tree conflict-free. "
+            f"Conflicted paths: {', '.join(conflicts[:20])}"
+        )
+        self._conn.execute("BEGIN IMMEDIATE")
+        db.set_forced_run(self._conn, "implementer", task)
+        db.set_control_mode(self._conn, "active")
+        db.enqueue_event(self._conn, "resume", None)
+        self._conn.commit()
+        self._write_activity("  [yellow]/redo hit merge conflicts; starting implementer to resolve them.[/]")
+        self._restart_scheduler()
+
+    def _restore_redo_snapshot(self, snap: _RedoSnapshot) -> bool:
+        from research_lab import git_checkpoint
+
+        current_treeish = (
+            f"refs/heads/{git_checkpoint.CHECKPOINT_BRANCH}"
+            if git_checkpoint.has_checkpoint(self.cfg.project_dir)
+            else "HEAD"
+        )
+        current_base_sha = git_checkpoint.get_ref_sha(self.cfg.project_dir, current_treeish)
+        overlay_ref: str | None = None
+        overlay_commit: str | None = None
+        if current_base_sha and git_checkpoint.has_worktree_changes_since(
+            self.cfg.project_dir, current_treeish
+        ):
+            overlay_ref = f"refs/lab/redo-overlay/{snap.token}"
+            overlay_commit = git_checkpoint.snapshot_ref(
+                self.cfg.project_dir,
+                overlay_ref,
+                f"redo overlay {snap.token}",
+                parent=current_base_sha,
+            )
+            if overlay_commit is None:
+                if overlay_ref is not None:
+                    git_checkpoint.delete_ref(self.cfg.project_dir, overlay_ref)
+                return False
+
+        try:
+            if not git_checkpoint.restore_working_tree(self.cfg.project_dir, snap.tree_ref):
+                return False
+            if snap.checkpoint_sha:
+                if not git_checkpoint.update_ref(
+                    self.cfg.project_dir,
+                    f"refs/heads/{git_checkpoint.CHECKPOINT_BRANCH}",
+                    snap.checkpoint_sha,
+                ):
+                    return False
+            else:
+                git_checkpoint.delete_ref(
+                    self.cfg.project_dir, f"refs/heads/{git_checkpoint.CHECKPOINT_BRANCH}"
+                )
+
+            if not self._restore_runtime_snapshot(snap):
+                return False
+            self._rebuild_activity_from_db()
+            self._refresh_header()
+            self._clear_stream_status()
+
+            if overlay_commit:
+                if not git_checkpoint.cherry_pick_no_commit(self.cfg.project_dir, overlay_commit):
+                    conflicts = git_checkpoint.list_unmerged_paths(self.cfg.project_dir)
+                    if conflicts:
+                        self._start_implementer_merge_fix(conflicts)
+                    else:
+                        self._write_activity("  [red]/redo failed:[/] could not replay local changes.")
+                        return False
+            self._write_activity(
+                f"  [yellow]Redid checkpoint (cycle {db.get_system_state(self._conn).get('cycle_count', 0)}).[/]"
+            )
+            return True
+        finally:
+            if overlay_ref is not None:
+                git_checkpoint.delete_ref(self.cfg.project_dir, overlay_ref)
+            self._drop_redo_snapshot(snap)
 
     def _kill_scheduler(self) -> None:
         """Immediately kill the scheduler and all child worker processes."""
@@ -877,7 +1259,10 @@ class ResearchConsole(App[None]):
         # Remove in-progress cycle widgets unconditionally -- the scheduler is
         # dead at this point so the cycle cannot complete.
         for w in self._current_cycle_widgets:
-            w.remove()
+            try:
+                w.remove()
+            except Exception:
+                pass
         self._current_cycle_widgets.clear()
         self._cycle_header_widget = None
         self._file_changes_widget = None
@@ -889,21 +1274,35 @@ class ResearchConsole(App[None]):
 
         # Attempt git-level revert to the last completed-cycle checkpoint.
         reverted = False
-        if git_checkpoint.has_checkpoint(self.cfg.project_dir):
+        tip_ahead = False
+        last_completed = 0
+        target_cycle = 0
+        try:
             tip_ahead = db.orchestrator_ahead_of_worker(self._conn)
+            row = self._conn.execute(
+                "SELECT MAX(cycle) FROM run_events WHERE kind = 'worker'",
+            ).fetchone()
+            last_completed = int(row[0]) if row and row[0] is not None else 0
+            target_cycle = (
+                max(0, last_completed - 1)
+                if undo_last_completed_worker and not tip_ahead
+                else last_completed
+            )
+        except Exception:
+            tip_ahead = False
+            last_completed = 0
+            target_cycle = 0
+
+        if git_checkpoint.has_checkpoint(self.cfg.project_dir):
             cycle: int | None = None
             if undo_last_completed_worker and not tip_ahead:
-                row = self._conn.execute(
-                    "SELECT MAX(cycle) FROM run_events WHERE kind = 'worker'",
-                ).fetchone()
-                wmax = int(row[0]) if row and row[0] is not None else 0
-                if wmax >= 1:
-                    target = wmax - 1
-                    cycle = git_checkpoint.restore_checkpoint_at_or_before_cycle(
-                        self.cfg.project_dir, target,
-                    )
-                    if cycle is None and target == 0:
+                if target_cycle == 0:
+                    if git_checkpoint.restore_pre_checkpoint_state(self.cfg.project_dir):
                         cycle = 0
+                else:
+                    cycle = git_checkpoint.restore_checkpoint_at_or_before_cycle(
+                        self.cfg.project_dir, target_cycle,
+                    )
             else:
                 cycle = git_checkpoint.revert_to_checkpoint(self.cfg.project_dir)
             if cycle is not None:
@@ -928,12 +1327,8 @@ class ResearchConsole(App[None]):
         # cycles and clean up filesystem artifacts from interrupted runs.
         if not reverted:
             try:
-                row = self._conn.execute(
-                    "SELECT MAX(cycle) FROM run_events WHERE kind = 'worker'"
-                ).fetchone()
-                last_completed = int(row[0]) if row and row[0] is not None else 0
                 self._conn.execute("BEGIN IMMEDIATE")
-                db.rollback_to_cycle(self._conn, last_completed)
+                db.rollback_to_cycle(self._conn, target_cycle)
                 self._conn.commit()
             except Exception:
                 try:
@@ -941,8 +1336,8 @@ class ResearchConsole(App[None]):
                 except Exception:
                     pass
 
-            self._cleanup_incomplete_episodes(researcher_root, last_completed)
-            if last_completed == 0:
+            self._cleanup_incomplete_episodes(researcher_root, target_cycle)
+            if target_cycle == 0:
                 self._reset_context_summary(researcher_root)
 
         # Resync event/stream IDs with the DB after deletions.
@@ -964,6 +1359,11 @@ class ResearchConsole(App[None]):
 
         try:
             self._clear_stream_status()
+        except Exception:
+            pass
+        try:
+            self._rebuild_activity_from_db()
+            self._refresh_header()
         except Exception:
             pass
 

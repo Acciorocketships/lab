@@ -67,6 +67,12 @@ CREATE TABLE IF NOT EXISTS worker_stream (
   chunk TEXT NOT NULL,
   ts REAL NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS forced_run (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  worker TEXT NOT NULL DEFAULT '',
+  task TEXT NOT NULL DEFAULT ''
+);
 """
 
 
@@ -86,6 +92,10 @@ def connect_db(db_path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(db_path), check_same_thread=False, timeout=30.0)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
+    conn.execute(
+        "INSERT OR IGNORE INTO forced_run (id, worker, task) VALUES (1, '', '')"
+    )
+    conn.commit()
     return conn
 
 
@@ -276,6 +286,33 @@ def rollback_to_cycle(conn: sqlite3.Connection, cycle: int) -> None:
     )
     conn.execute("DELETE FROM run_events WHERE cycle > ?", (cycle,))
     conn.execute("DELETE FROM worker_stream WHERE cycle > ?", (cycle,))
+
+
+def set_forced_run(conn: sqlite3.Connection, worker: str, task: str) -> None:
+    """Set a one-shot forced worker/task for the next cycle."""
+    conn.execute(
+        "UPDATE forced_run SET worker = ?, task = ? WHERE id = 1",
+        (worker.strip(), task.strip()),
+    )
+
+
+def get_forced_run(conn: sqlite3.Connection) -> dict[str, str] | None:
+    """Return the pending forced worker/task, if any."""
+    row = conn.execute(
+        "SELECT worker, task FROM forced_run WHERE id = 1"
+    ).fetchone()
+    if row is None:
+        return None
+    worker = (row["worker"] or "").strip()
+    task = (row["task"] or "").strip()
+    if not worker:
+        return None
+    return {"worker": worker, "task": task}
+
+
+def clear_forced_run(conn: sqlite3.Connection) -> None:
+    """Clear any pending forced worker/task."""
+    conn.execute("UPDATE forced_run SET worker = '', task = '' WHERE id = 1")
 
 
 def clear_stream(conn: sqlite3.Connection, cycle: int | None = None) -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 from rich import box
@@ -10,7 +11,7 @@ from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.table import Table
 
-from research_lab import db
+from research_lab import db, git_checkpoint
 from research_lab.config import RunConfig
 from research_lab.ui import events
 from research_lab.ui.console import ResearchConsole
@@ -81,6 +82,277 @@ def test_cmd_start_enqueues_resume_when_scheduler_is_alive(tmp_path: Path) -> No
     pending = db.fetch_pending_events(conn)
     assert [row["kind"] for row in pending] == ["resume"]
     assert console._orchestrating is True
+
+    console._conn.close()
+
+
+def test_cmd_undo_after_pause_restores_pre_first_checkpoint_state(tmp_path: Path) -> None:
+    db_path = tmp_path / "runtime.db"
+    cfg = _cfg(tmp_path)
+    cfg.project_dir.mkdir()
+
+    subprocess.run(["git", "init"], cwd=cfg.project_dir, check=True, capture_output=True)
+    (cfg.project_dir / "f.txt").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "add", "f.txt"], cwd=cfg.project_dir, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-c", "user.name=test", "-c", "user.email=test@example.com",
+         "commit", "-m", "initial", "--allow-empty"],
+        cwd=cfg.project_dir,
+        check=True,
+        capture_output=True,
+    )
+
+    console = ResearchConsole(db_path, cfg)
+    writes: list[str] = []
+    console.query_one = _console_query_stub(writes)  # type: ignore[method-assign]
+    console._clear_activity_log = lambda: None  # type: ignore[method-assign]
+    conn = console._conn
+    db.get_system_state(conn)
+    db.append_run_event(
+        conn,
+        cycle=1,
+        kind="worker",
+        worker="planner",
+        roadmap_step="",
+        task="do work",
+        summary="done",
+        payload={"worker_ok": True},
+    )
+    conn.execute("UPDATE system_state SET cycle_count = 1 WHERE id = 1")
+    conn.commit()
+
+    (cfg.project_dir / "f.txt").write_text("after cycle 1\n", encoding="utf-8")
+    git_checkpoint.create_checkpoint(cfg.project_dir, 1, "planner")
+
+    console._cmd_pause()
+    assert (cfg.project_dir / "f.txt").read_text(encoding="utf-8") == "after cycle 1\n"
+    assert git_checkpoint.has_checkpoint(cfg.project_dir) is True
+
+    console._cmd_undo()
+
+    assert (cfg.project_dir / "f.txt").read_text(encoding="utf-8") == "base\n"
+    assert db.get_system_state(conn)["cycle_count"] == 0
+    assert git_checkpoint.has_checkpoint(cfg.project_dir) is False
+    assert any("Reverted to checkpoint" in m for m in writes)
+
+    console._conn.close()
+
+
+def test_cmd_undo_after_pause_rewinds_completed_checkpoint_chain(tmp_path: Path) -> None:
+    db_path = tmp_path / "runtime.db"
+    cfg = _cfg(tmp_path)
+    cfg.project_dir.mkdir()
+
+    subprocess.run(["git", "init"], cwd=cfg.project_dir, check=True, capture_output=True)
+    (cfg.project_dir / "f.txt").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "add", "f.txt"], cwd=cfg.project_dir, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-c", "user.name=test", "-c", "user.email=test@example.com",
+         "commit", "-m", "initial", "--allow-empty"],
+        cwd=cfg.project_dir,
+        check=True,
+        capture_output=True,
+    )
+
+    console = ResearchConsole(db_path, cfg)
+    writes: list[str] = []
+    console.query_one = _console_query_stub(writes)  # type: ignore[method-assign]
+    conn = console._conn
+    db.get_system_state(conn)
+
+    for cycle in range(1, 5):
+        db.append_run_event(
+            conn,
+            cycle=cycle,
+            kind="worker",
+            worker="planner",
+            roadmap_step="",
+            task=f"cycle {cycle}",
+            summary="done",
+            payload={"worker_ok": True},
+        )
+        conn.execute("UPDATE system_state SET cycle_count = ? WHERE id = 1", (cycle,))
+        conn.commit()
+        (cfg.project_dir / "f.txt").write_text(f"cycle {cycle}\n", encoding="utf-8")
+        git_checkpoint.create_checkpoint(cfg.project_dir, cycle, "planner")
+
+    console._cmd_pause()
+    console._cmd_undo()
+
+    assert (cfg.project_dir / "f.txt").read_text(encoding="utf-8") == "cycle 3\n"
+    assert db.get_system_state(conn)["cycle_count"] == 3
+    assert git_checkpoint.get_checkpoint_cycle(cfg.project_dir) == 3
+    assert any("Reverted to checkpoint" in m for m in writes)
+
+    console._conn.close()
+
+
+def test_cmd_undo_twice_while_paused_rebuilds_visible_cycles(tmp_path: Path) -> None:
+    db_path = tmp_path / "runtime.db"
+    cfg = _cfg(tmp_path)
+    cfg.project_dir.mkdir()
+
+    subprocess.run(["git", "init"], cwd=cfg.project_dir, check=True, capture_output=True)
+    (cfg.project_dir / "f.txt").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "add", "f.txt"], cwd=cfg.project_dir, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-c", "user.name=test", "-c", "user.email=test@example.com",
+         "commit", "-m", "initial", "--allow-empty"],
+        cwd=cfg.project_dir,
+        check=True,
+        capture_output=True,
+    )
+
+    console = ResearchConsole(db_path, cfg)
+    console.query_one = _console_query_stub([])  # type: ignore[method-assign]
+    console._clear_activity_log = lambda: None  # type: ignore[method-assign]
+    conn = console._conn
+    db.get_system_state(conn)
+
+    visible_headers: list[str] = []
+
+    def fake_mount(markup: str, classes: str = "activity-line") -> object:
+        if "cycle-header" in classes:
+            visible_headers.append(markup)
+        return type("Widget", (), {"remove": lambda self: None})()
+
+    console._mount_activity_widget = fake_mount  # type: ignore[method-assign]
+    console._write_task = lambda task: None  # type: ignore[method-assign]
+    console._write_result_box = lambda text: None  # type: ignore[method-assign]
+    console._scroll_to_bottom = lambda: None  # type: ignore[method-assign]
+    console._clear_activity_log = lambda: None  # type: ignore[method-assign]
+
+    for cycle in range(1, 5):
+        db.append_run_event(
+            conn,
+            cycle=cycle,
+            kind="orchestrator",
+            worker="planner",
+            roadmap_step="",
+            task=f"cycle {cycle}",
+            summary="route",
+            payload={"worker": "planner"},
+        )
+        db.append_run_event(
+            conn,
+            cycle=cycle,
+            kind="worker",
+            worker="planner",
+            roadmap_step="",
+            task=f"cycle {cycle}",
+            summary="done",
+            payload={"worker_ok": True},
+        )
+        conn.execute("UPDATE system_state SET cycle_count = ? WHERE id = 1", (cycle,))
+        conn.commit()
+        (cfg.project_dir / "f.txt").write_text(f"cycle {cycle}\n", encoding="utf-8")
+        git_checkpoint.create_checkpoint(cfg.project_dir, cycle, "planner")
+
+    console._cmd_pause()
+    visible_headers.clear()
+    console._cmd_undo()
+    visible_headers.clear()
+    console._cmd_undo()
+
+    assert db.get_system_state(conn)["cycle_count"] == 2
+    assert any("cycle 1" in header for header in visible_headers)
+    assert any("cycle 2" in header for header in visible_headers)
+    assert not any("cycle 3" in header for header in visible_headers)
+
+    console._conn.close()
+
+
+def test_cmd_redo_restores_last_undone_checkpoint(tmp_path: Path) -> None:
+    db_path = tmp_path / "runtime.db"
+    cfg = _cfg(tmp_path)
+    cfg.project_dir.mkdir()
+
+    subprocess.run(["git", "init"], cwd=cfg.project_dir, check=True, capture_output=True)
+    (cfg.project_dir / "f.txt").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "add", "f.txt"], cwd=cfg.project_dir, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-c", "user.name=test", "-c", "user.email=test@example.com",
+         "commit", "-m", "initial", "--allow-empty"],
+        cwd=cfg.project_dir,
+        check=True,
+        capture_output=True,
+    )
+
+    console = ResearchConsole(db_path, cfg)
+    writes: list[str] = []
+    console.query_one = _console_query_stub(writes)  # type: ignore[method-assign]
+    conn = console._conn
+    db.get_system_state(conn)
+
+    for cycle in range(1, 5):
+        db.append_run_event(
+            conn,
+            cycle=cycle,
+            kind="worker",
+            worker="planner",
+            roadmap_step="",
+            task=f"cycle {cycle}",
+            summary="done",
+            payload={"worker_ok": True},
+        )
+        conn.execute("UPDATE system_state SET cycle_count = ? WHERE id = 1", (cycle,))
+        conn.commit()
+        (cfg.project_dir / "f.txt").write_text(f"cycle {cycle}\n", encoding="utf-8")
+        git_checkpoint.create_checkpoint(cfg.project_dir, cycle, "planner")
+
+    console._cmd_pause()
+    console._cmd_undo()
+    console._cmd_redo()
+
+    assert (cfg.project_dir / "f.txt").read_text(encoding="utf-8") == "cycle 4\n"
+    assert db.get_system_state(console._conn)["cycle_count"] == 4
+    assert git_checkpoint.get_checkpoint_cycle(cfg.project_dir) == 4
+    assert any("Redid checkpoint" in m for m in writes)
+
+    console._conn.close()
+
+
+def test_cmd_redo_reapplies_local_changes_on_top(tmp_path: Path) -> None:
+    db_path = tmp_path / "runtime.db"
+    cfg = _cfg(tmp_path)
+    cfg.project_dir.mkdir()
+
+    subprocess.run(["git", "init"], cwd=cfg.project_dir, check=True, capture_output=True)
+    (cfg.project_dir / "f.txt").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "add", "f.txt"], cwd=cfg.project_dir, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-c", "user.name=test", "-c", "user.email=test@example.com",
+         "commit", "-m", "initial", "--allow-empty"],
+        cwd=cfg.project_dir,
+        check=True,
+        capture_output=True,
+    )
+
+    console = ResearchConsole(db_path, cfg)
+    console.query_one = _console_query_stub([])  # type: ignore[method-assign]
+    conn = console._conn
+    db.get_system_state(conn)
+
+    (cfg.project_dir / "f.txt").write_text("base\ncycle 1\n", encoding="utf-8")
+    db.append_run_event(conn, cycle=1, kind="worker", worker="planner", roadmap_step="", task="cycle 1", summary="done", payload={"worker_ok": True})
+    conn.execute("UPDATE system_state SET cycle_count = 1 WHERE id = 1")
+    conn.commit()
+    git_checkpoint.create_checkpoint(cfg.project_dir, 1, "planner")
+
+    (cfg.project_dir / "f.txt").write_text("base\ncycle 1\ncycle 2\n", encoding="utf-8")
+    db.append_run_event(conn, cycle=2, kind="worker", worker="planner", roadmap_step="", task="cycle 2", summary="done", payload={"worker_ok": True})
+    conn.execute("UPDATE system_state SET cycle_count = 2 WHERE id = 1")
+    conn.commit()
+    git_checkpoint.create_checkpoint(cfg.project_dir, 2, "planner")
+
+    console._cmd_pause()
+    console._cmd_undo()
+    (cfg.project_dir / "notes.txt").write_text("local edit\n", encoding="utf-8")
+    console._cmd_redo()
+
+    assert (cfg.project_dir / "f.txt").read_text(encoding="utf-8") == "base\ncycle 1\ncycle 2\n"
+    assert (cfg.project_dir / "notes.txt").read_text(encoding="utf-8") == "local edit\n"
+    assert db.get_system_state(console._conn)["cycle_count"] == 2
 
     console._conn.close()
 

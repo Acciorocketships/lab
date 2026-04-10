@@ -85,6 +85,18 @@ def choose_action(
     db_path: Path,
 ) -> dict[str, Any]:
     """Orchestrator chooses next worker; updates rolling context and logs orchestrator run_event."""
+    forced_worker = ""
+    forced_task = ""
+    conn = _conn(db_path)
+    try:
+        forced = db.get_forced_run(conn)
+    finally:
+        conn.close()
+
+    if forced is not None:
+        forced_worker = forced["worker"]
+        forced_task = forced["task"]
+
     prev = memory.read_context_summary(researcher_root)
     tier = memory.load_tier_a_bundle(researcher_root)
     ctx = memory.format_orchestrator_context(
@@ -98,12 +110,26 @@ def choose_action(
         tier_file_max_chars=cfg.orchestrator_tier_file_max_chars,
         branch_memory_max_chars=cfg.orchestrator_branch_memory_max_chars,
     )
-    dec = orchestrator.decide_orchestrator(
-        ctx,
-        model=cfg.openai_model,
-        cfg=cfg,
-    )
-    if memory.user_instructions_new_has_pending(researcher_root) and dec.worker != "planner":
+    if forced_worker:
+        dec = orchestrator.OrchestratorDecision(
+            worker=forced_worker,
+            task=forced_task,
+            reason="Forced by console to resolve /redo merge conflicts immediately.",
+            roadmap_step="",
+            context_summary=prev,
+            worker_kwargs={},
+        )
+    else:
+        dec = orchestrator.decide_orchestrator(
+            ctx,
+            model=cfg.openai_model,
+            cfg=cfg,
+        )
+    if (
+        not forced_worker
+        and memory.user_instructions_new_has_pending(researcher_root)
+        and dec.worker != "planner"
+    ):
         dec = dec.model_copy(
             update={
                 "worker": "planner",
@@ -126,6 +152,8 @@ def choose_action(
     conn = _conn(db_path)
     try:
         conn.execute("BEGIN IMMEDIATE")
+        if forced_worker:
+            db.clear_forced_run(conn)
         db.append_run_event(
             conn,
             cycle=cycle,
