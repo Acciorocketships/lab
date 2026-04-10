@@ -567,15 +567,21 @@ class ResearchConsole(App[None]):
         if self._scheduler is None or not self._scheduler.is_alive():
             self._orchestrating = False
             self._stream_is_running_placeholder = False
+            if not self._stream_text_live and not self._stream_tool_markup:
+                self._clear_stream_status()
             return
         try:
             if db.get_system_state(self._conn).get("control_mode", "paused") != "active":
                 self._orchestrating = False
                 self._stream_is_running_placeholder = False
+                if not self._stream_text_live and not self._stream_tool_markup:
+                    self._clear_stream_status()
                 return
         except sqlite3.OperationalError:
             self._orchestrating = False
             self._stream_is_running_placeholder = False
+            if not self._stream_text_live and not self._stream_tool_markup:
+                self._clear_stream_status()
             return
         if self._orchestrating:
             self._orchestrating_tick += 1
@@ -749,13 +755,19 @@ class ResearchConsole(App[None]):
                 except (json.JSONDecodeError, TypeError):
                     pass
                 ok = payload.get("worker_ok", True)
+                error_excerpt = ""
+                if not ok:
+                    error_excerpt = events.extract_error_excerpt(
+                        row["summary"] or "",
+                        str(payload.get("error", "") or ""),
+                    )
                 stream_excerpt = events.extract_result_excerpt(
                     self._fetch_last_stream_text(cycle)
                 )
                 if not stream_excerpt:
                     stream_excerpt = events.extract_result_excerpt(self._last_stream_text)
                 summary_excerpt = events.extract_result_excerpt(row["summary"] or "")
-                excerpt = stream_excerpt or summary_excerpt
+                excerpt = stream_excerpt or (summary_excerpt if ok else "")
                 self._clear_stream_status()
                 self._refresh_file_changes(force=True)
                 self._file_changes_widget = None
@@ -777,7 +789,10 @@ class ResearchConsole(App[None]):
                     if result_w is not None:
                         self._current_cycle_widgets.append(result_w)
                 elif not ok:
-                    self._write_activity("  [dim](failed — no excerpt)[/]")
+                    if error_excerpt:
+                        self._write_activity(f"  [red]Error:[/] {rich_escape(error_excerpt)}")
+                    else:
+                        self._write_activity("  [dim](failed — no excerpt)[/]")
                 self._last_stream_text = ""
                 try:
                     sid_row = self._conn.execute(
@@ -966,6 +981,7 @@ class ResearchConsole(App[None]):
         scheduler_alive = bool(self._scheduler and self._scheduler.is_alive())
 
         if mode != "active" or not scheduler_alive:
+            db.set_control_mode(self._conn, "active")
             db.enqueue_event(self._conn, "resume", None)
         self._conn.commit()
 

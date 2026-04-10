@@ -273,7 +273,6 @@ def _default_tier_a_content(name: str) -> str:
         return (
             "# User instructions\n\n"
             "## New\n\n"
-            "(Instructions appended here by the console; they may be merged into the roadmap or handled as tasks.)\n\n"
             "## In progress\n\n"
             "## Completed\n\n"
         )
@@ -361,7 +360,7 @@ def write_user_instruction_new_section(researcher_root: Path, text: str) -> None
 
 
 def user_instructions_new_has_pending(researcher_root: Path) -> bool:
-    """True when ``user_instructions.md`` has actionable ``- `` bullets under ``## New`` (not the seed placeholder)."""
+    """True when ``user_instructions.md`` has non-empty ``- `` bullets under ``## New``."""
     path = state_dir(researcher_root) / "user_instructions.md"
     body = helpers.read_text(path, default="")
     if "## New" not in body:
@@ -374,14 +373,11 @@ def user_instructions_new_has_pending(researcher_root: Path) -> bool:
             break
         section_lines.append(line)
     section = "\n".join(section_lines)
-    placeholder = (
-        "(Instructions appended here by the console; they may be merged into the roadmap or handled as tasks.)"
-    )
     for line in section.splitlines():
         line = line.strip()
         if line.startswith("- "):
             rest = line[2:].strip()
-            if rest and rest != placeholder:
+            if rest:
                 return True
     return False
 

@@ -81,6 +81,7 @@ def test_cmd_start_enqueues_resume_when_scheduler_is_alive(tmp_path: Path) -> No
 
     pending = db.fetch_pending_events(conn)
     assert [row["kind"] for row in pending] == ["resume"]
+    assert db.get_system_state(conn)["control_mode"] == "active"
     assert console._orchestrating is True
 
     console._conn.close()
@@ -133,6 +134,36 @@ def test_submit_prompt_text_enqueues_instruction_then_runs_start(tmp_path: Path)
     pending = db.fetch_pending_events(conn)
     assert [row["kind"] for row in pending] == ["instruction", "resume"]
     assert pending[0]["payload"] == "Please investigate the flaky test."
+    assert db.get_system_state(conn)["control_mode"] == "active"
+    assert console._orchestrating is True
+
+    console._conn.close()
+
+
+def test_submit_prompt_text_instruction_then_start_separately_resumes_immediately(tmp_path: Path) -> None:
+    db_path = tmp_path / "runtime.db"
+    cfg = _cfg(tmp_path)
+    console = ResearchConsole(db_path, cfg)
+    conn = console._conn
+    db.get_system_state(conn)
+    db.set_control_mode(conn, "paused")
+    conn.commit()
+
+    writes: list[str] = []
+    console.query_one = _console_query_stub(writes)  # type: ignore[method-assign]
+
+    class FakeScheduler:
+        def is_alive(self) -> bool:
+            return True
+
+    console._scheduler = FakeScheduler()
+
+    console._submit_prompt_text("create gifs of the best runs for each method")
+    console._submit_prompt_text("/start")
+
+    pending = db.fetch_pending_events(conn)
+    assert [row["kind"] for row in pending] == ["instruction", "resume"]
+    assert db.get_system_state(conn)["control_mode"] == "active"
     assert console._orchestrating is True
 
     console._conn.close()
@@ -488,6 +519,43 @@ def test_worker_ok_from_payload_not_summary_substring(tmp_path: Path) -> None:
     pj = json.loads(row["payload_json"]) if row["payload_json"] else {}
     ok = pj.get("worker_ok", True)
     assert ok is True, "worker_ok should be True even though summary contains 'is_error'"
+
+
+def test_poll_run_events_surfaces_worker_error_excerpt(tmp_path: Path) -> None:
+    db_path = tmp_path / "runtime.db"
+    cfg = _cfg(tmp_path)
+    console = ResearchConsole(db_path, cfg)
+    writes: list[str] = []
+    console.query_one = _console_query_stub(writes)  # type: ignore[method-assign]
+    console._refresh_file_changes = lambda force=False: None  # type: ignore[method-assign]
+    conn = console._conn
+    db.get_system_state(conn)
+
+    db.append_run_event(
+        conn,
+        cycle=1,
+        kind="worker",
+        worker="reporter",
+        roadmap_step="",
+        task="write report",
+        summary="cycle crashed: openai.APIStatusError",
+        payload={
+            "worker_ok": False,
+            "error": (
+                "Traceback (most recent call last):\n"
+                "  File \"x.py\", line 1, in <module>\n"
+                "openai.APIStatusError: Error code: 402 - insufficient credits\n"
+                "During task with name 'choose' and id 'abc'\n"
+            ),
+        },
+    )
+    conn.commit()
+
+    console._poll_run_events()
+
+    assert any("Error:[/]" in m and "402 - insufficient credits" in m for m in writes)
+
+    console._conn.close()
     conn.close()
 
 
@@ -954,5 +1022,49 @@ def test_check_scheduler_health_ignores_paused_mode(tmp_path: Path) -> None:
 
     assert console._scheduler is None, "scheduler ref should be cleared"
     assert console._auto_restarts == 0, "should not have attempted a restart"
+
+    console._conn.close()
+
+
+def test_poll_animated_stream_status_clears_stale_placeholder_when_paused(tmp_path: Path) -> None:
+    db_path = tmp_path / "runtime.db"
+    cfg = _cfg(tmp_path)
+    console = ResearchConsole(db_path, cfg)
+    conn = console._conn
+    db.get_system_state(conn)
+    db.set_control_mode(conn, "paused")
+    conn.commit()
+
+    class AliveScheduler:
+        def is_alive(self) -> bool:
+            return True
+
+    class FakeStatic:
+        def __init__(self) -> None:
+            self.display = True
+            self.last = None
+
+        def update(self, value) -> None:
+            self.last = value
+
+    stream = FakeStatic()
+    header = FakeStatic()
+
+    def fake_query(sel: str, *args, **kwargs):
+        if sel == "#stream-text":
+            return stream
+        if sel == "#header":
+            return header
+        return _console_query_stub([])(sel, *args, **kwargs)
+
+    console.query_one = fake_query  # type: ignore[method-assign]
+    console._scheduler = AliveScheduler()
+    console._orchestrating = True
+    console._set_stream_placeholder("[dim]Orchestrating...[/]")
+
+    console._poll_animated_stream_status()
+
+    assert console._orchestrating is False
+    assert stream.display is False
 
     console._conn.close()

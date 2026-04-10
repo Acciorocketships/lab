@@ -1002,3 +1002,16 @@ def markdown_to_rich(text: str) -> RenderableType:
 def extract_result_excerpt(summary: str) -> str:
     """Clean a worker summary for display (preserves multi-line content)."""
     return summary.strip()
+
+
+def extract_error_excerpt(summary: str, error_text: str = "") -> str:
+    """Return a short, user-facing error line from a traceback or crash summary."""
+    for raw in reversed(error_text.splitlines()):
+        line = raw.strip()
+        if not line or line.startswith("During task with name"):
+            continue
+        return line
+    cleaned = summary.strip()
+    if cleaned.lower().startswith("cycle crashed:"):
+        cleaned = cleaned.split(":", 1)[1].strip()
+    return cleaned
