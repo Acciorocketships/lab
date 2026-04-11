@@ -85,6 +85,25 @@ def _git_repo_ok(project_dir: Path) -> bool:
         return False
 
 
+def current_git_branch(project_dir: Path) -> str:
+    """Return ``git rev-parse --abbrev-ref HEAD``, or empty if not a git repo / on error."""
+    if not _git_repo_ok(project_dir):
+        return ""
+    try:
+        r = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=project_dir,
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        if r.returncode != 0:
+            return ""
+        return (r.stdout or "").strip()
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return ""
+
+
 def capture_worker_diff_baseline(project_dir: Path, cycle: int) -> dict[str, Any] | None:
     """Snapshot working tree at worker start for live TUI diffs (see :func:`write_worker_diff_baseline`).
 

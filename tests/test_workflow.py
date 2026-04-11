@@ -140,7 +140,7 @@ def test_execute_worker_query_uses_query_prompt(tmp_path: Path, monkeypatch) -> 
     packet = captured["packet"]
     assert "# Worker: query" in packet
     assert "You are the Query agent." in packet
-    assert "search the local codebase and researcher files" in packet
+    assert "Search the local codebase and researcher files" in packet
 
 
 def test_run_loop_consumes_resume_while_paused(tmp_path: Path, monkeypatch) -> None:
@@ -438,6 +438,7 @@ def test_choose_action_uses_forced_run_before_orchestrator(tmp_path: Path, monke
         state,
         cfg=cfg,
         researcher_root=tmp_path,
+        project_dir=cfg.project_dir,
         db_path=db_path,
     )
 

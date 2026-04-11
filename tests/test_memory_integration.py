@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 from research_lab import helpers, memory, memory_extra, packets
@@ -126,6 +127,41 @@ def test_branch_memory_write_read(tmp_path: Path) -> None:
 
     assert memory_extra.read_branch_memory(tmp_path, "nonexistent/branch") == ""
     _log("branch_memory", results)
+
+
+def test_current_git_branch_empty_without_repo(tmp_path: Path) -> None:
+    assert memory.current_git_branch(tmp_path) == ""
+
+
+def test_current_git_branch_named_branch(tmp_path: Path) -> None:
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "orch@test"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "orch"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    (tmp_path / "f").write_text("x", encoding="utf-8")
+    subprocess.run(["git", "add", "f"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "init"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "branch", "-m", "orch_unit_branch"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    assert memory.current_git_branch(tmp_path) == "orch_unit_branch"
 
 
 # ---------------------------------------------------------------------------

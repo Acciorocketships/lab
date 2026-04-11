@@ -85,6 +85,7 @@ def choose_action(
     *,
     cfg: RunConfig,
     researcher_root: Path,
+    project_dir: Path,
     db_path: Path,
 ) -> dict[str, Any]:
     """Orchestrator chooses next worker; updates rolling context and logs orchestrator run_event."""
@@ -102,10 +103,12 @@ def choose_action(
 
     prev = memory.read_context_summary(researcher_root)
     tier = memory.load_tier_a_bundle(researcher_root)
+    git_branch = memory.current_git_branch(project_dir)
+    branch_for_ctx = (git_branch or str(state.get("current_branch", "") or "")).strip()
     ctx = memory.format_orchestrator_context(
         researcher_root,
         tier=tier,
-        current_branch=str(state.get("current_branch", "") or ""),
+        current_branch=branch_for_ctx,
         last_worker_output=str(state.get("last_action_summary", "") or ""),
         previous_context_summary=prev,
         prev_summary_max_chars=cfg.orchestrator_prev_summary_max_chars,
@@ -151,7 +154,7 @@ def choose_action(
         memory.write_context_summary(researcher_root, dec.context_summary)
     orch_summary = f"{dec.worker}: {dec.reason}"
     cycle = int(state.get("cycle_count", 0)) + 1
-    branch = dec.branch or state.get("current_branch", "") or ""
+    branch = branch_for_ctx
     conn = _conn(db_path)
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -223,9 +226,12 @@ def execute_worker(
         persona = worker_kwargs.get("persona", "")
         role_hint = critic_mod.critic_prompt(persona).strip()
     extra: dict[str, str] = {}
+    shared_work = shared_prompt.SHARED_WORK_GUIDANCE.strip()
     shared = shared_prompt.MEMORY_AND_TIER_A.strip()
     if role_hint:
         extra["Role"] = role_hint
+    if shared_work:
+        extra["Shared guidance"] = shared_work
     if shared:
         extra["Memory & Tier A"] = shared
     pkt = packets.build_worker_packet(
@@ -343,7 +349,9 @@ def build_graph(
         return ingest_events(s, db_path=db_path, researcher_root=researcher_root)
 
     def n_choose(s: ResearchState):
-        return choose_action(s, cfg=cfg, researcher_root=researcher_root, db_path=db_path)
+        return choose_action(
+            s, cfg=cfg, researcher_root=researcher_root, project_dir=project_dir, db_path=db_path
+        )
 
     def n_worker(s: ResearchState):
         return execute_worker(s, cfg=cfg, researcher_root=researcher_root, project_dir=project_dir, db_path=db_path)

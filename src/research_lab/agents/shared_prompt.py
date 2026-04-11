@@ -1,8 +1,15 @@
-"""Second block in worker packets (after **Role**): Tier A / memory rules. See `packets.build_worker_packet`."""
+"""Shared prompt blocks injected into every worker packet. See `packets.build_worker_packet`."""
 
 from __future__ import annotations
 
-# Paths are from the project (repo) root unless noted. Tier A list: memory.TIER_A_FILES.
+SHARED_WORK_GUIDANCE = """Prefer the smallest proof of concept or working slice that can validate the next idea, then expand.
+
+Use known-good baselines or simpler references as sanity checks when possible. When a complex setup behaves unexpectedly, step back to a simpler configuration and reintroduce components incrementally to locate the failure boundary.
+
+Prefer evidence from directly exercising the system over inspection alone when practical. Treat suspicious runtime behavior as a debugging signal even without an explicit crash: failed sanity checks, implausibly fast completion, hangs, outputs that stay equivalent across inputs that should change them, or results that seem too good to be true.
+
+You are one worker in a multi-agent system. Stay within your role. If the next step clearly belongs to a different specialist—planning, research, implementation, debugging, experimentation, review, critique, or reporting—stop and return with a concise recommendation for which agent should handle it rather than expanding your scope."""
+
 MEMORY_AND_TIER_A = """**Tier A** means `.airesearcher/state/<file>.md` (not a project-root `state/` folder). Keep those files current, along with `.airesearcher/memory/extended/`.
 
 All workers share responsibility for maintaining Tier A. If your run changes project truth, plans, status, durable lessons, or creates long-form memory elsewhere, update the relevant Tier A files in the same run. Do not assume planner or a later worker will clean this up for you. If a file's truth did not change, leave it alone.
@@ -25,6 +32,6 @@ All workers share responsibility for maintaining Tier A. If your run changes pro
 
 **Experiments:** link experiment dirs, outputs, and metrics from Tier A or extended so the next run can find them.
 
-Update memory **in the same run** when your work changes truth—do not assume a later pass fixes it.
+Update memory **in the same run** when your work changes truth; do not assume a later pass fixes it.
 
-**Extended files / catalog:** Tier A should stay short: usually just a few lines per concept. Use `.airesearcher/memory/extended/<name>.md` for long logs, raw artifacts, detailed findings, expanded notes, transcripts, or other material that is too long to fit cleanly in Tier A. When you add or update an extended file, do two things in the same run: put a short pointer in the Tier A file where that information matters, and add or refresh an entry in **`extended_memory_index.md`** describing what is in the file. The more important the material is, the longer the Tier A excerpt can be, but keep Tier A distilled and high-signal. Extended file bodies are **not** inlined into packets—if someone needs the unabridged version later, they should open that file explicitly with tools (or have a subagent do it)."""
+**Extended files / catalog:** Tier A should stay short, usually just a few lines per concept. Use `.airesearcher/memory/extended/<name>.md` for long logs, raw artifacts, detailed findings, expanded notes, transcripts, or other material that is too long to fit cleanly in Tier A. When you add or update an extended file, do two things in the same run: put a short pointer in the Tier A file where that information matters, and add or refresh an entry in **`extended_memory_index.md`** describing what is in the file. The more important the material is, the longer the Tier A excerpt can be, but keep Tier A distilled and high-signal. Extended file bodies are **not** inlined into packets; if someone needs the unabridged version later, they should open that file explicitly with tools (or have a subagent do it)."""

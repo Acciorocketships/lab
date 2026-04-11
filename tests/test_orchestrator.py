@@ -47,14 +47,14 @@ def test_orchestrator_prompt_biases_toward_post_implementation_review() -> None:
 def test_reviewer_and_critic_prompts_require_hands_on_validation() -> None:
     """Reviewer and critic should stress actual interaction, not only inspection."""
     assert "stress test" in reviewer.SYSTEM_PROMPT
-    assert "acting as a user" in reviewer.SYSTEM_PROMPT
-    assert "interact with it the way a human would want to" in critic.SYSTEM_PROMPT
-    assert "request the missing harness, demo, or artifact" in critic.critic_prompt("engineer")
+    assert "like a real user" in reviewer.SYSTEM_PROMPT
+    assert "interact with it like a human" in critic.SYSTEM_PROMPT
+    assert "recommend the missing demo surface, harness, or artifact" in critic.critic_prompt("engineer")
 
 
 def test_orchestrator_and_experimenter_prompts_assign_long_runs_to_experimenter() -> None:
     """Long-running experiments should be launched and monitored by the experimenter."""
-    assert "Long-running training jobs, evaluations, sweeps" in _ORCH_JSON_SYSTEM
-    assert "actually launching runs, training jobs, sweeps, and evaluations" in _ORCH_JSON_SYSTEM
+    assert "Long-running training jobs, sweeps, and evaluations" in _ORCH_JSON_SYSTEM
+    assert "experimenter" in _ORCH_JSON_SYSTEM
     assert "Do not assume a human will kick off training runs" in experimenter.SYSTEM_PROMPT
     assert "check back periodically" in experimenter.SYSTEM_PROMPT
