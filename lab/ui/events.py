@@ -319,37 +319,37 @@ def format_worker_result_excerpt(ok: bool, result_text: str = "") -> str:
 # Stream-JSON chunk parsing (tool call activity for the live status line)
 # ---------------------------------------------------------------------------
 
-# Regular ASCII space after emoji. En space (U+2002) and other unicode spaces
-# often render with no visible gap next to emoji+VS16 in monospace/Textual UIs.
+# ASCII space between icon and verb. ``Write`` also keeps a trailing space on
+# ``✍️`` in ``_TOOL_LABELS`` so tight monospace layouts still separate pencil from “Writing”.
 _TOOL_EMOJI_GAP = " "
 
 
 def _tool_line(emoji: str, rest: str) -> str:
-    """``emoji`` + visible gap + *rest* (already trimmed)."""
+    """``emoji`` + ``_TOOL_EMOJI_GAP`` + *rest* (trimmed). *emoji* may end with a space."""
     r = rest.strip()
     return f"{emoji}{_TOOL_EMOJI_GAP}{r}" if r else f"{emoji}{_TOOL_EMOJI_GAP}"
 
 
 _TOOL_LABELS: dict[str, tuple[str, str, tuple[str, ...]]] = {
     "Read": ("📖", "Reading", ("file_path", "path")),
-    "View": ("📖", "Reading", ("file_path", "path")),
-    "Write": ("✍️", "Writing", ("file_path", "path")),
+    "View": ("👁️", "Viewing", ("file_path", "path")),
+    "Write": ("✍️ ", "Writing", ("file_path", "path")),
     "Create": ("🆕", "Creating", ("file_path", "path")),
-    "Edit": ("✍️", "Editing", ("file_path", "path")),
-    "Replace": ("✍️", "Editing", ("file_path", "path")),
-    "StrReplace": ("✍️", "Editing", ("file_path", "path")),
-    "MultiEdit": ("✍️", "Editing", ("file_path", "path")),
-    "Bash": ("▶️", "Running", ("command",)),
-    "Shell": ("▶️", "Running", ("command",)),
-    "Execute": ("▶️", "Running", ("command",)),
-    "Grep": ("🔎", "Searching", ("pattern", "query")),
-    "Search": ("🔎", "Searching", ("pattern", "query")),
-    "RipGrep": ("🔎", "Searching", ("pattern", "query")),
+    "Edit": ("📝", "Editing", ("file_path", "path")),
+    "Replace": ("🔄", "Replacing", ("file_path", "path")),
+    "StrReplace": ("🔤", "String replacing", ("file_path", "path")),
+    "MultiEdit": ("🧩", "Multiple edits", ("file_path", "path")),
+    "Bash": ("💻", "Running", ("command",)),
+    "Shell": ("🐚", "Running in shell", ("command",)),
+    "Execute": ("🚀", "Executing", ("command",)),
+    "Grep": ("🔍", "Searching", ("pattern", "query")),
+    "Search": ("🕵️", "Searching", ("pattern", "query")),
+    "RipGrep": ("⚡", "Fast searching", ("pattern", "query")),
     "Glob": ("📂", "Finding files", ("pattern", "glob_pattern")),
-    "ListFiles": ("📂", "Listing", ("path", "directory")),
+    "ListFiles": ("🗂️", "Listing", ("path", "directory")),
     "TodoWrite": ("🧭", "Planning", ()),
     "WebSearch": ("🌐", "Web search", ("search_term", "query")),
-    "WebFetch": ("🌐", "Fetching", ("url",)),
+    "WebFetch": ("📡", "Fetching", ("url",)),
     "Task": ("🤖", "Dispatching agent", ("description",)),
     "SemanticSearch": ("🧠", "Semantic search", ("query",)),
     "Git": ("🌿", "Git", ("command",)),

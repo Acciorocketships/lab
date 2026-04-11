@@ -734,9 +734,6 @@ class ResearchConsole(App[None]):
 
             if kind == "orchestrator":
                 self._orchestrating = False
-                # Clear slash-command / status lines on every orchestrator pass, not
-                # only when cycle or worker changes (those can match across retries).
-                self._clear_below_stream_feedback()
                 new_cycle = cycle != self._last_cycle or worker != self._last_worker
                 if new_cycle:
                     if self._cycle_header_widget is not None:
@@ -851,6 +848,10 @@ class ResearchConsole(App[None]):
                         self._last_stream_id = max(self._last_stream_id, int(sid_row[0]))
                 except sqlite3.OperationalError:
                     pass
+                # Slash-command / status lines under the stream belong to the open
+                # cycle; clear when the worker finishes (including graceful pause with
+                # no immediate follow-up orchestrator event).
+                self._clear_below_stream_feedback()
                 if self._scheduler and self._scheduler.is_alive():
                     self._orchestrating = True
 

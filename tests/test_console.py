@@ -16,10 +16,6 @@ from lab.config import RunConfig
 from lab.ui import events
 from lab.ui.console import ResearchConsole
 
-# Matches ``events._TOOL_EMOJI_GAP`` (en space) after tool icons in one-line summaries.
-_EGAP = " "
-
-
 def _console_query_stub(captured: list[str]):
     """Minimal Textual stand-ins so console methods can mount activity lines."""
 
@@ -566,6 +562,90 @@ def test_poll_run_events_surfaces_worker_error_excerpt(tmp_path: Path) -> None:
     conn.close()
 
 
+def test_poll_run_events_clears_below_stream_after_worker_not_on_orchestrator(
+    tmp_path: Path,
+) -> None:
+    """Ephemeral slash-command lines should clear when the worker finishes, not on the next orchestrator tick."""
+    db_path = tmp_path / "runtime.db"
+    cfg = _cfg(tmp_path)
+    cfg.project_dir.mkdir(parents=True)
+    console = ResearchConsole(db_path, cfg)
+    conn = console._conn
+    db.get_system_state(conn)
+
+    class FakeScroll:
+        is_vertical_scroll_end = True
+        is_vertical_scrollbar_grabbed = False
+
+        def mount(self, w, before=None, after=None) -> None:
+            pass
+
+        def scroll_end(self, animate: bool = False) -> None:
+            pass
+
+        def scroll_to_widget(self, *args, **kwargs) -> None:
+            pass
+
+    class FakeStatic:
+        def update(self, *args, **kwargs) -> None:
+            pass
+
+        display = True
+
+    def fake_query(sel: str, *args, **kwargs):
+        if sel == "#activity-scroll":
+            return FakeScroll()
+        return FakeStatic()
+
+    console.query_one = fake_query  # type: ignore[method-assign]
+    console.call_after_refresh = lambda fn: fn()  # type: ignore[method-assign]
+    console._refresh_file_changes = lambda force=False: None  # type: ignore[method-assign]
+    console._fetch_last_stream_text = lambda cycle: ""  # type: ignore[method-assign]
+    console._scroll_to_bottom = lambda: None  # type: ignore[method-assign]
+
+    clear_calls = 0
+    real_clear = console._clear_below_stream_feedback
+
+    def counting_clear() -> None:
+        nonlocal clear_calls
+        clear_calls += 1
+        real_clear()
+
+    console._clear_below_stream_feedback = counting_clear  # type: ignore[method-assign]
+
+    db.append_run_event(
+        conn,
+        cycle=1,
+        kind="orchestrator",
+        worker="planner",
+        roadmap_step="",
+        task="t1",
+        summary="",
+        payload=None,
+    )
+    conn.commit()
+
+    console._poll_run_events()
+    assert clear_calls == 0
+
+    db.append_run_event(
+        conn,
+        cycle=1,
+        kind="worker",
+        worker="planner",
+        roadmap_step="",
+        task="t1",
+        summary="done",
+        payload={"worker_ok": True},
+    )
+    conn.commit()
+
+    console._poll_run_events()
+    assert clear_calls == 1
+
+    console._conn.close()
+
+
 # ---------------------------------------------------------------------------
 # _fetch_last_stream_text prefers the result event over individual deltas
 # ---------------------------------------------------------------------------
@@ -654,7 +734,34 @@ def test_parse_stream_event_nested_tool_call_includes_argument() -> None:
         },
     })
     result = events.parse_stream_event(chunk)
-    assert result == ("tool", f"📖{_EGAP}Reading /tmp/project/src/train.py")
+    assert result == ("tool", "📖 Reading /tmp/project/src/train.py")
+
+
+def test_parse_stream_event_write_tool_call_extra_space_after_pencil() -> None:
+    """``Write`` uses ``✍️ `` in labels plus ``_TOOL_EMOJI_GAP`` so the verb does not crowd the icon."""
+    chunk = json.dumps({
+        "type": "tool_call",
+        "tool_call": {
+            "writeToolCall": {
+                "args": {"path": "/tmp/out.md"},
+            }
+        },
+    })
+    result = events.parse_stream_event(chunk)
+    assert result == ("tool", "✍️  Writing /tmp/out.md")
+
+
+def test_parse_stream_event_edit_tool_call_includes_path() -> None:
+    chunk = json.dumps({
+        "type": "tool_call",
+        "tool_call": {
+            "editToolCall": {
+                "args": {"path": "/tmp/roadmap.md"},
+            }
+        },
+    })
+    result = events.parse_stream_event(chunk)
+    assert result == ("tool", "📝 Editing /tmp/roadmap.md")
 
 
 def test_parse_stream_event_shell_tool_call_includes_command() -> None:
@@ -669,7 +776,7 @@ def test_parse_stream_event_shell_tool_call_includes_command() -> None:
         },
     })
     result = events.parse_stream_event(chunk)
-    assert result == ("tool", f"▶️{_EGAP}Running pytest tests/test_console.py -q")
+    assert result == ("tool", "🐚 Running in shell pytest tests/test_console.py -q")
 
 
 def test_parse_stream_event_git_shell_tool_call_uses_git_label() -> None:
@@ -684,7 +791,7 @@ def test_parse_stream_event_git_shell_tool_call_uses_git_label() -> None:
         },
     })
     result = events.parse_stream_event(chunk)
-    assert result == ("tool", f"🌿{_EGAP}Git git status --short")
+    assert result == ("tool", "🌿 Git git status --short")
 
 
 def test_parse_stream_event_shell_tool_call_keeps_description() -> None:
@@ -702,7 +809,7 @@ def test_parse_stream_event_shell_tool_call_keeps_description() -> None:
     result = events.parse_stream_event(chunk)
     assert result == (
         "tool",
-        f"▶️{_EGAP}Running python -m pytest -q --tb=line (Run full pytest suite)",
+        "🐚 Running in shell python -m pytest -q --tb=line (Run full pytest suite)",
     )
 
 
@@ -721,7 +828,7 @@ def test_parse_stream_event_semsearch_tool_call_formats_query() -> None:
     result = events.parse_stream_event(chunk)
     assert result == (
         "tool",
-        f"🧠{_EGAP}Semantic search Where is train_extrinsic_baseline defined?",
+        "🧠 Semantic search Where is train_extrinsic_baseline defined?",
     )
 
 
@@ -740,7 +847,7 @@ def test_parse_stream_event_grep_tool_call_formats_pattern_and_path() -> None:
     result = events.parse_stream_event(chunk)
     assert result == (
         "tool",
-        f"🔎{_EGAP}Searching train_iters|frames_per_batch in /tmp/project/scripts",
+        "🔍 Searching train_iters|frames_per_batch in /tmp/project/scripts",
     )
 
 
@@ -759,7 +866,7 @@ def test_parse_stream_event_read_lints_tool_call_formats_paths() -> None:
         },
     })
     result = events.parse_stream_event(chunk)
-    assert result == ("tool", f"🩺{_EGAP}Checking lints /tmp/project/a.py, /tmp/project/b.py")
+    assert result == ("tool", "🩺 Checking lints /tmp/project/a.py, /tmp/project/b.py")
 
 
 def test_parse_stream_event_skips_result() -> None:
