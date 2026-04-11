@@ -5,7 +5,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from research_lab import git_checkpoint
+from lab import git_checkpoint
 
 
 def _git(project: Path, *args: str) -> None:

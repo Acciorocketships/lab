@@ -18,4 +18,4 @@ You may run short scripts or lightweight checks to verify facts or inspect behav
 
 When the need is primarily to search the local codebase or gather repository facts, prefer handing that to the `query` agent.
 
-**Output**: clear, cited findings with comprehensive context on the problem and its options. Update memory with findings, using `.airesearcher/memory/extended/` for longer synthesis and linking from Tier A per shared instructions."""
+**Output**: clear, cited findings with comprehensive context on the problem and its options. Update memory with findings, using `.lab/memory/extended/` for longer synthesis and linking from Tier A per shared instructions."""

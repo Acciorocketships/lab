@@ -22,7 +22,7 @@ def _resolve_timeout_sec(explicit: int | None) -> int | None:
     """Seconds cap for subprocess, or None for no limit (default)."""
     if explicit is not None:
         return None if explicit <= 0 else explicit
-    raw = os.environ.get("AIRESEARCHER_CURSOR_TIMEOUT_SEC")
+    raw = os.environ.get("LAB_CURSOR_TIMEOUT_SEC")
     if raw is None or raw.strip() == "":
         return None
     try:
@@ -70,7 +70,7 @@ def run_agent_print(
     """Run `cursor agent --model … -p` (headless) with optional line-by-line streaming via *on_chunk*.
 
     *timeout_sec*: cap in seconds, or ``None`` / ``<= 0`` for no cap (default). Env
-    ``AIRESEARCHER_CURSOR_TIMEOUT_SEC`` applies when *timeout_sec* is omitted.
+    ``LAB_CURSOR_TIMEOUT_SEC`` applies when *timeout_sec* is omitted.
     """
     effective_format = "stream-json" if on_chunk is not None else output_format
     cmd = _build_cmd(

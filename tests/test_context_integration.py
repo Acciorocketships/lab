@@ -6,8 +6,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-from research_lab import helpers, memory, packets
-from research_lab.config import RunConfig
+from lab import helpers, memory, packets
+from lab.config import RunConfig
 
 LOG_DIR = Path(__file__).parent / "logs"
 

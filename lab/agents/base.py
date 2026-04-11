@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable, Literal
 
-from research_lab.tools import claude_code, cursor_cli
+from lab.tools import claude_code, cursor_cli
 
 Backend = Literal["claude", "cursor"]
 StreamCallback = Callable[[str], None]

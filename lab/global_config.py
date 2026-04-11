@@ -1,4 +1,4 @@
-"""Global (~/.airesearcher/) configuration with TOML persistence."""
+"""Global (~/.lab/) configuration with TOML persistence."""
 
 from __future__ import annotations
 
@@ -7,18 +7,18 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-GLOBAL_DIR = Path.home() / ".airesearcher"
+GLOBAL_DIR = Path.home() / ".lab"
 GLOBAL_CONFIG_PATH = GLOBAL_DIR / "config.toml"
 GLOBAL_OAUTH_PATH = GLOBAL_DIR / "oauth_tokens.json"
 
-PROJECT_DIR_NAME = ".airesearcher"
+PROJECT_DIR_NAME = ".lab"
 # Sentinel written by `init_project_at`; presence means the project is initialized.
 _PROJECT_INITIALIZED_SENTINEL = ".initialized"
 
 
 @dataclass
 class GlobalConfig:
-    """Persisted in ~/.airesearcher/config.toml."""
+    """Persisted in ~/.lab/config.toml."""
 
     provider: str = "openrouter"
     model_name: str = "google/gemini-2.5-flash-lite"
@@ -117,17 +117,17 @@ def project_is_initialized(project_dir: Path) -> bool:
     ``init_project_at``), then falls back to the legacy per-project ``config.toml``
     for projects initialized before this refactor.
     """
-    airesearcher = project_dir / PROJECT_DIR_NAME
-    if (airesearcher / _PROJECT_INITIALIZED_SENTINEL).is_file():
+    lab_root = project_dir / PROJECT_DIR_NAME
+    if (lab_root / _PROJECT_INITIALIZED_SENTINEL).is_file():
         return True
     # Legacy compatibility: pre-refactor projects used a per-project config.toml.
-    if (airesearcher / "config.toml").is_file():
+    if (lab_root / "config.toml").is_file():
         return True
     return False
 
 
 def mark_project_initialized(project_dir: Path) -> None:
-    """Write the ``.initialized`` sentinel under ``.airesearcher/``."""
+    """Write the ``.initialized`` sentinel under ``.lab/``."""
     sentinel = project_dir / PROJECT_DIR_NAME / _PROJECT_INITIALIZED_SENTINEL
     sentinel.parent.mkdir(parents=True, exist_ok=True)
     sentinel.write_text("", encoding="utf-8")

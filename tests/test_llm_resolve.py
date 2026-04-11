@@ -2,8 +2,8 @@
 
 from pathlib import Path
 
-from research_lab.config import RunConfig
-from research_lab.llm import (
+from lab.config import RunConfig
+from lab.llm import (
     describe_orchestrator_credential_source,
     resolve_llm_api_key,
     resolve_llm_base_url,

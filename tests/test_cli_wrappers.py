@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from research_lab.tools import claude_code, cursor_cli
+from lab.tools import claude_code, cursor_cli
 
 
 def test_claude_missing(tmp_path: Path) -> None:

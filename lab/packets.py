@@ -6,8 +6,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-from research_lab import helpers, memory
-from research_lab import memory_extra
+from lab import helpers, memory
+from lab import memory_extra
 
 # Shared for all CLI workers (long-running commands, hangs).
 _WORKER_RUNTIME_CONDUCT = """## Commands and long-running work

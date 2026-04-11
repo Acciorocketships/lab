@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 
-from research_lab import helpers
+from lab import helpers
 
 
 def test_write_read_json(tmp_path: Path) -> None:

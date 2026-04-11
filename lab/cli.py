@@ -1,4 +1,4 @@
-"""CLI entry points for the `lab` command — thin wrapper around :mod:`research_lab.runner`."""
+"""CLI entry points for the `lab` command — thin wrapper around :mod:`lab.runner`."""
 
 from __future__ import annotations
 
@@ -6,12 +6,12 @@ from pathlib import Path
 
 import click
 
-from research_lab.global_config import (
+from lab.global_config import (
     global_config_exists,
     load_global_config,
     project_is_initialized,
 )
-from research_lab.runner import (
+from lab.runner import (
     LabConfigError,
     init_project_at,
     read_multiline_terminal,
@@ -66,7 +66,7 @@ def init() -> None:
 
     project_dir = Path.cwd()
     if project_is_initialized(project_dir):
-        click.echo(f"Project already initialized at {project_dir / '.airesearcher'}")
+        click.echo(f"Project already initialized at {project_dir / '.lab'}")
         if not click.confirm("Overwrite project config?", default=False):
             return
         overwrite = True

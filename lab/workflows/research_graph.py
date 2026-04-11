@@ -10,8 +10,8 @@ from typing import Any
 
 from langgraph.graph import END, START, StateGraph
 
-from research_lab import control, db, git_checkpoint, memory, orchestrator, packets
-from research_lab.agents import (
+from lab import control, db, git_checkpoint, memory, orchestrator, packets
+from lab.agents import (
     base as agents_base,
     critic as critic_mod,
     debugger,
@@ -26,8 +26,8 @@ from research_lab.agents import (
     shared_prompt,
     skill_writer,
 )
-from research_lab.config import RunConfig
-from research_lab.state import ResearchState
+from lab.config import RunConfig
+from lab.state import ResearchState
 
 _WORKER_MODULES: dict[str, Any] = {
     "planner": planner,

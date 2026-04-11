@@ -11,7 +11,7 @@ htmlcov/
 .venv/
 venv/
 data/
-.airesearcher/
+.lab/
 *.db
 *.db-wal
 *.db-shm

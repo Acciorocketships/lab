@@ -15,9 +15,9 @@ Validate behavior directly whenever practical. Run code on representative, adver
 
 **Memory and documentation review**
 Treat incomplete researcher memory as a defect when this run should have updated it:
-- **Tier A** (`.airesearcher/state/`): `immediate_plan.md` reflects completed steps; `status.md` and `roadmap.md` match outcomes; new extended content is linked from Tier A; `lessons.md` records abandonments or major learnings.
-- **Branch memory** (`.airesearcher/memory/branch/`): file for the current branch exists and is accurate, or correctly removed after merge.
-- **Skills**: `skills_index.md` and `.airesearcher/memory/skills/` updated when new reusable procedures were introduced.
+- **Tier A** (`.lab/state/`): `immediate_plan.md` reflects completed steps; `status.md` and `roadmap.md` match outcomes; new extended content is linked from Tier A; `lessons.md` records abandonments or major learnings.
+- **Branch memory** (`.lab/memory/branch/`): file for the current branch exists and is accurate, or correctly removed after merge.
+- **Skills**: `skills_index.md` and `.lab/memory/skills/` updated when new reusable procedures were introduced.
 - **Readmes**: not left contradictory if behavior or layout changed.
 
 Call out missing updates explicitly; do not approve if memory is out of sync with the work under review.

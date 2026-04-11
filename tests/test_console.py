@@ -11,19 +11,23 @@ from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.table import Table
 
-from research_lab import db, git_checkpoint
-from research_lab.config import RunConfig
-from research_lab.ui import events
-from research_lab.ui.console import ResearchConsole
+from lab import db, git_checkpoint
+from lab.config import RunConfig
+from lab.ui import events
+from lab.ui.console import ResearchConsole
 
 # Matches ``events._TOOL_EMOJI_GAP`` (en space) after tool icons in one-line summaries.
-_EGAP = "\u2002"
+_EGAP = " "
 
 
 def _console_query_stub(captured: list[str]):
     """Minimal Textual stand-ins so console methods can mount activity lines."""
 
     class FakeScroll:
+        # Match Textual scroll-follow checks used by ``ResearchConsole._activity_viewport_at_bottom``.
+        is_vertical_scroll_end = True
+        is_vertical_scrollbar_grabbed = False
+
         def mount(self, w, before=None, after=None) -> None:
             text = getattr(w, "content", None) or getattr(w, "renderable", None)
             captured.append(str(text) if text is not None else "")
@@ -47,7 +51,7 @@ def _console_query_stub(captured: list[str]):
 
 def _cfg(tmp_path: Path) -> RunConfig:
     project_dir = tmp_path / "project"
-    researcher_root = project_dir / ".airesearcher"
+    researcher_root = project_dir / ".lab"
     return RunConfig(
         researcher_root=researcher_root,
         project_dir=project_dir,

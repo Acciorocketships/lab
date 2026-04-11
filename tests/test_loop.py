@@ -3,13 +3,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from research_lab.config import RunConfig
-from research_lab.loop import SchedulerProcessHandle, spawn_scheduler
+from lab.config import RunConfig
+from lab.loop import SchedulerProcessHandle, spawn_scheduler
 
 
 def _cfg(tmp_path: Path) -> RunConfig:
     project_dir = tmp_path / "project"
-    researcher_root = project_dir / ".airesearcher"
+    researcher_root = project_dir / ".lab"
     return RunConfig(
         researcher_root=researcher_root,
         project_dir=project_dir,
@@ -42,7 +42,7 @@ def test_spawn_scheduler_launches_subprocess(monkeypatch, tmp_path: Path) -> Non
         def wait(self, timeout: float | None = None) -> int:
             return self.returncode or 0
 
-    monkeypatch.setattr("research_lab.loop.subprocess.Popen", FakePopen)
+    monkeypatch.setattr("lab.loop.subprocess.Popen", FakePopen)
 
     handle = spawn_scheduler(
         db_path,
@@ -56,7 +56,7 @@ def test_spawn_scheduler_launches_subprocess(monkeypatch, tmp_path: Path) -> Non
     assert len(calls) == 1
     cmd = calls[0]["cmd"]
     assert Path(cmd[0]).name.startswith("python")
-    assert cmd[1:3] == ["-m", "research_lab.loop"]
+    assert cmd[1:3] == ["-m", "lab.loop"]
     assert cmd[3] == "run-scheduler"
     assert cmd[4] == str(db_path)
     payload = json.loads(cmd[5])

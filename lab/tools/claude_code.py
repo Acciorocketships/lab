@@ -22,7 +22,7 @@ def _resolve_timeout_sec(explicit: int | None) -> int | None:
     """Seconds cap for subprocess, or None for no limit (default)."""
     if explicit is not None:
         return None if explicit <= 0 else explicit
-    raw = os.environ.get("AIRESEARCHER_CLAUDE_TIMEOUT_SEC")
+    raw = os.environ.get("LAB_CLAUDE_TIMEOUT_SEC")
     if raw is None or raw.strip() == "":
         return None
     try:
@@ -69,7 +69,7 @@ def run_print(
     """Run `claude -p` and parse JSON output when possible.
 
     *timeout_sec*: cap in seconds, or ``None`` / ``<= 0`` for no cap (default). Env
-    ``AIRESEARCHER_CLAUDE_TIMEOUT_SEC`` applies when *timeout_sec* is omitted.
+    ``LAB_CLAUDE_TIMEOUT_SEC`` applies when *timeout_sec* is omitted.
     """
     effective_format = "stream-json" if on_chunk is not None else "json"
     cmd = _build_cmd(

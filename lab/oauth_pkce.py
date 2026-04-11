@@ -24,7 +24,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
 
-from research_lab.config import RunConfig
+from lab.config import RunConfig
 
 
 def _b64url(data: bytes) -> str:

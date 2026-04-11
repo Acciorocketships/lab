@@ -18,7 +18,7 @@ from pathlib import Path
 _log = logging.getLogger(__name__)
 
 CHECKPOINT_BRANCH = "checkpoints"
-_EXCLUDE_PATHSPEC = ":(exclude).airesearcher"
+_EXCLUDE_PATHSPEC = ":(exclude).lab"
 
 
 def is_git_repo(project_dir: Path) -> bool:
@@ -33,7 +33,7 @@ def ensure_git_repo(project_dir: Path) -> None:
     subprocess.run(
         ["git", "init"], cwd=project_dir, check=True, capture_output=True,
     )
-    _ensure_airesearcher_excluded(project_dir)
+    _ensure_lab_excluded(project_dir)
     env = _checkpoint_env()
     subprocess.run(
         ["git", "add", "-A"],
@@ -45,11 +45,11 @@ def ensure_git_repo(project_dir: Path) -> None:
     )
 
 
-def _ensure_airesearcher_excluded(project_dir: Path) -> None:
-    """Append ``.airesearcher/`` to ``.git/info/exclude`` so runtime data never
+def _ensure_lab_excluded(project_dir: Path) -> None:
+    """Append ``.lab/`` to ``.git/info/exclude`` so runtime data never
     leaks into checkpoint trees (idempotent)."""
     exclude_path = project_dir / ".git" / "info" / "exclude"
-    pattern = ".airesearcher/"
+    pattern = ".lab/"
     if exclude_path.is_file():
         content = exclude_path.read_text(encoding="utf-8")
         if pattern in content:
@@ -63,10 +63,10 @@ def _ensure_airesearcher_excluded(project_dir: Path) -> None:
 
 def _checkpoint_env(tmp_index: Path | None = None) -> dict[str, str]:
     env = os.environ.copy()
-    env["GIT_AUTHOR_NAME"] = "airesearcher"
-    env["GIT_AUTHOR_EMAIL"] = "airesearcher@local"
-    env["GIT_COMMITTER_NAME"] = "airesearcher"
-    env["GIT_COMMITTER_EMAIL"] = "airesearcher@local"
+    env["GIT_AUTHOR_NAME"] = "lab"
+    env["GIT_AUTHOR_EMAIL"] = "lab@local"
+    env["GIT_COMMITTER_NAME"] = "lab"
+    env["GIT_COMMITTER_EMAIL"] = "lab@local"
     if tmp_index is not None:
         env["GIT_INDEX_FILE"] = str(tmp_index)
     return env
@@ -81,7 +81,7 @@ def _snapshot_paths(project_dir: Path) -> list[str]:
     if result.returncode != 0 or not result.stdout:
         return []
     raw = result.stdout.decode("utf-8", errors="ignore")
-    return [part for part in raw.split("\x00") if part and part != ".airesearcher"]
+    return [part for part in raw.split("\x00") if part and part != ".lab"]
 
 
 # ---------------------------------------------------------------------------
@@ -98,7 +98,7 @@ def create_checkpoint(project_dir: Path, cycle: int, worker: str) -> str | None:
         _log.warning("Not a git repo — skipping checkpoint: %s", project_dir)
         return None
 
-    _ensure_airesearcher_excluded(project_dir)
+    _ensure_lab_excluded(project_dir)
 
     git_dir = project_dir / ".git"
     tmp_index = git_dir / "checkpoint_index_tmp"
@@ -259,7 +259,7 @@ def snapshot_ref(
     if not is_git_repo(project_dir):
         return None
 
-    _ensure_airesearcher_excluded(project_dir)
+    _ensure_lab_excluded(project_dir)
 
     git_dir = project_dir / ".git"
     tmp_index = git_dir / "snapshot_index_tmp"
@@ -298,7 +298,7 @@ def snapshot_ref(
 
 def restore_working_tree(project_dir: Path, treeish: str) -> bool:
     """Public wrapper to restore working tree/index to *treeish*."""
-    _ensure_airesearcher_excluded(project_dir)
+    _ensure_lab_excluded(project_dir)
     return _restore_working_tree_to_treeish(project_dir, treeish)
 
 
@@ -364,7 +364,7 @@ def revert_to_checkpoint(project_dir: Path) -> int | None:
         _log.info("No checkpoints branch — nothing to revert.")
         return None
 
-    _ensure_airesearcher_excluded(project_dir)
+    _ensure_lab_excluded(project_dir)
     cycle = get_checkpoint_cycle(project_dir)
 
     if not _restore_working_tree_to_treeish(project_dir, CHECKPOINT_BRANCH):
@@ -383,7 +383,7 @@ def restore_pre_checkpoint_state(project_dir: Path) -> bool:
     if not is_git_repo(project_dir):
         return False
 
-    _ensure_airesearcher_excluded(project_dir)
+    _ensure_lab_excluded(project_dir)
     if not _restore_working_tree_to_treeish(project_dir, "HEAD"):
         return False
 
@@ -431,7 +431,7 @@ def restore_checkpoint_at_or_before_cycle(project_dir: Path, max_cycle: int) -> 
         _log.info("No checkpoint commit with cycle ≤ %s", max_cycle)
         return None
 
-    _ensure_airesearcher_excluded(project_dir)
+    _ensure_lab_excluded(project_dir)
     if not _restore_working_tree_to_treeish(project_dir, best_sha):
         return None
 

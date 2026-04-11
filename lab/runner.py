@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from research_lab import db, memory
-from research_lab.config import RunConfig
-from research_lab.global_config import (
+from lab import db, memory
+from lab.config import RunConfig
+from lab.global_config import (
     GLOBAL_CONFIG_PATH,
     GLOBAL_DIR,
     GLOBAL_OAUTH_PATH,
@@ -80,8 +80,8 @@ def read_multiline_terminal(click_mod: object | None = None) -> str:
 
 def run_auth_test(project_dir: Path) -> None:
     """Print orchestrator credential source and run one minimal routing LLM call."""
-    from research_lab import llm
-    from research_lab.orchestrator import (
+    from lab import llm
+    from lab.orchestrator import (
         decide_orchestrator,
         missing_orchestrator_credentials_hint,
     )
@@ -122,7 +122,7 @@ def run_auth_test(project_dir: Path) -> None:
 def ensure_console_ready(project_dir: Path) -> tuple[Path, RunConfig]:
     """Load global config, ensure memory layout, pause active scheduler row, return db path and RunConfig.
 
-    Requires ``~/.airesearcher/config.toml`` and an initialized project (see ``lab init``).
+    Requires ``~/.lab/config.toml`` and an initialized project (see ``lab init``).
     """
     if not global_config_exists():
         raise LabConfigError("Global config not found. Run `lab setup` first (or `runner.run_interactive_global_setup()`).")
@@ -131,7 +131,7 @@ def ensure_console_ready(project_dir: Path) -> tuple[Path, RunConfig]:
             f"Project not initialized at {project_dir}. Run `lab init` first (or `runner.init_project_at()`)."
         )
 
-    from research_lab.git_checkpoint import ensure_git_repo
+    from lab.git_checkpoint import ensure_git_repo
 
     gcfg = load_global_config()
     run_cfg = RunConfig.from_configs(gcfg, project_dir)
@@ -182,7 +182,7 @@ def run_console_session(
         finally:
             conn.close()
 
-    from research_lab.ui.console import run_console
+    from lab.ui.console import run_console
 
     run_console(db_path, cfg)
 
@@ -228,7 +228,7 @@ def init_project_at(
     preferences: str = "",
     overwrite: bool = False,
 ) -> Path:
-    """Create ``.airesearcher/``, memory layout, and seed Tier A.
+    """Create ``.lab/``, memory layout, and seed Tier A.
 
     Requires global config to exist. Returns the researcher root path.
     """
@@ -237,10 +237,10 @@ def init_project_at(
 
     if project_is_initialized(project_dir) and not overwrite:
         raise LabConfigError(
-            f"Project already initialized at {project_dir / '.airesearcher'}; pass overwrite=True to re-seed."
+            f"Project already initialized at {project_dir / '.lab'}; pass overwrite=True to re-seed."
         )
 
-    from research_lab.git_checkpoint import ensure_git_repo
+    from lab.git_checkpoint import ensure_git_repo
 
     gcfg = load_global_config()
     run_cfg = RunConfig.from_configs(gcfg, project_dir)
@@ -255,8 +255,8 @@ def init_project_at(
 
 
 def run_oauth_browser_for_global(client_id: str | None = None) -> Path:
-    """Run browser OAuth and store tokens under ``~/.airesearcher/oauth_tokens.json``."""
-    from research_lab.oauth_pkce import run_browser_login_once
+    """Run browser OAuth and store tokens under ``~/.lab/oauth_tokens.json``."""
+    from lab.oauth_pkce import run_browser_login_once
 
     cid = client_id or DEFAULT_OAUTH_CLIENT_ID
     tmp_cfg = RunConfig(
@@ -281,7 +281,7 @@ def run_oauth_browser_for_global(client_id: str | None = None) -> Path:
 
 
 def run_interactive_global_setup() -> Path:
-    """Interactive wizard: prompts and writes ``~/.airesearcher/config.toml`` (and OAuth if chosen)."""
+    """Interactive wizard: prompts and writes ``~/.lab/config.toml`` (and OAuth if chosen)."""
     import click
 
     click.echo("lab setup\n")
@@ -356,7 +356,7 @@ def bootstrap_bench_project(
 ) -> tuple[Path, RunConfig]:
     """Write global config and initialize memory (for scripts/tests without prior ``lab setup``).
 
-    Overwrites global config at ``~/.airesearcher/config.toml`` and initializes the project
+    Overwrites global config at ``~/.lab/config.toml`` and initializes the project
     under *project_dir*.  Returns ``(db_path, RunConfig)`` suitable for :func:`run_console_session`.
     """
     save_global_config(gcfg)
@@ -373,7 +373,7 @@ def bootstrap_bench_project(
 
 def reset_project_preserving_research_idea(project_dir: Path) -> None:
     """Clear SQLite runtime data and on-disk memory except Tier A ``research_idea.md`` and ``preferences.md``
-    under ``.airesearcher/state/``.
+    under ``.lab/state/``.
     """
     if not project_is_initialized(project_dir):
         raise LabConfigError(
@@ -387,7 +387,7 @@ def reset_project_preserving_research_idea(project_dir: Path) -> None:
     prefs_path = sd / "preferences.md"
     preserved_prefs = prefs_path.read_text(encoding="utf-8") if prefs_path.is_file() else "# Preferences\n\n"
 
-    from research_lab.git_checkpoint import delete_checkpoint_branch
+    from lab.git_checkpoint import delete_checkpoint_branch
 
     db_path = researcher_root / "runtime.db"
     db.obliterate_runtime_db(db_path)

@@ -14,11 +14,11 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
-from research_lab import db, helpers, memory
-from research_lab.config import RunConfig
-from research_lab.orchestrator import OrchestratorDecision
-from research_lab.state import ResearchState
-from research_lab.workflows import research_graph
+from lab import db, helpers, memory
+from lab.config import RunConfig
+from lab.orchestrator import OrchestratorDecision
+from lab.state import ResearchState
+from lab.workflows import research_graph
 
 
 # ---------------------------------------------------------------------------

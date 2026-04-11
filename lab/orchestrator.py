@@ -6,8 +6,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from research_lab import llm
-from research_lab.config import RunConfig
+from lab import llm
+from lab.config import RunConfig
 
 
 class OrchestratorCredentialsError(RuntimeError):
@@ -50,7 +50,7 @@ You are the orchestrator. Route the project to exactly one next worker.
 - Do not stop to ask for human input.
 - Prefer `planner` early when the project direction is not yet concretized.
 
-**Paths** — Tier A markdown lives under `.airesearcher/state/` (e.g. `roadmap.md` → `.airesearcher/state/roadmap.md`). Use these paths when reasoning about files on disk.
+**Paths** — Tier A markdown lives under `.lab/state/` (e.g. `roadmap.md` → `.lab/state/roadmap.md`). Use these paths when reasoning about files on disk.
 
 **Routing rules**
 - Not enough local codebase information → `query`.
@@ -77,7 +77,7 @@ You are the orchestrator. Route the project to exactly one next worker.
 - Before routing to `done`, consider whether `reviewer` or `critic` should run first — especially if substantive code or artifacts were produced since the last validation pass.
 
 **Planner priority**
-- If `.airesearcher/state/user_instructions.md` has actionable bullets under `## New`, you must route to `planner` at the next decision.
+- If `.lab/state/user_instructions.md` has actionable bullets under `## New`, you must route to `planner` at the next decision.
 - Do not defer those items across `done` or unrelated workers; they should be merged into `immediate_plan.md` or `roadmap.md` and cleared from `## New`.
 
 **Context handling**
@@ -105,7 +105,7 @@ Match persona to what prompted the critic: `engineer` after code changes or comp
 **Response format**
 - Respond with JSON only. No markdown fences.
 - Return exactly one JSON object with these keys: `"worker"`, `"task"`, `"branch"`, `"reason"`, `"roadmap_step"`, `"context_summary"`, `"worker_kwargs"`.
-- `roadmap_step` should be a short label for the active high-level item in `.airesearcher/state/roadmap.md`.
+- `roadmap_step` should be a short label for the active high-level item in `.lab/state/roadmap.md`.
 - `worker` must be one of: `planner`, `query`, `researcher`, `executer`, `implementer`, `debugger`, `experimenter`, `critic`, `reviewer`, `reporter`, `skill_writer`, `done`.
 - Use strings for all scalar values; use the empty string for `branch` if unknown.
 - `worker_kwargs` is an object; set `{"persona": "..."}` when routing to `critic`.

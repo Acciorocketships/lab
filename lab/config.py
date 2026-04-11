@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from research_lab.global_config import GlobalConfig
+    from lab.global_config import GlobalConfig
 
 
 @dataclass(frozen=True)
@@ -15,7 +15,7 @@ class RunConfig:
     """All knobs for a researcher session.
 
     Research brief and preferences are stored in Tier A markdown files
-    (``.airesearcher/state/research_idea.md`` and ``preferences.md``) rather than here.
+    (``.lab/state/research_idea.md`` and ``preferences.md``) rather than here.
     Agents read those files directly; ``RunConfig`` carries only infrastructure settings.
     """
 
@@ -61,7 +61,7 @@ class RunConfig:
         live in Tier A markdown (``state/research_idea.md``, ``state/preferences.md``) and
         are not stored here — agents read those files directly.
         """
-        from research_lab.global_config import GLOBAL_OAUTH_PATH, project_researcher_root
+        from lab.global_config import GLOBAL_OAUTH_PATH, project_researcher_root
 
         researcher_root = project_researcher_root(project_dir)
         api_key: str | None = gcfg.api_key or None
@@ -87,4 +87,6 @@ class RunConfig:
 
 def researcher_root_for_project(project_dir: Path) -> Path:
     """Kept for import compatibility; prefer ``global_config.project_researcher_root``."""
-    return project_dir / ".airesearcher"
+    from lab.global_config import project_researcher_root
+
+    return project_researcher_root(project_dir)

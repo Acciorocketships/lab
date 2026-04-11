@@ -1,4 +1,4 @@
-name: research-lab
+name: lab
 channels:
   - conda-forge
 dependencies:

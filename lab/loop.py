@@ -11,11 +11,11 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from research_lab import memory
-from research_lab.workflows import research_graph
+from lab import memory
+from lab.workflows import research_graph
 
 if TYPE_CHECKING:
-    from research_lab.config import RunConfig
+    from lab.config import RunConfig
 
 
 class SchedulerProcessHandle:
@@ -84,7 +84,7 @@ def _serialize_run_config(cfg: RunConfig) -> str:
 
 
 def _deserialize_run_config(payload: str) -> RunConfig:
-    from research_lab.config import RunConfig
+    from lab.config import RunConfig
 
     data = json.loads(payload)
     for key in ("researcher_root", "project_dir", "oauth_token_path"):
@@ -120,7 +120,7 @@ def spawn_scheduler(
         [
             sys.executable,
             "-m",
-            "research_lab.loop",
+            "lab.loop",
             "run-scheduler",
             str(db_path),
             _serialize_run_config(cfg),
@@ -136,7 +136,7 @@ def spawn_scheduler(
 
 def _run_scheduler_from_cli(argv: list[str]) -> int:
     if len(argv) != 2:
-        raise SystemExit("usage: python -m research_lab.loop run-scheduler <db_path> <run_config_json>")
+        raise SystemExit("usage: python -m lab.loop run-scheduler <db_path> <run_config_json>")
     db_path = Path(argv[0])
     cfg = _deserialize_run_config(argv[1])
     _run_scheduler(db_path, cfg.researcher_root, cfg.project_dir, cfg)
@@ -146,7 +146,7 @@ def _run_scheduler_from_cli(argv: list[str]) -> int:
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if not args:
-        raise SystemExit("usage: python -m research_lab.loop run-scheduler <db_path> <run_config_json>")
+        raise SystemExit("usage: python -m lab.loop run-scheduler <db_path> <run_config_json>")
     command = args.pop(0)
     if command == "run-scheduler":
         return _run_scheduler_from_cli(args)

@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from research_lab import db, memory
+from lab import db, memory
 
 
 def apply_instruction_event(conn: sqlite3.Connection, researcher_root: Path, payload: str | None) -> None:

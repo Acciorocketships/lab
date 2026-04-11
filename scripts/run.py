@@ -1,7 +1,7 @@
-"""Bench / dev launcher — same core as ``lab`` via :func:`research_lab.runner.run_console_session`.
+"""Bench / dev launcher — same core as ``lab`` via :func:`lab.runner.run_console_session`.
 
 Prefer ``pip install .`` then ``lab setup`` / ``lab init`` / ``lab`` for normal use.
-This script builds a :class:`~research_lab.config.RunConfig` explicitly (no TOML) for the bench project.
+This script builds a :class:`~lab.config.RunConfig` explicitly (no TOML) for the bench project.
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 PROJECT_DIR = Path(__file__).resolve().parents[1] / "data" / "bench_rl_project"
-RESEARCHER_ROOT = PROJECT_DIR / ".airesearcher"
+RESEARCHER_ROOT = PROJECT_DIR / ".lab"
 RESEARCH_BRIEF = """\
 Implement tabular Q-learning on Gymnasium FrozenLake-v1 (4x4), compare to a random policy baseline, and document \
 hyperparameters plus trained vs random mean success rate over >=100 eval episodes in SUMMARY.md. See project README \
@@ -29,9 +29,9 @@ def main() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     sys.path.insert(0, str(repo_root / "src"))
 
-    from research_lab.config import RunConfig
-    from research_lab.runner import run_console_session, seed_tier_a_from_run_config, write_tier_a_brief
-    from research_lab import memory
+    from lab.config import RunConfig
+    from lab.runner import run_console_session, seed_tier_a_from_run_config, write_tier_a_brief
+    from lab import memory
 
     cfg = RunConfig(
         researcher_root=RESEARCHER_ROOT,

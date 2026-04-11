@@ -4,8 +4,8 @@ import base64
 import hashlib
 from pathlib import Path
 
-from research_lab.config import RunConfig
-from research_lab.oauth_pkce import (
+from lab.config import RunConfig
+from lab.oauth_pkce import (
     generate_pkce_pair,
     load_and_refresh_token_file,
     oauth_token_file,
@@ -86,7 +86,7 @@ def test_existing_codex_token_file_is_upgraded_to_api_bearer(tmp_path: Path, mon
     )
 
     monkeypatch.setattr(
-        "research_lab.oauth_pkce.exchange_id_token_for_api_key",
+        "lab.oauth_pkce.exchange_id_token_for_api_key",
         lambda cfg, id_token, **kwargs: "exchanged-api-bearer",
     )
 

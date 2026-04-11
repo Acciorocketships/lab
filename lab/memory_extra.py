@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from research_lab import helpers
+from lab import helpers
 
 
 def branch_memory_path(researcher_root: Path, branch: str) -> Path:
@@ -26,7 +26,7 @@ def default_branch_memory_body(branch: str) -> str:
         "- Status: \n"
         "- Results so far: \n\n"
         "<!-- Keep this file in sync with git. Delete when merged to main or when the branch is removed. "
-        "If the approach fails, delete this file and record learnings in .airesearcher/state/lessons.md. -->\n"
+        "If the approach fails, delete this file and record learnings in .lab/state/lessons.md. -->\n"
     )
 
 

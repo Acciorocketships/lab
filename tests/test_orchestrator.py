@@ -4,14 +4,14 @@ from pathlib import Path
 
 import pytest
 
-from research_lab.config import RunConfig
-from research_lab.orchestrator import (
+from lab.config import RunConfig
+from lab.orchestrator import (
     OrchestratorCredentialsError,
     OrchestratorDecision,
     _ORCH_JSON_SYSTEM,
     decide_orchestrator,
 )
-from research_lab.agents import critic, experimenter, reviewer
+from lab.agents import critic, experimenter, reviewer
 
 
 def test_no_api_key_raises(tmp_path: Path, monkeypatch) -> None:
@@ -39,8 +39,8 @@ def test_query_worker_is_valid_route() -> None:
 
 def test_orchestrator_prompt_biases_toward_post_implementation_review() -> None:
     """Routing prompt should encourage reviewer/critic after implementation."""
-    assert "Treat `implementer -> reviewer` as the normal pattern" in _ORCH_JSON_SYSTEM
-    assert "Treat `implementer -> critic` as the normal pattern" in _ORCH_JSON_SYSTEM
+    assert "Treat `<code-producing worker> → reviewer` as the normal default" in _ORCH_JSON_SYSTEM
+    assert "`critic` is best used after" in _ORCH_JSON_SYSTEM
     assert "prefer independent validation" in _ORCH_JSON_SYSTEM
 
 
@@ -54,7 +54,7 @@ def test_reviewer_and_critic_prompts_require_hands_on_validation() -> None:
 
 def test_orchestrator_and_experimenter_prompts_assign_long_runs_to_experimenter() -> None:
     """Long-running experiments should be launched and monitored by the experimenter."""
-    assert "Long-running training jobs, sweeps, and evaluations" in _ORCH_JSON_SYSTEM
+    assert "If a training job takes hours, `experimenter` owns the entire lifecycle" in _ORCH_JSON_SYSTEM
     assert "experimenter" in _ORCH_JSON_SYSTEM
-    assert "Do not assume a human will kick off training runs" in experimenter.SYSTEM_PROMPT
-    assert "check back periodically" in experimenter.SYSTEM_PROMPT
+    assert "Do not assume a human or another agent will do it" in experimenter.SYSTEM_PROMPT
+    assert "Check back periodically" in experimenter.SYSTEM_PROMPT

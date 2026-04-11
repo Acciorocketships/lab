@@ -7,7 +7,7 @@ from pathlib import Path
 
 import sqlite3
 
-from research_lab import helpers
+from lab import helpers
 
 
 def new_experiment_id(conn: sqlite3.Connection, project_dir: Path) -> str:

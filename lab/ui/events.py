@@ -21,7 +21,7 @@ from rich.table import Table
 from rich.text import Text
 from pygments.token import Comment, Error, Keyword, Name, Number, Operator, String, Text as TokenText
 
-from research_lab import db
+from lab import db
 
 _SURFACE_BORDER = "#3a3a3a"
 _SURFACE_BG = "#1c1c1c"
@@ -153,7 +153,7 @@ def compute_file_diffs(
 ) -> list[tuple[str, int, int]]:
     """Return ``(relative_path, additions, deletions)`` for changed or new files.
 
-    With *baseline* (from :func:`research_lab.memory.capture_worker_diff_baseline`), compare
+    With *baseline* (from :func:`lab.memory.capture_worker_diff_baseline`), compare
     to the tree at worker start. Without it, compare tracked files to ``HEAD`` and list
     untracked paths with total line counts (legacy behaviour).
     """
@@ -319,9 +319,9 @@ def format_worker_result_excerpt(ok: bool, result_text: str = "") -> str:
 # Stream-JSON chunk parsing (tool call activity for the live status line)
 # ---------------------------------------------------------------------------
 
-# En space after emoji: monospace TUIs often “eat” a normal ASCII space next to
-# emoji presentation sequences, so the verb visually collides with the icon.
-_TOOL_EMOJI_GAP = "\u2002"
+# Regular ASCII space after emoji. En space (U+2002) and other unicode spaces
+# often render with no visible gap next to emoji+VS16 in monospace/Textual UIs.
+_TOOL_EMOJI_GAP = " "
 
 
 def _tool_line(emoji: str, rest: str) -> str:

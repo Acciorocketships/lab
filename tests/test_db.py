@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from research_lab import db
+from lab import db
 
 
 def test_enqueue_and_consume(tmp_path: Path) -> None:

@@ -11,8 +11,8 @@ from typing import Any, TypeVar
 from openai import OpenAI
 from pydantic import BaseModel, ValidationError
 
-from research_lab.config import RunConfig
-from research_lab.oauth_pkce import oauth_token_file, resolve_openai_bearer
+from lab.config import RunConfig
+from lab.oauth_pkce import oauth_token_file, resolve_openai_bearer
 
 T = TypeVar("T", bound=BaseModel)
 

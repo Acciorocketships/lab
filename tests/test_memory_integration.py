@@ -6,7 +6,7 @@ import json
 import subprocess
 from pathlib import Path
 
-from research_lab import helpers, memory, memory_extra, packets
+from lab import helpers, memory, memory_extra, packets
 
 
 LOG_DIR = Path(__file__).parent / "logs"

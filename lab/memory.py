@@ -8,7 +8,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from research_lab import helpers
+from lab import helpers
 
 
 TIER_A_FILES = [
@@ -325,9 +325,9 @@ def _default_tier_a_content(name: str) -> str:
 def _default_extended_memory_index() -> str:
     return """# Extended memory index
 
-Index of long-form files under `.airesearcher/memory/extended/`. This file is included **in full** in orchestrator and worker context alongside other Tier A files, so keep it concise and high-signal: path plus a short description, or a few one-line bullets, for what the full file contains. Use it to point from Tier A to longer logs, artifacts, findings, notes, or transcripts that are too large to inline. Layout rules are in the shared prompt (`MEMORY_AND_TIER_A` in `agents/shared_prompt.py`).
+Index of long-form files under `.lab/memory/extended/`. This file is included **in full** in orchestrator and worker context alongside other Tier A files, so keep it concise and high-signal: path plus a short description, or a few one-line bullets, for what the full file contains. Use it to point from Tier A to longer logs, artifacts, findings, notes, or transcripts that are too large to inline. Layout rules are in the shared prompt (`MEMORY_AND_TIER_A` in `agents/shared_prompt.py`).
 
-## `.airesearcher/memory/extended/`
+## `.lab/memory/extended/`
 
 - *(path + what it contains / why it matters)*
 """
@@ -337,11 +337,11 @@ Index of long-form files under `.airesearcher/memory/extended/`. This file is in
 def _default_skills_index() -> str:
     return (
         "# Skills index\n\n"
-        "List each skill file under `.airesearcher/memory/skills/` with its path and purpose. "
+        "List each skill file under `.lab/memory/skills/` with its path and purpose. "
         "Keep this table aligned with files on disk; `skill_writer` commonly does this, but any worker that adds or changes skills should update it.\n\n"
         "| Path | Purpose |\n"
         "|------|--------|\n"
-        "| *(add rows as you add `.airesearcher/memory/skills/*.md`)* | |\n\n"
+        "| *(add rows as you add `.lab/memory/skills/*.md`)* | |\n\n"
     )
 
 
@@ -500,7 +500,7 @@ def format_orchestrator_context(
 
     Limits are optional. ``None`` means no clipping in app code.
     """
-    from research_lab import memory_extra as mx
+    from lab import memory_extra as mx
 
     parts: list[str] = []
     prev = (previous_context_summary or "").strip()

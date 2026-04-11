@@ -25,4 +25,4 @@ When immediate work completes, mark the corresponding roadmap entry complete (re
 
 **User instructions** (`user_instructions.md`, `## New`): merge each item into `immediate_plan.md` and/or `roadmap.md`, then delete from `## New` (use `## In progress` / `## Completed` if helpful). Do this immediately — do not leave the queue populated after planning.
 
-Put committed deliverables in the project directory; keep researcher-only notes under Tier A / `.airesearcher/memory/extended/`. Propose branch strategy. Follow shared instructions for branch files and Tier A pointers to extended memory."""
+Put committed deliverables in the project directory; keep researcher-only notes under Tier A / `.lab/memory/extended/`. Propose branch strategy. Follow shared instructions for branch files and Tier A pointers to extended memory."""

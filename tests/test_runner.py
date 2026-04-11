@@ -4,10 +4,10 @@ from pathlib import Path
 
 import pytest
 
-from research_lab.config import RunConfig
-from research_lab.global_config import GlobalConfig
-from research_lab import db, memory
-from research_lab.runner import (
+from lab.config import RunConfig
+from lab.global_config import GlobalConfig
+from lab import db, memory
+from lab.runner import (
     LabConfigError,
     bootstrap_bench_project,
     ensure_console_ready,
@@ -18,22 +18,22 @@ from research_lab.runner import (
 
 
 def test_ensure_console_ready_raises_without_global(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr("research_lab.runner.global_config_exists", lambda: False)
+    monkeypatch.setattr("lab.runner.global_config_exists", lambda: False)
     with pytest.raises(LabConfigError, match="Global config"):
         ensure_console_ready(tmp_path)
 
 
 def test_ensure_console_ready_raises_without_project(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr("research_lab.runner.global_config_exists", lambda: True)
-    monkeypatch.setattr("research_lab.runner.project_is_initialized", lambda p: False)
+    monkeypatch.setattr("lab.runner.global_config_exists", lambda: True)
+    monkeypatch.setattr("lab.runner.project_is_initialized", lambda p: False)
     with pytest.raises(LabConfigError, match="not initialized"):
         ensure_console_ready(tmp_path)
 
 
 def test_bootstrap_bench_project_writes_configs(tmp_path: Path, monkeypatch) -> None:
     gdir = tmp_path / "global"
-    monkeypatch.setattr("research_lab.global_config.GLOBAL_DIR", gdir)
-    monkeypatch.setattr("research_lab.global_config.GLOBAL_CONFIG_PATH", gdir / "config.toml")
+    monkeypatch.setattr("lab.global_config.GLOBAL_DIR", gdir)
+    monkeypatch.setattr("lab.global_config.GLOBAL_CONFIG_PATH", gdir / "config.toml")
 
     project_dir = tmp_path / "proj"
     project_dir.mkdir()
@@ -42,16 +42,16 @@ def test_bootstrap_bench_project_writes_configs(tmp_path: Path, monkeypatch) -> 
         project_dir, gcfg=gcfg, research_idea="idea", preferences=""
     )
 
-    assert db_path == project_dir / ".airesearcher" / "runtime.db"
+    assert db_path == project_dir / ".lab" / "runtime.db"
     assert run_cfg.openrouter_api_key == "k"
     assert (gdir / "config.toml").is_file()
     # Research idea lives in Tier A, not config.toml
-    idea_md = (memory.state_dir(project_dir / ".airesearcher") / "research_idea.md").read_text(encoding="utf-8")
+    idea_md = (memory.state_dir(project_dir / ".lab") / "research_idea.md").read_text(encoding="utf-8")
     assert "idea" in idea_md
 
 
 def test_init_project_at_requires_global(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setattr("research_lab.runner.global_config_exists", lambda: False)
+    monkeypatch.setattr("lab.runner.global_config_exists", lambda: False)
     with pytest.raises(LabConfigError, match="Global config"):
         init_project_at(tmp_path, research_idea="a")
 
@@ -60,7 +60,7 @@ def test_run_console_session_accepts_explicit_config(tmp_path: Path, monkeypatch
     """Smoke: run_console_session wires memory + DB pause without starting the TUI."""
     pdir = tmp_path / "p"
     pdir.mkdir()
-    rr = pdir / ".airesearcher"
+    rr = pdir / ".lab"
     cfg = RunConfig(
         researcher_root=rr,
         project_dir=pdir,
@@ -79,7 +79,7 @@ def test_run_console_session_accepts_explicit_config(tmp_path: Path, monkeypatch
     def fake_run_console(db: Path, c: RunConfig) -> None:
         called.append((db, c))
 
-    monkeypatch.setattr("research_lab.ui.console.run_console", fake_run_console)
+    monkeypatch.setattr("lab.ui.console.run_console", fake_run_console)
     run_console_session(db_path, cfg)
 
     assert len(called) == 1
@@ -89,8 +89,8 @@ def test_run_console_session_accepts_explicit_config(tmp_path: Path, monkeypatch
 
 def test_reset_project_preserving_research_idea(tmp_path: Path, monkeypatch) -> None:
     gdir = tmp_path / "global"
-    monkeypatch.setattr("research_lab.global_config.GLOBAL_DIR", gdir)
-    monkeypatch.setattr("research_lab.global_config.GLOBAL_CONFIG_PATH", gdir / "config.toml")
+    monkeypatch.setattr("lab.global_config.GLOBAL_DIR", gdir)
+    monkeypatch.setattr("lab.global_config.GLOBAL_CONFIG_PATH", gdir / "config.toml")
 
     project_dir = tmp_path / "proj"
     project_dir.mkdir()
@@ -104,7 +104,7 @@ def test_reset_project_preserving_research_idea(tmp_path: Path, monkeypatch) -> 
     conn.commit()
     conn.close()
 
-    rr = project_dir / ".airesearcher"
+    rr = project_dir / ".lab"
     (rr / "memory" / "extended" / "notes.md").write_text("x", encoding="utf-8")
     (memory.state_dir(rr) / "research_idea.md").write_text(
         "# Research brief\n\nMy preserved brief\n", encoding="utf-8"

@@ -16,16 +16,16 @@ from textual.binding import Binding
 from textual.containers import Container, VerticalScroll
 from textual.widgets import Static, TextArea
 
-from research_lab import db
-from research_lab.global_config import project_researcher_root
-from research_lab.memory import read_worker_diff_baseline
-from research_lab.runner import reset_project_preserving_research_idea
-from research_lab.ui import events
-from research_lab.ui.prompt_text_area import PromptSubmitted, PromptTextArea
+from lab import db
+from lab.global_config import project_researcher_root
+from lab.memory import read_worker_diff_baseline
+from lab.runner import reset_project_preserving_research_idea
+from lab.ui import events
+from lab.ui.prompt_text_area import PromptSubmitted, PromptTextArea
 
 if TYPE_CHECKING:
-    from research_lab.config import RunConfig
-    from research_lab.loop import SchedulerProcessHandle
+    from lab.config import RunConfig
+    from lab.loop import SchedulerProcessHandle
 
 @dataclass
 class _RedoSnapshot:
@@ -51,7 +51,10 @@ Screen {
 #activity-scroll {
     padding: 0 1;
     scrollbar-size: 1 1;
-    scrollbar-gutter: stable;
+    /* Avoid stable gutter: it reserves a column even when the scrollbar is not
+       mounted (short content), which reads as a phantom track and clashes with
+       rounded Rich panels (e.g. live tool-call box) along the right edge. */
+    scrollbar-gutter: auto;
 }
 
 .activity-line {
@@ -239,6 +242,25 @@ class ResearchConsole(App[None]):
                     child.remove()
                 except Exception:
                     pass
+
+    def _clear_below_stream_feedback(self) -> None:
+        """Remove ephemeral lines under the stream panel (slash commands, status, etc.)."""
+        self._checkpoint_notice_widget = None
+        try:
+            scroll = self.query_one("#activity-scroll", VerticalScroll)
+            stream = self.query_one("#stream-text", Static)
+        except Exception:
+            return
+        children = list(getattr(scroll, "children", []))
+        try:
+            idx = children.index(stream)
+        except ValueError:
+            return
+        for w in children[idx + 1 :]:
+            try:
+                w.remove()
+            except Exception:
+                pass
 
     def _rebuild_activity_from_db(self) -> None:
         """Re-render completed cycles from DB so undo/redo immediately refresh the UI."""
@@ -524,6 +546,16 @@ class ResearchConsole(App[None]):
         scroll = self.query_one("#activity-scroll", VerticalScroll)
         self.call_after_refresh(lambda: scroll.scroll_end(animate=False))
 
+    def _activity_viewport_at_bottom(self) -> bool:
+        """True when the activity scroller is pinned to the end (same idea as Rich Log auto-scroll)."""
+        try:
+            scroll = self.query_one("#activity-scroll", VerticalScroll)
+        except Exception:
+            return False
+        return bool(
+            scroll.is_vertical_scroll_end and not scroll.is_vertical_scrollbar_grabbed
+        )
+
     def _scroll_cycle_header_to_top(self) -> None:
         """Scroll so the current cycle-header divider aligns with the viewport top."""
         scroll = self.query_one("#activity-scroll", VerticalScroll)
@@ -640,7 +672,7 @@ class ResearchConsole(App[None]):
         self._restart_scheduler()
 
     def _restart_scheduler(self) -> None:
-        from research_lab.loop import spawn_scheduler
+        from lab.loop import spawn_scheduler
 
         researcher_root = project_researcher_root(self.cfg.project_dir)
         db.enqueue_event(self._conn, "resume", None)
@@ -702,6 +734,9 @@ class ResearchConsole(App[None]):
 
             if kind == "orchestrator":
                 self._orchestrating = False
+                # Clear slash-command / status lines on every orchestrator pass, not
+                # only when cycle or worker changes (those can match across retries).
+                self._clear_below_stream_feedback()
                 new_cycle = cycle != self._last_cycle or worker != self._last_worker
                 if new_cycle:
                     if self._cycle_header_widget is not None:
@@ -750,10 +785,11 @@ class ResearchConsole(App[None]):
                 self._stream_is_running_placeholder = True
                 self._running_worker_tick = 0
                 wdots = "." * ((self._running_worker_tick % 3) + 1)
+                follow = self._activity_viewport_at_bottom()
                 self._set_stream_placeholder(f"[dim]Running {worker}{wdots}[/]")
                 if new_cycle and self._cycle_header_widget is not None:
                     self._scroll_cycle_header_to_top()
-                else:
+                elif follow:
                     self._scroll_to_bottom()
             elif kind == "worker":
                 self._clear_redo_stack()
@@ -843,18 +879,24 @@ class ResearchConsole(App[None]):
                 if tool_row:
                     self._stream_tool_markup = tool_row
                 self._stream_last_event_was_tool = True
+                follow = self._activity_viewport_at_bottom()
                 self._rebuild_stream_panel_from_buffers()
-                self._scroll_to_bottom()
+                if follow:
+                    self._scroll_to_bottom()
             elif event_type == "text" and text.strip():
                 self._stream_is_running_placeholder = False
                 self._append_stream_text_delta(text)
+                follow = self._activity_viewport_at_bottom()
                 self._rebuild_stream_panel_from_buffers()
-                self._scroll_to_bottom()
+                if follow:
+                    self._scroll_to_bottom()
             elif event_type == "message" and text.strip():
                 self._stream_is_running_placeholder = False
                 self._replace_stream_message(text)
+                follow = self._activity_viewport_at_bottom()
                 self._rebuild_stream_panel_from_buffers()
-                self._scroll_to_bottom()
+                if follow:
+                    self._scroll_to_bottom()
             elif event_type == "boundary":
                 self._stream_message_closed = bool(self._stream_text_live.strip())
                 self._stream_last_event_was_tool = False
@@ -881,6 +923,7 @@ class ResearchConsole(App[None]):
             return
 
         self._remove_welcome_intro()
+        self._clear_below_stream_feedback()
 
         lines = text.splitlines()
         first = lines[0].strip()
@@ -1136,7 +1179,7 @@ class ResearchConsole(App[None]):
 
     def _capture_redo_snapshot(self) -> _RedoSnapshot | None:
         """Save enough state to reverse the next /undo via /redo."""
-        from research_lab import git_checkpoint
+        from lab import git_checkpoint
 
         token = f"{time.time_ns()}"
         tree_ref = f"refs/lab/redo/{token}"
@@ -1196,7 +1239,7 @@ class ResearchConsole(App[None]):
         )
 
     def _drop_redo_snapshot(self, snap: _RedoSnapshot) -> None:
-        from research_lab import git_checkpoint
+        from lab import git_checkpoint
 
         git_checkpoint.delete_ref(self.cfg.project_dir, snap.tree_ref)
         shutil.rmtree(snap.snapshot_dir, ignore_errors=True)
@@ -1263,7 +1306,7 @@ class ResearchConsole(App[None]):
         self._restart_scheduler()
 
     def _restore_redo_snapshot(self, snap: _RedoSnapshot) -> bool:
-        from research_lab import git_checkpoint
+        from lab import git_checkpoint
 
         current_treeish = (
             f"refs/heads/{git_checkpoint.CHECKPOINT_BRANCH}"
@@ -1358,7 +1401,7 @@ class ResearchConsole(App[None]):
     @staticmethod
     def _cleanup_incomplete_episodes(researcher_root: Path, last_completed: int) -> None:
         """Delete episode directories for cycles beyond *last_completed*."""
-        from research_lab.memory import episodes_dir
+        from lab.memory import episodes_dir
         import re as _re
         ep_root = episodes_dir(researcher_root)
         if not ep_root.is_dir():
@@ -1374,8 +1417,8 @@ class ResearchConsole(App[None]):
     @staticmethod
     def _reset_context_summary(researcher_root: Path) -> None:
         """Reset context_summary.md to its default when no cycles have completed."""
-        from research_lab import helpers
-        from research_lab.memory import state_dir, _default_tier_a_content
+        from lab import helpers
+        from lab.memory import state_dir, _default_tier_a_content
 
         p = state_dir(researcher_root) / "context_summary.md"
         helpers.ensure_dir(p.parent)
@@ -1398,7 +1441,7 @@ class ResearchConsole(App[None]):
         Otherwise the tip checkpoint is used (same as pause/crash recovery:
         drops an in-flight worker only).
         """
-        from research_lab import git_checkpoint
+        from lab import git_checkpoint
 
         researcher_root = project_researcher_root(self.cfg.project_dir)
 

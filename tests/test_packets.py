@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from research_lab import memory, packets
+from lab import memory, packets
 
 
 def test_write_worker_output_file(tmp_path: Path) -> None:

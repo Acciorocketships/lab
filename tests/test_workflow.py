@@ -4,11 +4,11 @@ from pathlib import Path
 
 import pytest
 
-from research_lab import db, memory
-from research_lab.config import RunConfig
-from research_lab.orchestrator import OrchestratorCredentialsError, OrchestratorDecision
-from research_lab.state import ResearchState
-from research_lab.workflows import research_graph
+from lab import db, memory
+from lab.config import RunConfig
+from lab.orchestrator import OrchestratorCredentialsError, OrchestratorDecision
+from lab.state import ResearchState
+from lab.workflows import research_graph
 
 
 def test_graph_invoke_raises_without_credentials(tmp_path: Path, monkeypatch) -> None:

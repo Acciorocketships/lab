@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from research_lab import db, experiments
+from lab import db, experiments
 
 
 def test_compare_metrics() -> None:
