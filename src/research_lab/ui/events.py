@@ -319,6 +319,17 @@ def format_worker_result_excerpt(ok: bool, result_text: str = "") -> str:
 # Stream-JSON chunk parsing (tool call activity for the live status line)
 # ---------------------------------------------------------------------------
 
+# En space after emoji: monospace TUIs often “eat” a normal ASCII space next to
+# emoji presentation sequences, so the verb visually collides with the icon.
+_TOOL_EMOJI_GAP = "\u2002"
+
+
+def _tool_line(emoji: str, rest: str) -> str:
+    """``emoji`` + visible gap + *rest* (already trimmed)."""
+    r = rest.strip()
+    return f"{emoji}{_TOOL_EMOJI_GAP}{r}" if r else f"{emoji}{_TOOL_EMOJI_GAP}"
+
+
 _TOOL_LABELS: dict[str, tuple[str, str, tuple[str, ...]]] = {
     "Read": ("📖", "Reading", ("file_path", "path")),
     "View": ("📖", "Reading", ("file_path", "path")),
@@ -416,22 +427,28 @@ def _format_tool_use(name: str, input_data: dict) -> str:
         pattern = input_data.get("pattern") or input_data.get("query")
         path = input_data.get("path") or input_data.get("directory")
         if pattern and path:
-            return f"{emoji} {verb} {_format_tool_arg(normalized, pattern)} in {_format_tool_arg('Read', path)}"
+            return _tool_line(
+                emoji,
+                f"{verb} {_format_tool_arg(normalized, pattern)} in {_format_tool_arg('Read', path)}",
+            )
     if normalized == "Glob":
         pattern = input_data.get("pattern") or input_data.get("glob_pattern") or input_data.get("globPattern")
         target = input_data.get("path") or input_data.get("directory") or input_data.get("targetDirectory")
         if pattern and target:
-            return f"{emoji} {verb} {_format_tool_arg(normalized, pattern)} in {_format_tool_arg('Read', target)}"
+            return _tool_line(
+                emoji,
+                f"{verb} {_format_tool_arg(normalized, pattern)} in {_format_tool_arg('Read', target)}",
+            )
     if normalized == "SemanticSearch":
         query = input_data.get("query")
         targets = input_data.get("targetDirectories")
         if query and targets:
-            return f"{emoji} {verb} {_format_tool_arg(normalized, query)}"
+            return _tool_line(emoji, f"{verb} {_format_tool_arg(normalized, query)}")
     for key in keys:
         val = input_data.get(key, "")
         if val:
-            return f"{emoji} {verb} {_format_tool_arg(normalized, val)}"
-    return f"{emoji} {verb}"
+            return _tool_line(emoji, f"{verb} {_format_tool_arg(normalized, val)}")
+    return _tool_line(emoji, verb)
 
 
 def _format_tool_use_with_description(name: str, input_data: dict, description: str | None = None) -> str:
@@ -868,7 +885,10 @@ def make_stream_panel(markup: str) -> Panel:
         border_style=_SURFACE_BORDER,
         style=f"on {_SURFACE_BG}",
         padding=(0, 2),
-        expand=True,
+        # expand=False: when True, Rich sizes to the scroll region width; Textual's
+        # scrollbar occupies the right gutter and the panel border can draw into it,
+        # producing a broken border/scrollbar seam on the first wrapped row.
+        expand=False,
     )
 
 

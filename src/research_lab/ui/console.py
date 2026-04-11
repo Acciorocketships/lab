@@ -51,6 +51,7 @@ Screen {
 #activity-scroll {
     padding: 0 1;
     scrollbar-size: 1 1;
+    scrollbar-gutter: stable;
 }
 
 .activity-line {
@@ -323,13 +324,23 @@ class ResearchConsole(App[None]):
             self._last_stream_id = 0
         self._scroll_to_bottom()
 
-    def _write_activity(self, markup: str) -> None:
-        """Append a permanent line to the activity scroll area."""
+    def _write_activity(self, markup: str, *, below_stream: bool = False) -> None:
+        """Append a permanent line to the activity scroll area.
+
+        Cycle log lines (rebuild, worker summaries) stay *above* the live stream
+        panel. Slash-command feedback, status/help text, and similar messages use
+        ``below_stream=True`` so they render under the stream box (just above the
+        prompt), matching the CLI transcript order users expect.
+        """
         if not markup:
             return
         scroll = self.query_one("#activity-scroll", VerticalScroll)
         stream = self.query_one("#stream-text", Static)
-        scroll.mount(Static(markup, classes="activity-line"), before=stream)
+        line = Static(markup, classes="activity-line")
+        if below_stream:
+            scroll.mount(line, after=stream)
+        else:
+            scroll.mount(line, before=stream)
         self.call_after_refresh(lambda: scroll.scroll_end(animate=False))
 
     def _dismiss_checkpoint_notice(self) -> None:
@@ -351,7 +362,7 @@ class ResearchConsole(App[None]):
         stream = self.query_one("#stream-text", Static)
         notice = Static(markup, classes="activity-line")
         self._checkpoint_notice_widget = notice
-        scroll.mount(notice, before=stream)
+        scroll.mount(notice, after=stream)
         self.call_after_refresh(lambda: scroll.scroll_end(animate=False))
 
     def _write_task(self, task: str) -> Static | None:
@@ -614,7 +625,8 @@ class ResearchConsole(App[None]):
             return
         if self._auto_restarts >= self._MAX_AUTO_RESTARTS:
             self._write_activity(
-                "\n  [red]⚠ Agent process crashed repeatedly. Use [bold]/start[/] to restart.[/]"
+                "\n  [red]⚠ Agent process crashed repeatedly. Use [bold]/start[/] to restart.[/]",
+                below_stream=True,
             )
             db.set_control_mode(self._conn, "paused")
             self._conn.commit()
@@ -622,7 +634,8 @@ class ResearchConsole(App[None]):
         self._auto_restarts += 1
         self._write_activity(
             f"\n  [red]⚠ Agent process exited unexpectedly. "
-            f"Restarting… ({self._auto_restarts}/{self._MAX_AUTO_RESTARTS})[/]"
+            f"Restarting… ({self._auto_restarts}/{self._MAX_AUTO_RESTARTS})[/]",
+            below_stream=True,
         )
         self._restart_scheduler()
 
@@ -898,13 +911,13 @@ class ResearchConsole(App[None]):
         if instruction_text:
             db.enqueue_event(self._conn, "instruction", instruction_text)
             preview = instruction_text if len(instruction_text) <= 200 else instruction_text[:200] + "…"
-            self._write_activity(f"\n  [green]❯[/] {preview}")
+            self._write_activity(f"\n  [green]❯[/] {preview}", below_stream=True)
 
         if not first.startswith("/"):
             db.enqueue_event(self._conn, "instruction", text)
             self._conn.commit()
             preview = text if len(text) <= 200 else text[:200] + "…"
-            self._write_activity(f"\n  [green]❯[/] {preview}")
+            self._write_activity(f"\n  [green]❯[/] {preview}", below_stream=True)
             return
 
         parts = first.split(maxsplit=1)
@@ -914,18 +927,19 @@ class ResearchConsole(App[None]):
         if cmd == "instruction":
             body = (rest + "\n" + tail if tail else rest).strip()
             if not body:
-                self._write_activity("  [red]/instruction[/] requires text")
+                self._write_activity("  [red]/instruction[/] requires text", below_stream=True)
                 return
             db.enqueue_event(self._conn, "instruction", body)
             self._conn.commit()
             preview = body if len(body) <= 200 else body[:200] + "…"
-            self._write_activity(f"\n  [green]❯[/] {preview}")
+            self._write_activity(f"\n  [green]❯[/] {preview}", below_stream=True)
             return
 
         if tail:
             self._write_activity(
                 "  [dim]Note: only the first line is used as a slash command; "
-                "omit the leading / for multi-line instructions.[/]"
+                "omit the leading / for multi-line instructions.[/]",
+                below_stream=True,
             )
 
         handler = {
@@ -943,14 +957,17 @@ class ResearchConsole(App[None]):
         if handler:
             handler()
         else:
-            self._write_activity(f"  [red]Unknown command:[/] /{cmd}")
+            self._write_activity(f"  [red]Unknown command:[/] /{cmd}", below_stream=True)
 
     def _cmd_undo(self) -> None:
         """Drop in-flight or last finished worker changes; restart only if the agent was running."""
         was_running = bool(self._scheduler and self._scheduler.is_alive())
         snap = self._capture_redo_snapshot()
         if snap is None:
-            self._write_activity("  [red]/undo failed:[/] could not snapshot current state for /redo.")
+            self._write_activity(
+                "  [red]/undo failed:[/] could not snapshot current state for /redo.",
+                below_stream=True,
+            )
             return
         self._kill_scheduler()
         self._revert_to_checkpoint(undo_last_completed_worker=True)
@@ -962,13 +979,16 @@ class ResearchConsole(App[None]):
     def _cmd_redo(self) -> None:
         """Restore the most recently undone checkpoint and reapply local changes."""
         if not self._redo_stack:
-            self._write_activity("  [dim]Nothing to redo.[/]")
+            self._write_activity("  [dim]Nothing to redo.[/]", below_stream=True)
             return
         was_running = bool(self._scheduler and self._scheduler.is_alive())
         self._kill_scheduler()
         snap = self._redo_stack.pop()
         if not self._restore_redo_snapshot(snap):
-            self._write_activity("  [red]/redo failed:[/] could not restore the saved snapshot.")
+            self._write_activity(
+                "  [red]/redo failed:[/] could not restore the saved snapshot.",
+                below_stream=True,
+            )
             self._drop_redo_snapshot(snap)
             return
         self._auto_restarts = 0
@@ -989,7 +1009,7 @@ class ResearchConsole(App[None]):
             if mode == "paused":
                 self._orchestrating = True
             else:
-                self._write_activity("  [dim]Agent is already running.[/]")
+                self._write_activity("  [dim]Agent is already running.[/]", below_stream=True)
             return
 
         self._auto_restarts = 0
@@ -1012,20 +1032,21 @@ class ResearchConsole(App[None]):
         if not alive:
             db.set_graceful_pause_pending(self._conn, False)
             if mode != "active":
-                self._write_activity("  [dim]Already paused.[/]")
+                self._write_activity("  [dim]Already paused.[/]", below_stream=True)
             else:
                 db.set_control_mode(self._conn, "paused")
-                self._write_activity("  [yellow]Paused.[/]")
+                self._write_activity("  [yellow]Paused.[/]", below_stream=True)
             self._conn.commit()
             return
         db.set_graceful_pause_pending(self._conn, True)
         self._conn.commit()
         self._write_activity(
-            "  [yellow]Pausing after the current worker finishes…[/]"
+            "  [yellow]Pausing after the current worker finishes…[/]",
+            below_stream=True,
         )
 
     def _cmd_exit(self) -> None:
-        self._write_activity("  [dim]Shutting down...[/]")
+        self._write_activity("  [dim]Shutting down...[/]", below_stream=True)
         db.set_graceful_pause_pending(self._conn, False)
         self._kill_scheduler()
         self._revert_to_checkpoint()
@@ -1037,7 +1058,7 @@ class ResearchConsole(App[None]):
         try:
             st = db.get_system_state(self._conn)
         except sqlite3.OperationalError:
-            self._write_activity("  [red]DB not ready[/]")
+            self._write_activity("  [red]DB not ready[/]", below_stream=True)
             return
         mode = st.get("control_mode", "?")
         cycle = st.get("cycle_count", 0)
@@ -1047,7 +1068,8 @@ class ResearchConsole(App[None]):
         self._write_activity(
             f"  [bold]Status[/]  mode={mode}  cycle={cycle}  worker={worker}\n"
             f"  roadmap: {roadmap}\n"
-            f"  task: {task}"
+            f"  task: {task}",
+            below_stream=True,
         )
 
     def _cmd_help(self) -> None:
@@ -1063,7 +1085,8 @@ class ResearchConsole(App[None]):
             "  [bold]/redo[/]         Restore the last undone checkpoint and replay local edits on top\n"
             "  [bold]/help[/]         This message\n"
             "\n  Plain text is queued as an instruction.\n"
-            "  [dim]Enter[/] sends · [dim]Shift+Enter[/] for newline · navigate lines with arrows\n"
+            "  [dim]Enter[/] sends · [dim]Shift+Enter[/] for newline · navigate lines with arrows\n",
+            below_stream=True,
         )
 
     def _cmd_reset(self) -> None:
@@ -1073,7 +1096,7 @@ class ResearchConsole(App[None]):
             reset_project_preserving_research_idea(self.cfg.project_dir)
         except Exception as e:
             self._conn = db.connect_db(self.db_path)
-            self._write_activity(f"  [red]Reset failed:[/] {e}")
+            self._write_activity(f"  [red]Reset failed:[/] {e}", below_stream=True)
             return
         self._conn = db.connect_db(self.db_path)
         self._last_stream_id = 0
@@ -1096,7 +1119,8 @@ class ResearchConsole(App[None]):
         self._clear_redo_stack()
         self._write_activity(
             "  [green]Reset complete.[/] Kept [bold]research_idea.md[/] and [bold]preferences.md[/]. "
-            "Cleared DB, other Tier A files, episodes, extended, branches, skills, experiments."
+            "Cleared DB, other Tier A files, episodes, extended, branches, skills, experiments.",
+            below_stream=True,
         )
         self._write_welcome_lines()
 
@@ -1232,7 +1256,10 @@ class ResearchConsole(App[None]):
         db.set_control_mode(self._conn, "active")
         db.enqueue_event(self._conn, "resume", None)
         self._conn.commit()
-        self._write_activity("  [yellow]/redo hit merge conflicts; starting implementer to resolve them.[/]")
+        self._write_activity(
+            "  [yellow]/redo hit merge conflicts; starting implementer to resolve them.[/]",
+            below_stream=True,
+        )
         self._restart_scheduler()
 
     def _restore_redo_snapshot(self, snap: _RedoSnapshot) -> bool:
@@ -1288,7 +1315,10 @@ class ResearchConsole(App[None]):
                     if conflicts:
                         self._start_implementer_merge_fix(conflicts)
                     else:
-                        self._write_activity("  [red]/redo failed:[/] could not replay local changes.")
+                        self._write_activity(
+                            "  [red]/redo failed:[/] could not replay local changes.",
+                            below_stream=True,
+                        )
                         return False
             self._write_checkpoint_notice(
                 f"  [yellow]Redid checkpoint (cycle {db.get_system_state(self._conn).get('cycle_count', 0)}).[/]"
@@ -1388,6 +1418,12 @@ class ResearchConsole(App[None]):
         self._last_orchestrator_task = ""
         self._last_stream_text = ""
 
+        try:
+            row_mx = self._conn.execute("SELECT MAX(cycle) FROM run_events").fetchone()
+            max_event_cycle_before = int(row_mx[0]) if row_mx and row_mx[0] is not None else 0
+        except Exception:
+            max_event_cycle_before = 0
+
         # Attempt git-level revert to the last completed-cycle checkpoint.
         reverted = False
         tip_ahead = False
@@ -1483,7 +1519,7 @@ class ResearchConsole(App[None]):
         except Exception:
             pass
 
-        if reverted and emit_activity_message:
+        if emit_activity_message and max_event_cycle_before > self._last_cycle:
             self._write_checkpoint_notice(
                 f"  [yellow]Reverted to checkpoint (cycle {self._last_cycle}).[/]"
             )

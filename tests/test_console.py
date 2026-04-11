@@ -16,12 +16,15 @@ from research_lab.config import RunConfig
 from research_lab.ui import events
 from research_lab.ui.console import ResearchConsole
 
+# Matches ``events._TOOL_EMOJI_GAP`` (en space) after tool icons in one-line summaries.
+_EGAP = "\u2002"
+
 
 def _console_query_stub(captured: list[str]):
     """Minimal Textual stand-ins so console methods can mount activity lines."""
 
     class FakeScroll:
-        def mount(self, w, before=None) -> None:
+        def mount(self, w, before=None, after=None) -> None:
             text = getattr(w, "content", None) or getattr(w, "renderable", None)
             captured.append(str(text) if text is not None else "")
 
@@ -647,7 +650,7 @@ def test_parse_stream_event_nested_tool_call_includes_argument() -> None:
         },
     })
     result = events.parse_stream_event(chunk)
-    assert result == ("tool", "📖 Reading /tmp/project/src/train.py")
+    assert result == ("tool", f"📖{_EGAP}Reading /tmp/project/src/train.py")
 
 
 def test_parse_stream_event_shell_tool_call_includes_command() -> None:
@@ -662,7 +665,7 @@ def test_parse_stream_event_shell_tool_call_includes_command() -> None:
         },
     })
     result = events.parse_stream_event(chunk)
-    assert result == ("tool", "▶️ Running pytest tests/test_console.py -q")
+    assert result == ("tool", f"▶️{_EGAP}Running pytest tests/test_console.py -q")
 
 
 def test_parse_stream_event_git_shell_tool_call_uses_git_label() -> None:
@@ -677,7 +680,7 @@ def test_parse_stream_event_git_shell_tool_call_uses_git_label() -> None:
         },
     })
     result = events.parse_stream_event(chunk)
-    assert result == ("tool", "🌿 Git git status --short")
+    assert result == ("tool", f"🌿{_EGAP}Git git status --short")
 
 
 def test_parse_stream_event_shell_tool_call_keeps_description() -> None:
@@ -693,7 +696,10 @@ def test_parse_stream_event_shell_tool_call_keeps_description() -> None:
         },
     })
     result = events.parse_stream_event(chunk)
-    assert result == ("tool", "▶️ Running python -m pytest -q --tb=line (Run full pytest suite)")
+    assert result == (
+        "tool",
+        f"▶️{_EGAP}Running python -m pytest -q --tb=line (Run full pytest suite)",
+    )
 
 
 def test_parse_stream_event_semsearch_tool_call_formats_query() -> None:
@@ -709,7 +715,10 @@ def test_parse_stream_event_semsearch_tool_call_formats_query() -> None:
         },
     })
     result = events.parse_stream_event(chunk)
-    assert result == ("tool", "🧠 Semantic search Where is train_extrinsic_baseline defined?")
+    assert result == (
+        "tool",
+        f"🧠{_EGAP}Semantic search Where is train_extrinsic_baseline defined?",
+    )
 
 
 def test_parse_stream_event_grep_tool_call_formats_pattern_and_path() -> None:
@@ -725,7 +734,10 @@ def test_parse_stream_event_grep_tool_call_formats_pattern_and_path() -> None:
         },
     })
     result = events.parse_stream_event(chunk)
-    assert result == ("tool", "🔎 Searching train_iters|frames_per_batch in /tmp/project/scripts")
+    assert result == (
+        "tool",
+        f"🔎{_EGAP}Searching train_iters|frames_per_batch in /tmp/project/scripts",
+    )
 
 
 def test_parse_stream_event_read_lints_tool_call_formats_paths() -> None:
@@ -743,7 +755,7 @@ def test_parse_stream_event_read_lints_tool_call_formats_paths() -> None:
         },
     })
     result = events.parse_stream_event(chunk)
-    assert result == ("tool", "🩺 Checking lints /tmp/project/a.py, /tmp/project/b.py")
+    assert result == ("tool", f"🩺{_EGAP}Checking lints /tmp/project/a.py, /tmp/project/b.py")
 
 
 def test_parse_stream_event_skips_result() -> None:
@@ -1022,6 +1034,74 @@ def test_check_scheduler_health_ignores_paused_mode(tmp_path: Path) -> None:
 
     assert console._scheduler is None, "scheduler ref should be cleared"
     assert console._auto_restarts == 0, "should not have attempted a restart"
+
+    console._conn.close()
+
+
+def test_check_scheduler_health_no_spurious_checkpoint_notice_on_clean_exit(tmp_path: Path) -> None:
+    """Completed cycle + paused DB: dead scheduler should not claim a checkpoint revert."""
+    db_path = tmp_path / "runtime.db"
+    cfg = _cfg(tmp_path)
+    cfg.project_dir.mkdir(parents=True)
+
+    subprocess.run(["git", "init"], cwd=cfg.project_dir, check=True, capture_output=True)
+    (cfg.project_dir / "f.txt").write_text("ok\n", encoding="utf-8")
+    subprocess.run(["git", "add", "f.txt"], cwd=cfg.project_dir, check=True, capture_output=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "initial",
+            "--allow-empty",
+        ],
+        cwd=cfg.project_dir,
+        check=True,
+        capture_output=True,
+    )
+
+    console = ResearchConsole(db_path, cfg)
+    writes: list[str] = []
+    console.query_one = _console_query_stub(writes)  # type: ignore[method-assign]
+    conn = console._conn
+    db.get_system_state(conn)
+    db.append_run_event(
+        conn,
+        cycle=1,
+        kind="orchestrator",
+        worker="planner",
+        roadmap_step="",
+        task="t",
+        summary="",
+        payload=None,
+    )
+    db.append_run_event(
+        conn,
+        cycle=1,
+        kind="worker",
+        worker="planner",
+        roadmap_step="",
+        task="t",
+        summary="done",
+        payload={"worker_ok": True},
+    )
+    conn.execute("UPDATE system_state SET cycle_count = 1 WHERE id = 1")
+    db.set_control_mode(conn, "paused")
+    conn.commit()
+    git_checkpoint.create_checkpoint(cfg.project_dir, 1, "planner")
+
+    class DeadScheduler:
+        def is_alive(self) -> bool:
+            return False
+
+    console._scheduler = DeadScheduler()
+    console._check_scheduler_health()
+
+    assert not any("Reverted to checkpoint" in m for m in writes)
 
     console._conn.close()
 
