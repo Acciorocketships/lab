@@ -40,9 +40,14 @@ class _LiveDiffState:
     from_ref: str
     to_ref: str | None
     title_text: str
-    header: Static
-    body: Static
+    widget: Static
     last_raw_diff: str = ""
+
+
+@dataclass
+class _LivePlanState:
+    widget: Static
+    last_text: str = ""
 
 CSS = """
 Screen {
@@ -197,6 +202,7 @@ class ResearchConsole(App[None]):
         self._checkpoint_notice_widget: Static | None = None
         self._diff_widgets: list[Static] = []
         self._live_diff_state: _LiveDiffState | None = None
+        self._live_plan_state: _LivePlanState | None = None
 
     def _cycle_header_cursor_model(self) -> str | None:
         """Cursor CLI ``--model`` value for cycle headers (only when workers use Cursor)."""
@@ -280,6 +286,7 @@ class ResearchConsole(App[None]):
         self._checkpoint_notice_widget = None
         self._diff_widgets = []
         self._live_diff_state = None
+        self._live_plan_state = None
         try:
             scroll = self.query_one("#activity-scroll", VerticalScroll)
             stream = self.query_one("#stream-text", Static)
@@ -396,14 +403,40 @@ class ResearchConsole(App[None]):
         """
         if not markup:
             return
+        if below_stream:
+            self._write_below_stream_box(markup)
+            return
         scroll = self.query_one("#activity-scroll", VerticalScroll)
         stream = self.query_one("#stream-text", Static)
         line = Static(markup, classes="activity-line")
-        if below_stream:
-            scroll.mount(line, after=stream)
-        else:
-            scroll.mount(line, before=stream)
+        scroll.mount(line, before=stream)
         self.call_after_refresh(lambda: scroll.scroll_end(animate=False))
+
+    def _write_below_stream_box(self, markup: str, *, title: str = "") -> Static | None:
+        """Append boxed slash-command output under the live stream panel."""
+        if not markup:
+            return None
+        scroll = self.query_one("#activity-scroll", VerticalScroll)
+        stream = self.query_one("#stream-text", Static)
+        widget = Static(
+            events.make_markup_panel(markup, title=title),
+            classes="result-box",
+            expand=True,
+        )
+        scroll.mount(widget, after=stream)
+        self.call_after_refresh(lambda: scroll.scroll_end(animate=False))
+        return widget
+
+    def _write_below_stream_renderable(
+        self, renderable: object, *, classes: str = "result-box",
+    ) -> Static:
+        """Append a renderable widget under the live stream panel."""
+        scroll = self.query_one("#activity-scroll", VerticalScroll)
+        stream = self.query_one("#stream-text", Static)
+        widget = Static(renderable, classes=classes, expand=True)
+        scroll.mount(widget, after=stream)
+        self.call_after_refresh(lambda: scroll.scroll_end(animate=False))
+        return widget
 
     def _dismiss_checkpoint_notice(self) -> None:
         w = self._checkpoint_notice_widget
@@ -667,6 +700,13 @@ class ResearchConsole(App[None]):
             return
         self._update_checklist_widget(self._read_immediate_plan_checklist(), force=force)
 
+    def _read_roadmap_checklist(self) -> str:
+        body = helpers.read_text(
+            memory.state_dir(self.cfg.researcher_root) / "roadmap.md",
+            default="",
+        )
+        return memory.extract_roadmap_checklist(body)
+
     def _refresh_header(self) -> None:
         try:
             hdr = events.header_line(self._project_name, self._model, self._conn)
@@ -684,6 +724,7 @@ class ResearchConsole(App[None]):
         self._refresh_running_cycle_header()
         self._refresh_file_changes()
         self._refresh_checklist()
+        self._refresh_live_plan()
         self._refresh_live_diff()
 
     def _poll_animated_stream_status(self) -> None:
@@ -804,11 +845,28 @@ class ResearchConsole(App[None]):
         if raw_diff == state.last_raw_diff:
             return
         state.last_raw_diff = raw_diff
-        state.header.update(f"  [dim]diff · {state.title_text}[/]")
         if raw_diff.strip():
-            state.body.update(events.format_diff_as_markup(raw_diff))
+            body_markup = events.format_diff_as_markup(raw_diff)
         else:
-            state.body.update("  [dim]No changes yet[/]")
+            body_markup = "  [dim]No changes yet[/]"
+        state.widget.update(
+            events.make_markup_panel(body_markup, title=f"[dim]diff[/] [dim]{state.title_text}[/]")
+        )
+
+    def _refresh_live_plan(self) -> None:
+        """Repaint an active roadmap checklist view while the file changes."""
+        state = self._live_plan_state
+        if state is None:
+            return
+        text = self._read_roadmap_checklist()
+        if text == state.last_text:
+            return
+        state.last_text = text
+        if text.strip():
+            body = events.wrap_result_renderable(events.render_markdown(text))
+        else:
+            body = events.make_markup_panel("  [dim]No roadmap checklist found[/]", title="[dim]plan[/]")
+        state.widget.update(body)
 
     def _poll_run_events(self) -> None:
         """Check for new orchestrator / worker lifecycle events."""
@@ -1066,13 +1124,13 @@ class ResearchConsole(App[None]):
         if instruction_text:
             db.enqueue_event(self._conn, "instruction", instruction_text)
             preview = instruction_text if len(instruction_text) <= 200 else instruction_text[:200] + "…"
-            self._write_activity(f"\n  [green]❯[/] {preview}", below_stream=True)
+            self._write_activity(f"  [green]❯[/] {rich_escape(preview)}", below_stream=True)
 
         if not first.startswith("/"):
             db.enqueue_event(self._conn, "instruction", text)
             self._conn.commit()
             preview = text if len(text) <= 200 else text[:200] + "…"
-            self._write_activity(f"\n  [green]❯[/] {preview}", below_stream=True)
+            self._write_activity(f"  [green]❯[/] {rich_escape(preview)}", below_stream=True)
             return
 
         parts = first.split(maxsplit=1)
@@ -1082,23 +1140,26 @@ class ResearchConsole(App[None]):
         if cmd == "instruction":
             body = (rest + "\n" + tail if tail else rest).strip()
             if not body:
-                self._write_activity("  [red]/instruction[/] requires text", below_stream=True)
+                self._write_below_stream_box("  [red]/instruction[/] requires text")
                 return
             db.enqueue_event(self._conn, "instruction", body)
             self._conn.commit()
             preview = body if len(body) <= 200 else body[:200] + "…"
-            self._write_activity(f"\n  [green]❯[/] {preview}", below_stream=True)
+            self._write_below_stream_box(f"  [green]❯[/] {rich_escape(preview)}")
             return
 
         if tail:
-            self._write_activity(
+            self._write_below_stream_box(
                 "  [dim]Note: only the first line is used as a slash command; "
-                "omit the leading / for multi-line instructions.[/]",
-                below_stream=True,
+                "omit the leading / for multi-line instructions.[/]"
             )
 
         if cmd == "diff":
             self._cmd_diff(rest)
+            return
+
+        if cmd == "plan":
+            self._cmd_plan()
             return
 
         handler = {
@@ -1116,7 +1177,7 @@ class ResearchConsole(App[None]):
         if handler:
             handler()
         else:
-            self._write_activity(f"  [red]Unknown command:[/] /{cmd}", below_stream=True)
+            self._write_below_stream_box(f"  [red]Unknown command:[/] /{cmd}")
 
     def _cmd_diff(self, rest: str) -> None:
         """Show line-by-line diff for the requested cycle range.
@@ -1139,28 +1200,20 @@ class ResearchConsole(App[None]):
                 start_cycle = int(parts[0])
                 end_cycle = int(parts[1])
             else:
-                self._write_activity(
-                    "  [red]Usage:[/] /diff [cycle] [end_cycle]", below_stream=True
-                )
+                self._write_below_stream_box("  [red]Usage:[/] /diff [cycle] [end_cycle]")
                 return
         except ValueError:
-            self._write_activity(
-                "  [red]Usage:[/] /diff [cycle] [end_cycle]", below_stream=True
-            )
+            self._write_below_stream_box("  [red]Usage:[/] /diff [cycle] [end_cycle]")
             return
 
         if (start_cycle is not None and start_cycle < 1) or (
             end_cycle is not None and end_cycle < 1
         ):
-            self._write_activity(
-                "  [red]Cycle number must be ≥ 1[/]", below_stream=True
-            )
+            self._write_below_stream_box("  [red]Cycle number must be >= 1[/]")
             return
 
         if start_cycle is not None and end_cycle is not None and end_cycle < start_cycle:
-            self._write_activity(
-                "  [red]End cycle must be ≥ start cycle[/]", below_stream=True
-            )
+            self._write_below_stream_box("  [red]End cycle must be >= start cycle[/]")
             return
 
         project_dir = self.cfg.project_dir
@@ -1180,10 +1233,7 @@ class ResearchConsole(App[None]):
             elif end_cycle == current_cycle:
                 to_ref = None  # in-progress – use working tree
             else:
-                self._write_activity(
-                    f"  [red]No checkpoint found for cycle {end_cycle}[/]",
-                    below_stream=True,
-                )
+                self._write_below_stream_box(f"  [red]No checkpoint found for cycle {end_cycle}[/]")
                 return
 
         # Resolve from_ref (state just before start_cycle)
@@ -1200,41 +1250,32 @@ class ResearchConsole(App[None]):
                 label = f"cycle {start_cycle}" + (" (in progress)" if to_ref is None else "")
             else:
                 label = f"cycles {start_cycle}–{end_cycle}"
-            self._write_activity(
-                f"  [dim]No changes for {label}[/]", below_stream=True
-            )
+            self._write_below_stream_box(f"  [dim]No changes for {label}[/]")
             return
 
         markup = events.format_diff_as_markup(raw_diff)
         self._clear_diff_widgets()
-
-        # Mount the diff output below the stream panel and track the widgets
-        scroll = self.query_one("#activity-scroll", VerticalScroll)
-        stream = self.query_one("#stream-text", Static)
 
         if start_cycle == end_cycle:
             title_text = f"cycle {start_cycle}" + (" · in progress" if to_ref is None else "")
         else:
             title_text = f"cycles {start_cycle}–{end_cycle}"
 
-        header = Static(
-            f"  [dim]diff · {title_text}[/]",
-            classes="activity-line",
-        )
         body_markup = markup if raw_diff.strip() else "  [dim]No changes yet[/]"
-        body = Static(body_markup, classes="activity-line")
-        scroll.mount(header, after=stream)
-        scroll.mount(body, after=header)
-        self._diff_widgets = [header, body]
+        widget = self._write_below_stream_box(
+            body_markup,
+            title=f"[dim]diff[/] [dim]{title_text}[/]",
+        )
+        if widget is None:
+            return
+        self._diff_widgets = [widget]
         self._live_diff_state = _LiveDiffState(
             from_ref=from_ref,
             to_ref=to_ref,
             title_text=title_text,
-            header=header,
-            body=body,
+            widget=widget,
             last_raw_diff=raw_diff,
         )
-        self.call_after_refresh(lambda: scroll.scroll_end(animate=False))
 
     def _cmd_undo(self) -> None:
         """Drop in-flight or last finished worker changes; restart only if the agent was running."""
@@ -1335,28 +1376,45 @@ class ResearchConsole(App[None]):
         try:
             st = db.get_system_state(self._conn)
         except sqlite3.OperationalError:
-            self._write_activity("  [red]DB not ready[/]", below_stream=True)
+            self._write_below_stream_box("  [red]DB not ready[/]")
             return
         mode = st.get("control_mode", "?")
         cycle = st.get("cycle_count", 0)
         worker = st.get("current_worker", "")
         task = (st.get("task", "") or "")[:120]
         roadmap = (st.get("roadmap_step", "") or "")[:60]
-        self._write_activity(
+        self._write_below_stream_box(
             f"  [bold]Status[/]  mode={mode}  cycle={cycle}  worker={worker}\n"
             f"  roadmap: {roadmap}\n"
-            f"  task: {task}",
-            below_stream=True,
+            f"  task: {task}"
         )
 
+    def _cmd_plan(self) -> None:
+        self._live_plan_state = None
+        checklist = self._read_roadmap_checklist()
+        if checklist.strip():
+            widget = self._write_below_stream_renderable(
+                events.wrap_result_renderable(events.render_markdown(checklist)),
+                classes="checklist-box",
+            )
+        else:
+            widget = self._write_below_stream_box(
+                "  [dim]No roadmap checklist found[/]",
+                title="[dim]plan[/]",
+            )
+        if widget is None:
+            return
+        self._live_plan_state = _LivePlanState(widget=widget, last_text=checklist)
+
     def _cmd_help(self) -> None:
-        self._write_activity(
-            "\n  [bold]Commands[/]\n"
+        self._write_below_stream_box(
+            "  [bold]Commands[/]\n"
             "  [bold]/start[/]        Start the background agent\n"
             "  [bold]/pause[/]        Pause after the current worker finishes\n"
             "  [bold]/stop[/]         Stop immediately (kill worker, revert in-flight cycle)\n"
             "  [bold]/exit[/]         Stop agent and quit\n"
             "  [bold]/status[/]       Show current agent state\n"
+            "  [bold]/plan[/]         Show the live roadmap checklist\n"
             "  [bold]/diff[/]         Show line diff of the current cycle\n"
             "  [bold]/diff N[/]       Show line diff of cycle N\n"
             "  [bold]/diff N M[/]     Show line diff from start of cycle N to end of cycle M\n"
@@ -1365,8 +1423,7 @@ class ResearchConsole(App[None]):
             "  [bold]/redo[/]         Restore the last undone checkpoint and replay local edits on top\n"
             "  [bold]/help[/]         This message\n"
             "\n  Plain text is queued as an instruction.\n"
-            "  [dim]Enter[/] sends · [dim]Shift+Enter[/] for newline · navigate lines with arrows\n",
-            below_stream=True,
+            "  [dim]Enter[/] sends · [dim]Shift+Enter[/] for newline · navigate lines with arrows\n"
         )
 
     def _cmd_reset(self) -> None:

@@ -10,6 +10,7 @@ from rich.console import Group
 from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.table import Table
+from rich.text import Text
 
 from lab import db, git_checkpoint, memory
 from lab.config import RunConfig
@@ -26,7 +27,14 @@ def _console_query_stub(captured: list[str]):
 
         def mount(self, w, before=None, after=None) -> None:
             text = getattr(w, "content", None) or getattr(w, "renderable", None)
-            captured.append(str(text) if text is not None else "")
+            if text is None:
+                captured.append("")
+                return
+            if isinstance(text, Panel):
+                inner = text.renderable
+                captured.append(inner.plain if isinstance(inner, Text) else str(inner))
+            else:
+                captured.append(str(text))
 
         def scroll_end(self, animate: bool = False) -> None:
             pass

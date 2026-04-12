@@ -531,31 +531,29 @@ def _default_plan_doc(*, title: str, role: str) -> str:
         f"# {title}\n\n"
         f"<!-- {role} -->\n\n"
         "## Overview\n\n\n"
-        "## Steps\n\n"
-        "- \n\n"
+        f"{IMMEDIATE_PLAN_CHECKLIST_HEADER}\n\n"
+        "- [ ] \n\n"
+        "## Notes\n\n\n"
         "## Done when\n\n\n"
     )
 
 
 def _default_immediate_plan_doc() -> str:
-    """Scaffold for ``immediate_plan.md`` with an extractable checklist section."""
+    """Scaffold ``immediate_plan.md`` with an empty ``## Checklist`` until workers fill it."""
     return (
         "# Immediate plan\n\n"
         "<!-- Low-level plan for the active task only—same shape as a Cursor or Claude Code "
         "plan (concrete steps, files, checks). Should map to a single roadmap item in "
         "roadmap.md when possible. -->\n\n"
         "## Overview\n\n\n"
-        f"{IMMEDIATE_PLAN_CHECKLIST_HEADER}\n\n"
-        "- [ ] First concrete task\n"
-        "  - [ ] Optional nested subtask\n"
-        "- [ ] Verification step\n\n"
+        f"{IMMEDIATE_PLAN_CHECKLIST_HEADER}\n\n\n"
         "## Notes\n\n\n"
         "## Done when\n\n\n"
     )
 
 
-def extract_immediate_plan_checklist(text: str) -> str:
-    """Return the canonical ``## Checklist`` section from ``immediate_plan.md``."""
+def extract_checklist_section(text: str) -> str:
+    """Return the canonical ``## Checklist`` section from a plan-shaped document."""
     body = (text or "").strip()
     if not body:
         return ""
@@ -564,6 +562,46 @@ def extract_immediate_plan_checklist(text: str) -> str:
         body,
     )
     return match.group(0).strip() if match else ""
+
+
+def _normalize_legacy_steps_to_checklist(section: str) -> str:
+    """Convert a legacy ``## Steps`` list block into checklist form."""
+    lines = (section or "").splitlines()
+    out: list[str] = [IMMEDIATE_PLAN_CHECKLIST_HEADER]
+    for line in lines[1:]:
+        stripped = line.lstrip()
+        if not stripped:
+            out.append("")
+            continue
+        indent = line[: len(line) - len(stripped)]
+        if stripped.startswith(("- [ ] ", "- [x] ", "- [X] ")):
+            out.append(f"{indent}{stripped}")
+            continue
+        if stripped.startswith("- "):
+            out.append(f"{indent}- [ ] {stripped[2:]}")
+            continue
+        out.append(line)
+    normalized = "\n".join(out).strip()
+    return normalized if normalized != IMMEDIATE_PLAN_CHECKLIST_HEADER else ""
+
+
+def extract_immediate_plan_checklist(text: str) -> str:
+    """Return the canonical ``## Checklist`` section from ``immediate_plan.md``."""
+    return extract_checklist_section(text)
+
+
+def extract_roadmap_checklist(text: str) -> str:
+    """Return the roadmap checklist, with a fallback for legacy ``## Steps`` sections."""
+    checklist = extract_checklist_section(text)
+    if checklist:
+        return checklist
+    body = (text or "").strip()
+    if not body:
+        return ""
+    match = re.search(r"(?ms)^[ \t]*##[ \t]+Steps[ \t]*\n.*?(?=^[ \t]*##[ \t]+|\Z)", body)
+    if not match:
+        return ""
+    return _normalize_legacy_steps_to_checklist(match.group(0))
 
 
 def write_user_instruction_new_section(researcher_root: Path, text: str) -> None:

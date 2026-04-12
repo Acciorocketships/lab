@@ -64,7 +64,10 @@ def test_orchestrator_prompt_requires_live_immediate_plan_and_subagent_diversity
     """Routing prompt should use system history and send stale planning back to planner."""
     assert "Use `system.md`'s recent subagent history" in _ORCH_JSON_SYSTEM
     assert "planning, implementation, review/testing, experimentation, debugging, critique, and reporting" in _ORCH_JSON_SYSTEM
-    assert "Route to `planner` whenever the current `immediate_plan.md` is missing, stale, finished, or no longer matches the current roadmap phase" in _ORCH_JSON_SYSTEM
+    assert (
+        "Route to `planner` whenever the current `immediate_plan.md` is missing, stale, finished, "
+        "no longer matches the current roadmap phase, or contains human-gated completion criteria"
+    ) in _ORCH_JSON_SYSTEM
 
 
 def test_shared_and_planner_prompts_require_modular_incremental_checklists() -> None:
@@ -74,4 +77,4 @@ def test_shared_and_planner_prompts_require_modular_incremental_checklists() -> 
     assert "**`context_summary.md`** — **Orchestrator-owned only.**" in shared_prompt.MEMORY_AND_TIER_A
     assert "The orchestrator overwrites this file" in shared_prompt.MEMORY_AND_TIER_A
     assert "including implementation, testing, experiments, debugging, review, or reporting" in planner.SYSTEM_PROMPT
-    assert "track modular components and their validation points" in planner.SYSTEM_PROMPT
+    assert "Prefer checklists that track modular components and validation points" in planner.SYSTEM_PROMPT

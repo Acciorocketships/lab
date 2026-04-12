@@ -928,6 +928,20 @@ def make_stream_panel(markup: str) -> Panel:
     )
 
 
+def make_markup_panel(markup: str, *, title: str = "", expand: bool = True) -> Panel:
+    content = Text.from_markup(markup) if markup else Text("")
+    return Panel(
+        content,
+        box=box.ROUNDED,
+        border_style=_SURFACE_BORDER,
+        style=f"on {_SURFACE_BG}",
+        title=title,
+        title_align="left",
+        padding=(0, 2),
+        expand=expand,
+    )
+
+
 def wrap_result_renderable(renderable: RenderableType) -> RenderableType:
     if isinstance(renderable, Panel):
         return renderable
