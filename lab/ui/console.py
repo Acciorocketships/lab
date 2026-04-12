@@ -34,6 +34,16 @@ class _RedoSnapshot:
     snapshot_dir: Path
     cycle: int
 
+
+@dataclass
+class _LiveDiffState:
+    from_ref: str
+    to_ref: str | None
+    title_text: str
+    header: Static
+    body: Static
+    last_raw_diff: str = ""
+
 CSS = """
 Screen {
     background: $surface;
@@ -186,6 +196,7 @@ class ResearchConsole(App[None]):
         self._redo_stack: list[_RedoSnapshot] = []
         self._checkpoint_notice_widget: Static | None = None
         self._diff_widgets: list[Static] = []
+        self._live_diff_state: _LiveDiffState | None = None
 
     def _cycle_header_cursor_model(self) -> str | None:
         """Cursor CLI ``--model`` value for cycle headers (only when workers use Cursor)."""
@@ -246,12 +257,14 @@ class ResearchConsole(App[None]):
             except Exception:
                 pass
         self._diff_widgets = []
+        self._live_diff_state = None
 
     def _clear_activity_log(self) -> None:
         """Remove all lines from the scroll area except the live stream panel."""
         self._welcome_widgets = []
         self._checkpoint_notice_widget = None
         self._diff_widgets = []
+        self._live_diff_state = None
         scroll = self.query_one("#activity-scroll", VerticalScroll)
         stream = self.query_one("#stream-text", Static)
         children = list(getattr(scroll, "children", []))
@@ -266,6 +279,7 @@ class ResearchConsole(App[None]):
         """Remove ephemeral lines under the stream panel (slash commands, status, etc.)."""
         self._checkpoint_notice_widget = None
         self._diff_widgets = []
+        self._live_diff_state = None
         try:
             scroll = self.query_one("#activity-scroll", VerticalScroll)
             stream = self.query_one("#stream-text", Static)
@@ -670,6 +684,7 @@ class ResearchConsole(App[None]):
         self._refresh_running_cycle_header()
         self._refresh_file_changes()
         self._refresh_checklist()
+        self._refresh_live_diff()
 
     def _poll_animated_stream_status(self) -> None:
         """Animate Orchestrating… or Running {worker}… until stream chunks replace the panel."""
@@ -778,6 +793,23 @@ class ResearchConsole(App[None]):
             )
         )
 
+    def _refresh_live_diff(self) -> None:
+        """Repaint an active working-tree diff view while files continue changing."""
+        from lab import git_checkpoint
+
+        state = self._live_diff_state
+        if state is None or state.to_ref is not None:
+            return
+        raw_diff = git_checkpoint.get_line_diff(self.cfg.project_dir, state.from_ref, None)
+        if raw_diff == state.last_raw_diff:
+            return
+        state.last_raw_diff = raw_diff
+        state.header.update(f"  [dim]diff · {state.title_text}[/]")
+        if raw_diff.strip():
+            state.body.update(events.format_diff_as_markup(raw_diff))
+        else:
+            state.body.update("  [dim]No changes yet[/]")
+
     def _poll_run_events(self) -> None:
         """Check for new orchestrator / worker lifecycle events."""
         try:
@@ -840,6 +872,12 @@ class ResearchConsole(App[None]):
                     task_w = self._write_task(task)
                     if task_w is not None:
                         self._current_cycle_widgets.append(task_w)
+                    self._file_changes_widget = self._mount_activity_widget(
+                        "", classes="activity-line file-changes",
+                    )
+                    self._file_changes_widget.display = False
+                    self._current_cycle_widgets.append(self._file_changes_widget)
+                    self._last_file_changes_ts = 0.0
                     self._checklist_widget = self._mount_activity_widget(
                         "", classes="activity-line checklist-box",
                     )
@@ -847,12 +885,6 @@ class ResearchConsole(App[None]):
                     self._current_cycle_widgets.append(self._checklist_widget)
                     self._last_checklist_text = ""
                     self._refresh_checklist(force=True)
-                    self._file_changes_widget = self._mount_activity_widget(
-                        "", classes="activity-line file-changes",
-                    )
-                    self._file_changes_widget.display = False
-                    self._current_cycle_widgets.append(self._file_changes_widget)
-                    self._last_file_changes_ts = 0.0
                 self._stream_is_running_placeholder = True
                 self._running_worker_tick = 0
                 wdots = "." * ((self._running_worker_tick % 3) + 1)
@@ -1162,7 +1194,8 @@ class ResearchConsole(App[None]):
         raw_diff = git_checkpoint.get_line_diff(project_dir, from_ref, to_ref)
         assert end_cycle is not None
 
-        if not raw_diff.strip():
+        is_live = to_ref is None
+        if not raw_diff.strip() and not is_live:
             if start_cycle == end_cycle:
                 label = f"cycle {start_cycle}" + (" (in progress)" if to_ref is None else "")
             else:
@@ -1188,10 +1221,19 @@ class ResearchConsole(App[None]):
             f"  [dim]diff · {title_text}[/]",
             classes="activity-line",
         )
-        body = Static(markup, classes="activity-line")
+        body_markup = markup if raw_diff.strip() else "  [dim]No changes yet[/]"
+        body = Static(body_markup, classes="activity-line")
         scroll.mount(header, after=stream)
         scroll.mount(body, after=header)
         self._diff_widgets = [header, body]
+        self._live_diff_state = _LiveDiffState(
+            from_ref=from_ref,
+            to_ref=to_ref,
+            title_text=title_text,
+            header=header,
+            body=body,
+            last_raw_diff=raw_diff,
+        )
         self.call_after_refresh(lambda: scroll.scroll_end(animate=False))
 
     def _cmd_undo(self) -> None:
