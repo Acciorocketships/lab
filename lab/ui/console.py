@@ -1167,7 +1167,6 @@ class ResearchConsole(App[None]):
             "pause": self._cmd_pause,
             "stop": self._cmd_stop,
             "exit": self._cmd_exit,
-            "status": self._cmd_status,
             "help": self._cmd_help,
             "reset": self._cmd_reset,
             "undo": self._cmd_undo,
@@ -1372,23 +1371,6 @@ class ResearchConsole(App[None]):
         self._conn.commit()
         self.set_timer(0.3, self.exit)
 
-    def _cmd_status(self) -> None:
-        try:
-            st = db.get_system_state(self._conn)
-        except sqlite3.OperationalError:
-            self._write_below_stream_box("  [red]DB not ready[/]")
-            return
-        mode = st.get("control_mode", "?")
-        cycle = st.get("cycle_count", 0)
-        worker = st.get("current_worker", "")
-        task = (st.get("task", "") or "")[:120]
-        roadmap = (st.get("roadmap_step", "") or "")[:60]
-        self._write_below_stream_box(
-            f"  [bold]Status[/]  mode={mode}  cycle={cycle}  worker={worker}\n"
-            f"  roadmap: {roadmap}\n"
-            f"  task: {task}"
-        )
-
     def _cmd_plan(self) -> None:
         self._live_plan_state = None
         checklist = self._read_roadmap_checklist()
@@ -1413,11 +1395,8 @@ class ResearchConsole(App[None]):
             "  [bold]/pause[/]        Pause after the current worker finishes\n"
             "  [bold]/stop[/]         Stop immediately (kill worker, revert in-flight cycle)\n"
             "  [bold]/exit[/]         Stop agent and quit\n"
-            "  [bold]/status[/]       Show current agent state\n"
             "  [bold]/plan[/]         Show the live roadmap checklist\n"
-            "  [bold]/diff[/]         Show line diff of the current cycle\n"
-            "  [bold]/diff N[/]       Show line diff of cycle N\n"
-            "  [bold]/diff N M[/]     Show line diff from start of cycle N to end of cycle M\n"
+            "  [bold]/diff[/]         Line-by-line diff. If args are given: [bold]/diff n[/] = diff in cycle n; [bold]/diff n m[/] = diff from cycle n to end of cycle m\n"
             "  [bold]/reset[/]        Clear DB and runtime memory; keep research_idea.md + preferences.md; project code unchanged\n"
             "  [bold]/undo[/]         Revert since last worker; restarts orchestrator only if agent was running\n"
             "  [bold]/redo[/]         Restore the last undone checkpoint and replay local edits on top\n"

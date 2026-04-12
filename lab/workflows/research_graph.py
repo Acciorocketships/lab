@@ -171,9 +171,9 @@ def choose_action(
             payload=dec.model_dump(),
             packet_path=None,
         )
-        # Align system_state with the new cycle immediately so /status and the
-        # header match the orchestrator run_event (previously only updated after
-        # the worker finished, so they lagged by one cycle during execution).
+        # Align system_state with the new cycle immediately so the
+        # header matches the orchestrator run_event (previously only updated after
+        # the worker finished, so it lagged by one cycle during execution).
         db.set_system_fields(
             conn,
             roadmap_step=dec.roadmap_step,

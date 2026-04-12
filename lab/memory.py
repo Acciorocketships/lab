@@ -558,7 +558,7 @@ def extract_checklist_section(text: str) -> str:
     if not body:
         return ""
     match = re.search(
-        rf"(?ms)^[ \t]*{re.escape(IMMEDIATE_PLAN_CHECKLIST_HEADER)}[ \t]*\n.*?(?=^[ \t]*##[ \t]+|\Z)",
+        rf"(?ms)^[ \t]*{re.escape(IMMEDIATE_PLAN_CHECKLIST_HEADER)}(?:[ \t]+[^\n]*)?[ \t]*\n.*?(?=^[ \t]*##[ \t]+|\Z)",
         body,
     )
     return match.group(0).strip() if match else ""

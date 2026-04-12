@@ -92,6 +92,20 @@ def test_extract_immediate_plan_checklist_returns_only_canonical_section() -> No
     assert "## Notes" not in got
 
 
+def test_extract_immediate_plan_checklist_allows_annotated_heading() -> None:
+    text = (
+        "# Immediate plan\n\n"
+        "## Checklist (Phase 1.5 - archived)\n\n"
+        "- [x] Keep showing archived checklist\n\n"
+        "## Notes\n\n"
+        "Archived after completion.\n"
+    )
+    got = memory.extract_immediate_plan_checklist(text)
+    assert got.startswith("## Checklist (Phase 1.5 - archived)")
+    assert "Keep showing archived checklist" in got
+    assert "## Notes" not in got
+
+
 def test_legacy_project_brief_removed_on_ensure(tmp_path: Path) -> None:
     project_dir = tmp_path.parent / "proj_workspace"
     project_dir.mkdir(parents=True, exist_ok=True)

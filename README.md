@@ -37,7 +37,6 @@ Once in the console, type `/start` to begin the background agent, `/pause` to pa
 | `/pause` | Pause after the current worker (subagent) finishes — no kill, no revert |
 | `/stop` | Stop immediately: kill the worker process and revert any in-flight cycle |
 | `/exit` | Stop the agent and quit the console |
-| `/status` | Show current agent state |
 | `/branches` | Show branch registry |
 | `/reset` | Clear SQLite and runtime memory (Tier A except `research_idea.md` and `preferences.md`, episodes, extended, branches, skills, experiments); syncs `[project]` brief and preferences in `config.toml` from those files; does not change your project code |
 | `/undo` | Stop the scheduler if running, restore the project tree and DB to before the current or last worker (git checkpoints); if the agent was running, restart it for a fresh orchestrator step (if paused, stays paused) |
