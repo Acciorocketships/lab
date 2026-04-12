@@ -16,9 +16,8 @@ from textual.binding import Binding
 from textual.containers import Container, VerticalScroll
 from textual.widgets import Static, TextArea
 
-from lab import db
+from lab import db, helpers, memory
 from lab.global_config import project_researcher_root
-from lab.memory import read_worker_diff_baseline
 from lab.runner import reset_project_preserving_research_idea
 from lab.ui import events
 from lab.ui.prompt_text_area import PromptSubmitted, PromptTextArea
@@ -119,6 +118,13 @@ Screen {
     padding: 0 1;
 }
 
+.checklist-box {
+    height: auto;
+    margin: 0 2;
+    width: 1fr;
+    min-width: 0;
+}
+
 #stream-text {
     height: auto;
     margin: 0 2;
@@ -169,6 +175,8 @@ class ResearchConsole(App[None]):
         self._stream_last_event_was_tool = False
         self._current_cycle_widgets: list[Static] = []
         self._file_changes_widget: Static | None = None
+        self._checklist_widget: Static | None = None
+        self._last_checklist_text = ""
         self._last_file_changes_ts: float = 0.0
         self._orchestrating = False
         self._orchestrating_tick = 0
@@ -177,6 +185,7 @@ class ResearchConsole(App[None]):
         self._welcome_widgets: list[Static] = []
         self._redo_stack: list[_RedoSnapshot] = []
         self._checkpoint_notice_widget: Static | None = None
+        self._diff_widgets: list[Static] = []
 
     def _cycle_header_cursor_model(self) -> str | None:
         """Cursor CLI ``--model`` value for cycle headers (only when workers use Cursor)."""
@@ -229,10 +238,20 @@ class ResearchConsole(App[None]):
             w.remove()
         self._welcome_widgets = []
 
+    def _clear_diff_widgets(self) -> None:
+        """Remove any previously-shown /diff output widgets."""
+        for w in self._diff_widgets:
+            try:
+                w.remove()
+            except Exception:
+                pass
+        self._diff_widgets = []
+
     def _clear_activity_log(self) -> None:
         """Remove all lines from the scroll area except the live stream panel."""
         self._welcome_widgets = []
         self._checkpoint_notice_widget = None
+        self._diff_widgets = []
         scroll = self.query_one("#activity-scroll", VerticalScroll)
         stream = self.query_one("#stream-text", Static)
         children = list(getattr(scroll, "children", []))
@@ -246,6 +265,7 @@ class ResearchConsole(App[None]):
     def _clear_below_stream_feedback(self) -> None:
         """Remove ephemeral lines under the stream panel (slash commands, status, etc.)."""
         self._checkpoint_notice_widget = None
+        self._diff_widgets = []
         try:
             scroll = self.query_one("#activity-scroll", VerticalScroll)
             stream = self.query_one("#stream-text", Static)
@@ -268,6 +288,8 @@ class ResearchConsole(App[None]):
         self._current_cycle_widgets = []
         self._cycle_header_widget = None
         self._file_changes_widget = None
+        self._checklist_widget = None
+        self._last_checklist_text = ""
         self._last_file_changes_ts = 0.0
         self._worker_start_ts = 0.0
         self._last_worker = ""
@@ -322,6 +344,10 @@ class ResearchConsole(App[None]):
             task_w = self._write_task(task)
             if task_w is not None:
                 self._current_cycle_widgets.append(task_w)
+            checklist = str(payload.get("immediate_plan_checklist", "") or "").strip()
+            checklist_w = self._write_checklist_box(checklist)
+            if checklist_w is not None:
+                self._current_cycle_widgets.append(checklist_w)
 
             excerpt = events.extract_result_excerpt(self._fetch_last_stream_text(cycle))
             if not excerpt:
@@ -429,6 +455,18 @@ class ResearchConsole(App[None]):
         stream = self.query_one("#stream-text", Static)
         rendered = events.wrap_result_renderable(events.render_markdown(text))
         w = Static(rendered, classes="result-box", expand=True)
+        scroll.mount(w, before=stream)
+        self.call_after_refresh(lambda: scroll.scroll_end(animate=False))
+        return w
+
+    def _write_checklist_box(self, text: str) -> Static | None:
+        """Append a rendered checklist block to the activity scroll area."""
+        if not text.strip():
+            return None
+        scroll = self.query_one("#activity-scroll", VerticalScroll)
+        stream = self.query_one("#stream-text", Static)
+        rendered = events.wrap_result_renderable(events.render_markdown(text))
+        w = Static(rendered, classes="checklist-box", expand=True)
         scroll.mount(w, before=stream)
         self.call_after_refresh(lambda: scroll.scroll_end(animate=False))
         return w
@@ -577,7 +615,7 @@ class ResearchConsole(App[None]):
         if not force and now - self._last_file_changes_ts < 0.25:
             return
         self._last_file_changes_ts = now
-        raw = read_worker_diff_baseline(project_researcher_root(self.cfg.project_dir))
+        raw = memory.read_worker_diff_baseline(project_researcher_root(self.cfg.project_dir))
         if not raw or int(raw.get("cycle", -1)) != self._last_cycle:
             self._file_changes_widget.display = False
             return
@@ -587,6 +625,33 @@ class ResearchConsole(App[None]):
             self._file_changes_widget.display = True
         else:
             self._file_changes_widget.display = False
+
+    def _read_immediate_plan_checklist(self) -> str:
+        body = helpers.read_text(
+            memory.state_dir(self.cfg.researcher_root) / "immediate_plan.md",
+            default="",
+        )
+        return memory.extract_immediate_plan_checklist(body)
+
+    def _update_checklist_widget(self, text: str, *, force: bool = False) -> None:
+        if self._checklist_widget is None:
+            return
+        cleaned = (text or "").strip()
+        if not force and cleaned == self._last_checklist_text:
+            return
+        self._last_checklist_text = cleaned
+        if not cleaned:
+            self._checklist_widget.display = False
+            return
+        self._checklist_widget.update(
+            events.wrap_result_renderable(events.render_markdown(cleaned))
+        )
+        self._checklist_widget.display = True
+
+    def _refresh_checklist(self, *, force: bool = False) -> None:
+        if self._checklist_widget is None:
+            return
+        self._update_checklist_widget(self._read_immediate_plan_checklist(), force=force)
 
     def _refresh_header(self) -> None:
         try:
@@ -604,6 +669,7 @@ class ResearchConsole(App[None]):
         self._poll_animated_stream_status()
         self._refresh_running_cycle_header()
         self._refresh_file_changes()
+        self._refresh_checklist()
 
     def _poll_animated_stream_status(self) -> None:
         """Animate Orchestrating… or Running {worker}… until stream chunks replace the panel."""
@@ -736,6 +802,7 @@ class ResearchConsole(App[None]):
                 self._orchestrating = False
                 new_cycle = cycle != self._last_cycle or worker != self._last_worker
                 if new_cycle:
+                    self._clear_diff_widgets()
                     if self._cycle_header_widget is not None:
                         ps = self._worker_start_ts
                         pe = max(0.0, time.time() - ps) if ps else 0.0
@@ -773,6 +840,13 @@ class ResearchConsole(App[None]):
                     task_w = self._write_task(task)
                     if task_w is not None:
                         self._current_cycle_widgets.append(task_w)
+                    self._checklist_widget = self._mount_activity_widget(
+                        "", classes="activity-line checklist-box",
+                    )
+                    self._checklist_widget.display = False
+                    self._current_cycle_widgets.append(self._checklist_widget)
+                    self._last_checklist_text = ""
+                    self._refresh_checklist(force=True)
                     self._file_changes_widget = self._mount_activity_widget(
                         "", classes="activity-line file-changes",
                     )
@@ -814,9 +888,14 @@ class ResearchConsole(App[None]):
                     stream_excerpt = events.extract_result_excerpt(self._last_stream_text)
                 summary_excerpt = events.extract_result_excerpt(row["summary"] or "")
                 excerpt = stream_excerpt or (summary_excerpt if ok else "")
+                checklist = str(payload.get("immediate_plan_checklist", "") or "").strip()
+                if not checklist:
+                    checklist = self._read_immediate_plan_checklist()
                 self._clear_stream_status()
                 self._refresh_file_changes(force=True)
                 self._file_changes_widget = None
+                self._update_checklist_widget(checklist, force=True)
+                self._checklist_widget = None
                 if self._cycle_header_widget is not None and cycle == self._last_cycle:
                     self._cycle_header_widget.update(
                         events.format_cycle_header(
@@ -986,6 +1065,10 @@ class ResearchConsole(App[None]):
                 below_stream=True,
             )
 
+        if cmd == "diff":
+            self._cmd_diff(rest)
+            return
+
         handler = {
             "start": self._cmd_start,
             "pause": self._cmd_pause,
@@ -1002,6 +1085,114 @@ class ResearchConsole(App[None]):
             handler()
         else:
             self._write_activity(f"  [red]Unknown command:[/] /{cmd}", below_stream=True)
+
+    def _cmd_diff(self, rest: str) -> None:
+        """Show line-by-line diff for the requested cycle range.
+
+        /diff           – changes in the current (in-progress) cycle
+        /diff N         – changes introduced by cycle N
+        /diff N M       – changes from the start of cycle N through the end of cycle M
+        """
+        from lab import git_checkpoint
+
+        parts = rest.strip().split()
+        try:
+            if len(parts) == 0:
+                start_cycle: int | None = None
+                end_cycle: int | None = None
+            elif len(parts) == 1:
+                start_cycle = int(parts[0])
+                end_cycle = start_cycle
+            elif len(parts) == 2:
+                start_cycle = int(parts[0])
+                end_cycle = int(parts[1])
+            else:
+                self._write_activity(
+                    "  [red]Usage:[/] /diff [cycle] [end_cycle]", below_stream=True
+                )
+                return
+        except ValueError:
+            self._write_activity(
+                "  [red]Usage:[/] /diff [cycle] [end_cycle]", below_stream=True
+            )
+            return
+
+        if (start_cycle is not None and start_cycle < 1) or (
+            end_cycle is not None and end_cycle < 1
+        ):
+            self._write_activity(
+                "  [red]Cycle number must be ≥ 1[/]", below_stream=True
+            )
+            return
+
+        if start_cycle is not None and end_cycle is not None and end_cycle < start_cycle:
+            self._write_activity(
+                "  [red]End cycle must be ≥ start cycle[/]", below_stream=True
+            )
+            return
+
+        project_dir = self.cfg.project_dir
+        current_cycle = int(db.get_system_state(self._conn).get("cycle_count", 0))
+
+        # Resolve "no args" → current in-progress cycle
+        if start_cycle is None:
+            start_cycle = max(current_cycle, 1)
+            end_cycle = start_cycle
+            to_ref: str | None = None  # compare against working tree
+        else:
+            assert end_cycle is not None
+            # Resolve to_ref (end of end_cycle)
+            to_sha = git_checkpoint.get_checkpoint_sha_for_cycle(project_dir, end_cycle)
+            if to_sha is not None:
+                to_ref = to_sha
+            elif end_cycle == current_cycle:
+                to_ref = None  # in-progress – use working tree
+            else:
+                self._write_activity(
+                    f"  [red]No checkpoint found for cycle {end_cycle}[/]",
+                    below_stream=True,
+                )
+                return
+
+        # Resolve from_ref (state just before start_cycle)
+        from_sha = git_checkpoint.get_checkpoint_sha_for_cycle(project_dir, start_cycle - 1)
+        from_ref: str = from_sha if from_sha is not None else "HEAD"
+
+        # Build the diff
+        raw_diff = git_checkpoint.get_line_diff(project_dir, from_ref, to_ref)
+        assert end_cycle is not None
+
+        if not raw_diff.strip():
+            if start_cycle == end_cycle:
+                label = f"cycle {start_cycle}" + (" (in progress)" if to_ref is None else "")
+            else:
+                label = f"cycles {start_cycle}–{end_cycle}"
+            self._write_activity(
+                f"  [dim]No changes for {label}[/]", below_stream=True
+            )
+            return
+
+        markup = events.format_diff_as_markup(raw_diff)
+        self._clear_diff_widgets()
+
+        # Mount the diff output below the stream panel and track the widgets
+        scroll = self.query_one("#activity-scroll", VerticalScroll)
+        stream = self.query_one("#stream-text", Static)
+
+        if start_cycle == end_cycle:
+            title_text = f"cycle {start_cycle}" + (" · in progress" if to_ref is None else "")
+        else:
+            title_text = f"cycles {start_cycle}–{end_cycle}"
+
+        header = Static(
+            f"  [dim]diff · {title_text}[/]",
+            classes="activity-line",
+        )
+        body = Static(markup, classes="activity-line")
+        scroll.mount(header, after=stream)
+        scroll.mount(body, after=header)
+        self._diff_widgets = [header, body]
+        self.call_after_refresh(lambda: scroll.scroll_end(animate=False))
 
     def _cmd_undo(self) -> None:
         """Drop in-flight or last finished worker changes; restart only if the agent was running."""
@@ -1124,6 +1315,9 @@ class ResearchConsole(App[None]):
             "  [bold]/stop[/]         Stop immediately (kill worker, revert in-flight cycle)\n"
             "  [bold]/exit[/]         Stop agent and quit\n"
             "  [bold]/status[/]       Show current agent state\n"
+            "  [bold]/diff[/]         Show line diff of the current cycle\n"
+            "  [bold]/diff N[/]       Show line diff of cycle N\n"
+            "  [bold]/diff N M[/]     Show line diff from start of cycle N to end of cycle M\n"
             "  [bold]/reset[/]        Clear DB and runtime memory; keep research_idea.md + preferences.md; project code unchanged\n"
             "  [bold]/undo[/]         Revert since last worker; restarts orchestrator only if agent was running\n"
             "  [bold]/redo[/]         Restore the last undone checkpoint and replay local edits on top\n"

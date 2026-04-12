@@ -1,10 +1,6 @@
 {
   "files": 11,
   "sizes": {
-    "project_brief.md": {
-      "written": 249,
-      "read": 249
-    },
     "extended_memory_index.md": {
       "written": 257,
       "read": 257
@@ -16,6 +12,10 @@
     "preferences.md": {
       "written": 247,
       "read": 247
+    },
+    "system.md": {
+      "written": 242,
+      "read": 242
     },
     "roadmap.md": {
       "written": 243,

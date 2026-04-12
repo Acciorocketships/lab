@@ -1,5 +1,6 @@
 """Tests for SQLite helpers."""
 
+import json
 from pathlib import Path
 
 from lab import db
@@ -51,6 +52,8 @@ def test_append_run_event(tmp_path: Path) -> None:
     assert len(rows) == 1
     assert rows[0]["worker"] == "planner"
     assert rows[0]["summary"] == "planner: ok"
+    assert rows[0]["payload_json"] is not None
+    assert json.loads(rows[0]["payload_json"]) == {"x": 1}
 
 
 def test_worker_stream_roundtrip(tmp_path: Path) -> None:

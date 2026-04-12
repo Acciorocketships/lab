@@ -19,9 +19,17 @@ Make rollback and diagnosis easy. If something fails, the plan should make it st
 
 **Roadmap** (`roadmap.md`) — high-level, persistent. Keep all phases including completed ones marked clearly (e.g. `[x]`). Do not discard history. On scope change, retcon the **whole** file into one coherent story as if the plan had always been that way.
 
-**Immediate plan** (`immediate_plan.md`) — low-level, disposable. Only the current chunk of work. Update freely while in progress. When complete, clear or replace it with the next chunk — do not accumulate history.
+**Immediate plan** (`immediate_plan.md`) — low-level, disposable. Only the current chunk of work. It should cover the current roadmap slice end-to-end, including implementation, testing, experiments, debugging, review, or reporting when those are part of finishing the current phase. Update freely while in progress. When complete, clear or replace it with the next chunk — do not accumulate history.
 
-When immediate work completes, mark the corresponding roadmap entry complete (retcon if needed), then write a fresh `immediate_plan.md` for what comes next.
+Use a canonical extractable checklist section in that file:
+- include a `## Checklist` heading exactly once
+- put checklist items under it using Markdown task-list syntax: `- [ ]` / `- [x]`
+- use two-space indentation for nested checklist items
+- keep any non-checklist notes outside that section (for example `## Overview`, `## Notes`, `## Done when`)
+
+When immediate work completes, mark the corresponding roadmap entry complete (retcon if needed), then clear or replace `immediate_plan.md` with a fresh plan for what comes next from the roadmap.
+
+Plan in a way that supports continuous updates by all workers. The checklist should be easy for implementers, debuggers, experimenters, reviewers, and others to edit as they discover new constraints, complete steps, or split one task into better-scoped substeps. Prefer checklists that track modular components and their validation points, not one giant implementation blob.
 
 **User instructions** (`user_instructions.md`, `## New`): merge each item into `immediate_plan.md` and/or `roadmap.md`, then delete from `## New` (use `## In progress` / `## Completed` if helpful). Do this immediately — do not leave the queue populated after planning.
 

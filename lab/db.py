@@ -229,10 +229,10 @@ def append_run_event(
 
 
 def recent_run_events(conn: sqlite3.Connection, limit: int = 20) -> list[sqlite3.Row]:
-    """Recent run log rows, newest first."""
+    """Recent run log rows, newest first (includes ``payload_json`` for system tier / tooling)."""
     return list(
         conn.execute(
-            "SELECT id, ts, cycle, kind, worker, roadmap_step, task, summary, packet_path "
+            "SELECT id, ts, cycle, kind, worker, roadmap_step, task, summary, packet_path, payload_json "
             "FROM run_events ORDER BY id DESC LIMIT ?",
             (limit,),
         )

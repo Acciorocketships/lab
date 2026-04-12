@@ -448,6 +448,49 @@ def restore_checkpoint_at_or_before_cycle(project_dir: Path, max_cycle: int) -> 
     return best_c
 
 
+def get_checkpoint_sha_for_cycle(project_dir: Path, cycle: int) -> str | None:
+    """Return the commit SHA of the checkpoint for exactly *cycle*, or None."""
+    if cycle < 1 or not has_checkpoint(project_dir):
+        return None
+    log = subprocess.run(
+        ["git", "log", CHECKPOINT_BRANCH, "--format=%H %s"],
+        cwd=project_dir, capture_output=True, text=True,
+    )
+    if log.returncode != 0 or not log.stdout.strip():
+        return None
+    for line in log.stdout.strip().splitlines():
+        parts = line.split(" ", 1)
+        if len(parts) < 2:
+            continue
+        sha, subj = parts[0], parts[1]
+        m = re.search(r"cycle\s+(\d+)", subj)
+        if m and int(m.group(1)) == cycle:
+            return sha
+    return None
+
+
+def get_line_diff(
+    project_dir: Path,
+    from_ref: str,
+    to_ref: str | None = None,
+    *,
+    context_lines: int = 3,
+) -> str:
+    """Return raw unified diff between *from_ref* and *to_ref* (working tree when None)."""
+    if not is_git_repo(project_dir):
+        return ""
+    cmd = ["git", "diff", f"-U{context_lines}", from_ref]
+    if to_ref is not None:
+        cmd.append(to_ref)
+    try:
+        result = subprocess.run(
+            cmd, cwd=project_dir, capture_output=True, text=True, timeout=15,
+        )
+        return result.stdout if result.returncode == 0 else ""
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return ""
+
+
 def revert_checkpoints_to_parent(project_dir: Path) -> int | None:
     """Prefer :func:`restore_checkpoint_at_or_before_cycle` with DB max worker.
 

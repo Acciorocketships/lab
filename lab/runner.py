@@ -209,15 +209,11 @@ def write_tier_a_brief(
 
 
 def seed_tier_a_from_run_config(researcher_root: Path, cfg: RunConfig) -> None:
-    """Write ``project_brief.md`` in Tier A state from *cfg* (overwrites if present)."""
-    state = researcher_root / "state"
-    state.mkdir(parents=True, exist_ok=True)
-    (state / "project_brief.md").write_text(
-        "# Project\n\n"
-        f"Implementation directory: `{cfg.project_dir}`\n\n"
-        f"Tier A memory directory: `{researcher_root / 'state'}`\n\n"
-        f"User-facing reports and demos should be saved in the project directory, preferably `{cfg.project_dir / 'reports'}`.\n",
-        encoding="utf-8",
+    """Write system-owned ``system.md`` in Tier A (paths only until DB refresh)."""
+    memory.write_system_tier_file(
+        researcher_root,
+        cfg.project_dir,
+        recent_activity="*(no run events yet — start the scheduler)*",
     )
 
 

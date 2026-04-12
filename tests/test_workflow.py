@@ -1,5 +1,7 @@
 """LangGraph workflow smoke."""
 
+import json
+
 from pathlib import Path
 
 import pytest
@@ -141,6 +143,69 @@ def test_execute_worker_query_uses_query_prompt(tmp_path: Path, monkeypatch) -> 
     assert "# Worker: query" in packet
     assert "You are the Query agent." in packet
     assert "Search the local codebase and researcher files" in packet
+
+
+def test_update_state_snapshots_immediate_plan_checklist(tmp_path: Path) -> None:
+    cfg = RunConfig(
+        researcher_root=tmp_path,
+        project_dir=tmp_path / "p",
+        orchestrator_backend="openai",
+        openai_api_key=None,
+        openai_base_url=None,
+        openai_model="gpt-4o-mini",
+        default_worker_backend="cursor",
+        cursor_agent_model="composer-2",
+    )
+    memory.ensure_memory_layout(tmp_path)
+    cfg.project_dir.mkdir()
+
+    (memory.state_dir(tmp_path) / "immediate_plan.md").write_text(
+        "# Immediate plan\n\n"
+        "## Checklist\n\n"
+        "- [x] Canonicalize immediate plan checklist\n"
+        "  - [ ] Show it in the UI\n\n"
+        "## Notes\n\n"
+        "Extra context.\n",
+        encoding="utf-8",
+    )
+
+    db_path = tmp_path / "db.sqlite"
+    state: ResearchState = {
+        "current_goal": "t",
+        "current_branch": "",
+        "current_worker": "planner",
+        "cycle_count": 1,
+        "control_mode": "active",
+        "pending_instructions": [],
+        "last_action_summary": "updated the plan",
+        "roadmap_step": "",
+        "orchestrator_task": "update plan",
+        "orchestrator_reason": "need a stable checklist",
+        "acceptance_satisfied": False,
+        "shutdown_requested": False,
+        "worker_ok": True,
+        "last_packet_relpath": "",
+    }
+
+    research_graph.update_state(
+        state,
+        cfg=cfg,
+        db_path=db_path,
+        researcher_root=tmp_path,
+        project_dir=cfg.project_dir,
+    )
+
+    conn = db.connect_db(db_path)
+    row = conn.execute(
+        "SELECT payload_json FROM run_events WHERE kind = 'worker' ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    conn.close()
+
+    assert row is not None
+    payload = json.loads(row["payload_json"])
+    assert payload["immediate_plan_checklist"].startswith("## Checklist")
+    assert "Show it in the UI" in payload["immediate_plan_checklist"]
+    assert "## Notes" not in payload["immediate_plan_checklist"]
 
 
 def test_run_loop_consumes_resume_while_paused(tmp_path: Path, monkeypatch) -> None:

@@ -48,6 +48,8 @@ class RunConfig:
     orchestrator_tier_file_max_chars: int | None = None
     orchestrator_branch_memory_max_chars: int | None = None
     worker_packet_max_chars: int | None = None
+    # Rows from SQLite run_events shown in .lab/state/system.md (newest tail).
+    system_recent_run_events_limit: int = 40
 
     @classmethod
     def from_configs(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -10,12 +11,16 @@ from typing import Any
 
 from lab import helpers
 
+SYSTEM_TIER_A_FILE = "system.md"
+LEGACY_PROJECT_BRIEF = "project_brief.md"
+# Collapsed one-line excerpt from worker ``packet.md`` in ``system.md`` Recent activity.
+_SYSTEM_RECENT_PACKET_SNIPPET_CHARS = 280
 
 TIER_A_FILES = [
-    "project_brief.md",
     "extended_memory_index.md",
     "research_idea.md",  # full research brief (goals + success criteria)
     "preferences.md",
+    SYSTEM_TIER_A_FILE,
     "roadmap.md",
     "immediate_plan.md",
     "status.md",
@@ -25,10 +30,168 @@ TIER_A_FILES = [
     "user_instructions.md",
 ]
 
+IMMEDIATE_PLAN_CHECKLIST_HEADER = "## Checklist"
+
 
 def state_dir(researcher_root: Path) -> Path:
     """Tier A operating memory directory."""
     return researcher_root / "state"
+
+
+def _project_dir_for_system_tier(researcher_root: Path, project_dir: Path | None) -> Path:
+    """Resolve project directory for path lines in ``system.md``."""
+    if project_dir is not None:
+        return project_dir
+    return researcher_root.parent
+
+
+def format_system_tier_markdown(
+    researcher_root: Path,
+    project_dir: Path | None,
+    *,
+    recent_activity: str,
+) -> str:
+    """Full body for ``system.md`` (paths + recent run tail). Only called from lab code."""
+    pd = _project_dir_for_system_tier(researcher_root, project_dir)
+    recent = (recent_activity or "").strip() or "*(no run events yet)*"
+    return (
+        "# System\n\n"
+        "The **lab runtime** overwrites this file with workspace paths and a short tail of SQLite "
+        "`run_events`. Workers must **not** edit this file.\n\n"
+        "## Paths\n\n"
+        f"- Implementation directory: `{pd}`\n"
+        f"- Tier A directory: `{state_dir(researcher_root)}`\n"
+        f"- Reports and demos: prefer `{pd / 'reports'}`\n\n"
+        "## Recent activity\n\n"
+        "Recent rows from `run_events` (oldest first in this list): orchestrator lines show **task** and "
+        "**kwargs** (e.g. critic `persona`); worker lines show **objective** and a truncated **prompt** "
+        "from `packet.md` when available. Routing summaries live in `context_summary.md`.\n\n"
+        f"{recent}\n"
+    )
+
+
+def write_system_tier_file(
+    researcher_root: Path,
+    project_dir: Path | None,
+    *,
+    recent_activity: str,
+) -> None:
+    """Overwrite ``system.md`` (system-owned Tier A)."""
+    p = state_dir(researcher_root) / SYSTEM_TIER_A_FILE
+    helpers.ensure_dir(p.parent)
+    helpers.write_text(p, format_system_tier_markdown(researcher_root, project_dir, recent_activity=recent_activity))
+
+
+def _decode_run_event_payload(raw: object) -> dict[str, Any]:
+    if raw is None or raw == "":
+        return {}
+    if isinstance(raw, dict):
+        return raw
+    try:
+        out = json.loads(str(raw))
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return out if isinstance(out, dict) else {}
+
+
+def _format_worker_kwargs_compact(kwargs: Any) -> str:
+    if not isinstance(kwargs, dict) or not kwargs:
+        return ""
+    parts: list[str] = []
+    for k in sorted(kwargs.keys()):
+        v = kwargs[k]
+        s = str(v).replace("\n", " ").strip()
+        if len(s) > 80:
+            s = s[:77] + "..."
+        parts.append(f"{k}={s!r}")
+    return ", ".join(parts)
+
+
+def _packet_prompt_snippet(researcher_root: Path, packet_path: str | None, max_chars: int) -> str:
+    if not packet_path or not str(packet_path).strip():
+        return ""
+    rel = str(packet_path).strip().lstrip("/")
+    p = researcher_root / rel
+    if not p.is_file():
+        return ""
+    try:
+        raw = p.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    one_line = " ".join(raw.split())
+    if len(one_line) > max_chars:
+        return one_line[: max_chars - 3] + "..."
+    return one_line
+
+
+def _format_system_recent_line(
+    researcher_root: Path,
+    r: Any,
+) -> str:
+    """One markdown line for ``system.md`` (no run ``summary`` — use task, kwargs, packet excerpt)."""
+    kind = str(r["kind"] or "")
+    worker = str(r["worker"] or "")
+    cycle = int(r["cycle"])
+    head = f"- cycle **{cycle}** `{kind}` **`{worker}`**"
+    payload = _decode_run_event_payload(r["payload_json"] if "payload_json" in r.keys() else None)
+
+    if kind == "orchestrator":
+        bits: list[str] = []
+        task = str(r["task"] or "").replace("\n", " ").strip()
+        if task:
+            if len(task) > 220:
+                task = task[:217] + "..."
+            bits.append(f"task: {task}")
+        wk = payload.get("worker_kwargs")
+        kw = _format_worker_kwargs_compact(wk)
+        if kw:
+            bits.append(f"kwargs: {kw}")
+        return head + ((" — " + " — ".join(bits)) if bits else "")
+
+    # worker (or other kinds): objective from DB task + packet head
+    bits = []
+    task = str(r["task"] or "").replace("\n", " ").strip()
+    if task:
+        if len(task) > 180:
+            task = task[:177] + "..."
+        bits.append(f"objective: {task}")
+    pkt = r["packet_path"] if "packet_path" in r.keys() else None
+    snip = _packet_prompt_snippet(researcher_root, str(pkt) if pkt else None, _SYSTEM_RECENT_PACKET_SNIPPET_CHARS)
+    if snip:
+        bits.append(f"prompt: {snip}")
+    return head + ((" — " + " — ".join(bits)) if bits else "")
+
+
+def refresh_system_tier_from_db(
+    researcher_root: Path,
+    project_dir: Path | None,
+    db_path: Path,
+    *,
+    limit: int = 40,
+) -> None:
+    """Rebuild ``system.md`` from paths + last *limit* ``run_events`` rows (best-effort)."""
+    try:
+        from lab import db as db_mod
+
+        conn = db_mod.connect_db(db_path)
+        try:
+            rows = db_mod.recent_run_events(conn, limit=limit)
+        finally:
+            conn.close()
+        lines = [_format_system_recent_line(researcher_root, r) for r in reversed(rows)]
+        recent = "\n".join(lines) if lines else "*(no run events yet)*"
+        write_system_tier_file(researcher_root, project_dir, recent_activity=recent)
+    except Exception:
+        pass
+
+
+def _remove_legacy_project_brief(researcher_root: Path) -> None:
+    legacy = state_dir(researcher_root) / LEGACY_PROJECT_BRIEF
+    if legacy.is_file():
+        try:
+            legacy.unlink()
+        except OSError:
+            pass
 
 
 def worker_diff_baseline_path(researcher_root: Path) -> Path:
@@ -202,6 +365,7 @@ def reset_runtime_artifacts(
 
     sd = state_dir(researcher_root)
     helpers.ensure_dir(sd)
+    _remove_legacy_project_brief(researcher_root)
     for name in TIER_A_FILES:
         p = sd / name
         if name == "research_idea.md":
@@ -214,6 +378,12 @@ def reset_runtime_artifacts(
             if not c.endswith("\n"):
                 c += "\n"
             helpers.write_text(p, c)
+        elif name == SYSTEM_TIER_A_FILE:
+            write_system_tier_file(
+                researcher_root,
+                project_dir,
+                recent_activity="*(memory reset — run the scheduler to repopulate)*",
+            )
         else:
             helpers.write_text(p, _default_tier_a_content(name))
     _ensure_episodes_readme(researcher_root)
@@ -255,11 +425,19 @@ def ensure_memory_layout(researcher_root: Path, *, project_dir: Path | None = No
         "memory/skills",
     ):
         helpers.ensure_dir(researcher_root / sub)
+    _remove_legacy_project_brief(researcher_root)
     # experiments/ under project_dir is created on first experiment (see experiments.new_experiment_id).
     for name in TIER_A_FILES:
         p = state_dir(researcher_root) / name
         if not p.exists():
-            helpers.write_text(p, _default_tier_a_content(name))
+            if name == SYSTEM_TIER_A_FILE:
+                write_system_tier_file(
+                    researcher_root,
+                    project_dir,
+                    recent_activity="*(no run events yet — start the scheduler)*",
+                )
+            else:
+                helpers.write_text(p, _default_tier_a_content(name))
     _ensure_episodes_readme(researcher_root)
 
 
@@ -304,13 +482,7 @@ def _default_tier_a_content(name: str) -> str:
             ),
         )
     if name == "immediate_plan.md":
-        return _default_plan_doc(
-            title="Immediate plan",
-            role=(
-                "Low-level plan for the active task only—same shape as a Cursor or Claude Code **plan** "
-                "(concrete steps, files, checks). Should map to a single roadmap item in roadmap.md when possible."
-            ),
-        )
+        return _default_immediate_plan_doc()
     if name == "context_summary.md":
         return (
             "# Rolling context summary\n\n"
@@ -318,6 +490,14 @@ def _default_tier_a_content(name: str) -> str:
             "recent worker/tool outcomes, and patterns (e.g. loops). It is passed to the next orchestrator "
             "and worker runs.\n\n"
             "(No content yet.)\n"
+        )
+    if name == SYSTEM_TIER_A_FILE:
+        return (
+            "# System\n\n"
+            "The **lab runtime** overwrites this file with workspace paths and recent `run_events`. "
+            "Workers must **not** edit it.\n\n"
+            "(Paths and activity appear after `ensure_memory_layout` with a project directory or once "
+            "the scheduler runs.)\n"
         )
     return f"# {name.replace('_', ' ').replace('.md', '')}\n\n"
 
@@ -355,6 +535,35 @@ def _default_plan_doc(*, title: str, role: str) -> str:
         "- \n\n"
         "## Done when\n\n\n"
     )
+
+
+def _default_immediate_plan_doc() -> str:
+    """Scaffold for ``immediate_plan.md`` with an extractable checklist section."""
+    return (
+        "# Immediate plan\n\n"
+        "<!-- Low-level plan for the active task only—same shape as a Cursor or Claude Code "
+        "plan (concrete steps, files, checks). Should map to a single roadmap item in "
+        "roadmap.md when possible. -->\n\n"
+        "## Overview\n\n\n"
+        f"{IMMEDIATE_PLAN_CHECKLIST_HEADER}\n\n"
+        "- [ ] First concrete task\n"
+        "  - [ ] Optional nested subtask\n"
+        "- [ ] Verification step\n\n"
+        "## Notes\n\n\n"
+        "## Done when\n\n\n"
+    )
+
+
+def extract_immediate_plan_checklist(text: str) -> str:
+    """Return the canonical ``## Checklist`` section from ``immediate_plan.md``."""
+    body = (text or "").strip()
+    if not body:
+        return ""
+    match = re.search(
+        rf"(?ms)^[ \t]*{re.escape(IMMEDIATE_PLAN_CHECKLIST_HEADER)}[ \t]*\n.*?(?=^[ \t]*##[ \t]+|\Z)",
+        body,
+    )
+    return match.group(0).strip() if match else ""
 
 
 def write_user_instruction_new_section(researcher_root: Path, text: str) -> None:

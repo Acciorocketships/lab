@@ -11,7 +11,7 @@ from lab.orchestrator import (
     _ORCH_JSON_SYSTEM,
     decide_orchestrator,
 )
-from lab.agents import critic, experimenter, reviewer
+from lab.agents import critic, experimenter, planner, reviewer, shared_prompt
 
 
 def test_no_api_key_raises(tmp_path: Path, monkeypatch) -> None:
@@ -58,3 +58,20 @@ def test_orchestrator_and_experimenter_prompts_assign_long_runs_to_experimenter(
     assert "experimenter" in _ORCH_JSON_SYSTEM
     assert "Do not assume a human or another agent will do it" in experimenter.SYSTEM_PROMPT
     assert "Check back periodically" in experimenter.SYSTEM_PROMPT
+
+
+def test_orchestrator_prompt_requires_live_immediate_plan_and_subagent_diversity() -> None:
+    """Routing prompt should use system history and send stale planning back to planner."""
+    assert "Use `system.md`'s recent subagent history" in _ORCH_JSON_SYSTEM
+    assert "planning, implementation, review/testing, experimentation, debugging, critique, and reporting" in _ORCH_JSON_SYSTEM
+    assert "Route to `planner` whenever the current `immediate_plan.md` is missing, stale, finished, or no longer matches the current roadmap phase" in _ORCH_JSON_SYSTEM
+
+
+def test_shared_and_planner_prompts_require_modular_incremental_checklists() -> None:
+    """Shared worker and planner prompts should enforce modular, continuously updated plans."""
+    assert "Break work into modular components" in shared_prompt.SHARED_WORK_GUIDANCE
+    assert "All workers, not just planner, should maintain this file" in shared_prompt.MEMORY_AND_TIER_A
+    assert "**`context_summary.md`** — **Orchestrator-owned only.**" in shared_prompt.MEMORY_AND_TIER_A
+    assert "The orchestrator overwrites this file" in shared_prompt.MEMORY_AND_TIER_A
+    assert "including implementation, testing, experiments, debugging, review, or reporting" in planner.SYSTEM_PROMPT
+    assert "track modular components and their validation points" in planner.SYSTEM_PROMPT

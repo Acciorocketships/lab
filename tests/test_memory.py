@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from lab import memory
+from lab import db, memory
 
 
 def test_default_extended_memory_index_scopes_to_extended_only(tmp_path: Path) -> None:
@@ -72,3 +72,86 @@ def test_user_instructions_new_has_pending(tmp_path: Path) -> None:
     assert not memory.user_instructions_new_has_pending(tmp_path)
     memory.write_user_instruction_new_section(tmp_path, "Do the thing")
     assert memory.user_instructions_new_has_pending(tmp_path)
+
+
+def test_extract_immediate_plan_checklist_returns_only_canonical_section() -> None:
+    text = (
+        "# Immediate plan\n\n"
+        "## Overview\n\n"
+        "Short summary.\n\n"
+        "## Checklist\n\n"
+        "- [x] Land parser\n"
+        "  - [ ] Wire UI\n"
+        "- [ ] Add verification\n\n"
+        "## Notes\n\n"
+        "Keep this lean.\n"
+    )
+    got = memory.extract_immediate_plan_checklist(text)
+    assert got.startswith("## Checklist")
+    assert "Wire UI" in got
+    assert "## Notes" not in got
+
+
+def test_legacy_project_brief_removed_on_ensure(tmp_path: Path) -> None:
+    project_dir = tmp_path.parent / "proj_workspace"
+    project_dir.mkdir(parents=True, exist_ok=True)
+    memory.ensure_memory_layout(tmp_path, project_dir=project_dir)
+    legacy = memory.state_dir(tmp_path) / memory.LEGACY_PROJECT_BRIEF
+    legacy.write_text("# old\n", encoding="utf-8")
+    memory.ensure_memory_layout(tmp_path, project_dir=project_dir)
+    assert not legacy.is_file()
+    assert (memory.state_dir(tmp_path) / memory.SYSTEM_TIER_A_FILE).is_file()
+
+
+def test_refresh_system_tier_from_db_renders_run_events(tmp_path: Path) -> None:
+    project_dir = tmp_path.parent / "proj_workspace"
+    project_dir.mkdir(parents=True, exist_ok=True)
+    memory.ensure_memory_layout(tmp_path, project_dir=project_dir)
+    pkt_rel = "memory/episodes/cycle_000001/planner/packet.md"
+    pkt_path = tmp_path / pkt_rel
+    pkt_path.parent.mkdir(parents=True, exist_ok=True)
+    long_body = "# Worker: planner\n\n## Objective\n\nDo the thing\n\n" + ("x" * 400)
+    pkt_path.write_text(long_body, encoding="utf-8")
+
+    db_path = tmp_path / "runtime.db"
+    conn = db.connect_db(db_path)
+    try:
+        db.append_run_event(
+            conn,
+            cycle=1,
+            kind="orchestrator",
+            worker="critic",
+            roadmap_step="",
+            task="Challenge the latest experiment writeup.",
+            summary="critic: need review",
+            payload={"worker_kwargs": {"persona": "data_scientist"}, "reason": "x"},
+            packet_path=None,
+        )
+        db.append_run_event(
+            conn,
+            cycle=1,
+            kind="worker",
+            worker="planner",
+            roadmap_step="",
+            task="Plan the next chunk",
+            summary="done planning",
+            payload=None,
+            packet_path=pkt_rel,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    memory.refresh_system_tier_from_db(tmp_path, project_dir, db_path, limit=10)
+    text = (memory.state_dir(tmp_path) / memory.SYSTEM_TIER_A_FILE).read_text(encoding="utf-8")
+    assert "Recent activity" in text
+    assert "`orchestrator`" in text
+    assert "`worker`" in text
+    assert "Challenge the latest experiment writeup." in text
+    assert "persona='data_scientist'" in text
+    assert "critic: need review" not in text
+    assert "done planning" not in text
+    assert "objective: Plan the next chunk" in text
+    assert "prompt:" in text
+    assert "# Worker: planner" in text.replace("\n", " ")
+    assert str(project_dir) in text

@@ -297,6 +297,42 @@ def format_file_changes(diffs: list[tuple[str, int, int]]) -> Text:
     return text
 
 
+def format_diff_as_markup(raw_diff: str) -> str:
+    """Convert raw ``git diff`` output into Rich markup for display in the TUI.
+
+    Added lines are green, removed lines are red, hunk headers are dim cyan,
+    and context lines are dim.  File headers are bold white.  Special characters
+    in each line's content are escaped so they are not interpreted as markup.
+    """
+    from rich.markup import escape as _escape
+
+    lines: list[str] = []
+    for raw_line in raw_diff.splitlines():
+        if raw_line.startswith("diff --git "):
+            # Extract the b/ path as the display filename
+            parts = raw_line.split(" ")
+            filename = parts[-1].removeprefix("b/") if len(parts) >= 4 else raw_line
+            if lines:
+                lines.append("")
+            lines.append(f"  [bold white]{_escape(filename)}[/]")
+        elif raw_line.startswith(("index ", "--- ", "+++ ")):
+            continue
+        elif raw_line.startswith("@@ "):
+            # Keep only the @@ ... @@ part, drop optional trailing context
+            hunk = raw_line.split("@@", 2)
+            hunk_header = f"@@{hunk[1]}@@" if len(hunk) >= 3 else raw_line
+            lines.append(f"  [dim cyan]{_escape(hunk_header)}[/]")
+        elif raw_line.startswith("+"):
+            lines.append(f"  [green]{_escape(raw_line)}[/]")
+        elif raw_line.startswith("-"):
+            lines.append(f"  [red]{_escape(raw_line)}[/]")
+        elif raw_line.startswith("\\ "):
+            lines.append(f"  [dim]{_escape(raw_line)}[/]")
+        else:
+            lines.append(f"  [dim]{_escape(raw_line)}[/]")
+    return "\n".join(lines)
+
+
 def format_stream_chunk(chunk: str) -> str:
     """A single streaming output line from a worker process (plain text fallback)."""
     text = chunk.rstrip()
@@ -977,6 +1013,19 @@ def render_markdown(text: str) -> RenderableType:
         if re.match(r"^[-*_]{3,}$", stripped):
             _append_paragraph(renderables, paragraph_lines)
             renderables.append(Rule(style="dim"))
+            continue
+
+        m = re.match(r"^(\s*)[-*+]\s+\[([ xX])\]\s+(.*)$", line)
+        if m:
+            _append_paragraph(renderables, paragraph_lines)
+            depth = len(m.group(1)) // 2
+            indent = "  " * depth
+            checked = m.group(2).lower() == "x"
+            item_text = _inline_md_to_rich(_rich_escape(_strip_latex(m.group(3))))
+            marker = "[green]☒[/green]" if checked else "[dim]☐[/dim]"
+            if checked:
+                item_text = f"[dim strike]{item_text}[/dim strike]"
+            renderables.append(Text.from_markup(f"{indent}{marker} {item_text}"))
             continue
 
         m = re.match(r"^(\s*)([-*+])\s", line)

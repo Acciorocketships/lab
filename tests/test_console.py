@@ -11,7 +11,7 @@ from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.table import Table
 
-from lab import db, git_checkpoint
+from lab import db, git_checkpoint, memory
 from lab.config import RunConfig
 from lab.ui import events
 from lab.ui.console import ResearchConsole
@@ -1051,6 +1051,59 @@ def test_render_markdown_mixes_text_and_table() -> None:
     )
     assert isinstance(rendered, Group)
     assert any(isinstance(item, Table) for item in rendered.renderables)
+
+
+def test_render_markdown_renders_task_list_checkboxes() -> None:
+    rendered = events.render_markdown(
+        "## Checklist\n\n"
+        "- [x] Finish parser\n"
+        "  - [ ] Wire live UI\n"
+    )
+    console = Console(width=80, record=True)
+    console.print(rendered)
+    out = console.export_text()
+    assert "Checklist" in out
+    assert "☒ Finish parser" in out
+    assert "☐ Wire live UI" in out
+
+
+def test_refresh_checklist_reads_immediate_plan_section(tmp_path: Path) -> None:
+    db_path = tmp_path / "runtime.db"
+    cfg = _cfg(tmp_path)
+    console = ResearchConsole(db_path, cfg)
+
+    class FakeStatic:
+        def __init__(self) -> None:
+            self.updated = None
+            self.display = True
+
+        def update(self, renderable) -> None:
+            self.updated = renderable
+
+    memory_dir = cfg.researcher_root / "state"
+    memory_dir.mkdir(parents=True, exist_ok=True)
+    (memory_dir / "immediate_plan.md").write_text(
+        "# Immediate plan\n\n"
+        "## Overview\n\n"
+        "Ship checklist UI.\n\n"
+        "## Checklist\n\n"
+        "- [x] Canonicalize format\n"
+        "  - [ ] Refresh each cycle\n\n"
+        "## Notes\n\n"
+        "Ignore this.\n",
+        encoding="utf-8",
+    )
+
+    fake = FakeStatic()
+    console._checklist_widget = fake  # type: ignore[assignment]
+    console._refresh_checklist(force=True)
+
+    assert console._last_checklist_text.startswith("## Checklist")
+    assert "Refresh each cycle" in console._last_checklist_text
+    assert fake.updated is not None
+    assert fake.display is True
+
+    console._conn.close()
 
 
 # ---------------------------------------------------------------------------

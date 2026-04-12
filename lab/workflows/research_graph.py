@@ -10,7 +10,7 @@ from typing import Any
 
 from langgraph.graph import END, START, StateGraph
 
-from lab import control, db, git_checkpoint, memory, orchestrator, packets
+from lab import control, db, git_checkpoint, helpers, memory, orchestrator, packets
 from lab.agents import (
     base as agents_base,
     critic as critic_mod,
@@ -185,6 +185,12 @@ def choose_action(
         conn.commit()
     finally:
         conn.close()
+    memory.refresh_system_tier_from_db(
+        researcher_root,
+        project_dir,
+        db_path,
+        limit=cfg.system_recent_run_events_limit,
+    )
     return {
         "roadmap_step": dec.roadmap_step,
         "orchestrator_task": dec.task,
@@ -288,13 +294,23 @@ def execute_worker(
     }
 
 
-def update_state(state: ResearchState, *, db_path: Path, researcher_root: Path) -> dict[str, Any]:
+def update_state(
+    state: ResearchState,
+    *,
+    cfg: RunConfig,
+    db_path: Path,
+    researcher_root: Path,
+    project_dir: Path,
+) -> dict[str, Any]:
     """Persist run_events worker row and system_state."""
     conn = _conn(db_path)
     try:
         conn.execute("BEGIN IMMEDIATE")
         cyc = int(state.get("cycle_count", 0))
         pkt_rel = str(state.get("last_packet_relpath", "")) or None
+        checklist_snapshot = memory.extract_immediate_plan_checklist(
+            helpers.read_text(memory.state_dir(researcher_root) / "immediate_plan.md", default="")
+        )
         db.append_run_event(
             conn,
             cycle=cyc,
@@ -306,6 +322,7 @@ def update_state(state: ResearchState, *, db_path: Path, researcher_root: Path) 
             payload={
                 "last_action_summary": str(state.get("last_action_summary", "")),
                 "worker_ok": state.get("worker_ok", True),
+                "immediate_plan_checklist": checklist_snapshot,
             },
             packet_path=pkt_rel,
         )
@@ -330,6 +347,12 @@ def update_state(state: ResearchState, *, db_path: Path, researcher_root: Path) 
         conn.commit()
     finally:
         conn.close()
+    memory.refresh_system_tier_from_db(
+        researcher_root,
+        project_dir,
+        db_path,
+        limit=cfg.system_recent_run_events_limit,
+    )
     return {}
 
 
@@ -357,7 +380,9 @@ def build_graph(
         return execute_worker(s, cfg=cfg, researcher_root=researcher_root, project_dir=project_dir, db_path=db_path)
 
     def n_update(s: ResearchState):
-        return update_state(s, db_path=db_path, researcher_root=researcher_root)
+        return update_state(
+            s, cfg=cfg, db_path=db_path, researcher_root=researcher_root, project_dir=project_dir
+        )
 
     g = StateGraph(ResearchState)
     g.add_node("ingest", n_ingest)
@@ -418,7 +443,14 @@ def _root_cause(exc: BaseException) -> BaseException:
 
 
 def _record_cycle_error(
-    db_path: Path, state: ResearchState, tb: str, exc: BaseException | None = None,
+    db_path: Path,
+    state: ResearchState,
+    tb: str,
+    exc: BaseException | None = None,
+    *,
+    researcher_root: Path | None = None,
+    project_dir: Path | None = None,
+    cfg: RunConfig | None = None,
 ) -> None:
     """Write a run_event so the console can display the cycle failure."""
     try:
@@ -446,6 +478,13 @@ def _record_cycle_error(
             conn.commit()
         finally:
             conn.close()
+        if researcher_root is not None and project_dir is not None and cfg is not None:
+            memory.refresh_system_tier_from_db(
+                researcher_root,
+                project_dir,
+                db_path,
+                limit=cfg.system_recent_run_events_limit,
+            )
     except Exception:
         pass
 
@@ -504,7 +543,15 @@ def run_loop(
             consecutive_errors += 1
             tb = traceback.format_exc()
             _log.error("Cycle %d failed:\n%s", state.get("cycle_count", 0) + 1, tb)
-            _record_cycle_error(db_path, state, tb, exc)
+            _record_cycle_error(
+                db_path,
+                state,
+                tb,
+                exc,
+                researcher_root=researcher_root,
+                project_dir=project_dir,
+                cfg=cfg,
+            )
             _revert_to_last_checkpoint(project_dir, db_path)
             if consecutive_errors >= _MAX_CONSECUTIVE_ERRORS:
                 _log.error(

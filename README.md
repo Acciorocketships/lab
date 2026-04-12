@@ -56,7 +56,7 @@ The `lab` CLI is a thin wrapper. Scripts and tests should call the same function
 | `init_project_at(project_dir, pcfg, overwrite=False)` | Full project init after global setup. |
 | `bootstrap_bench_project(project_dir, gcfg=..., pcfg=...)` | Write global + project TOML and seed memory in one step (e.g. automated tests). |
 | `run_interactive_global_setup()` | Interactive wizard (same as `lab setup`). |
-| `seed_tier_a_from_run_config(researcher_root, cfg)` | Seed core Tier A markdown from a `RunConfig`. |
+| `seed_tier_a_from_run_config(researcher_root, cfg)` | Write system-owned `.lab/state/system.md` (paths; run tail filled once the scheduler runs). |
 
 Example (explicit config, no global TOML — typical for `scripts/run.py`):
 
@@ -124,6 +124,7 @@ If you want to reintroduce limits, set the optional limit fields on `RunConfig`:
 - `orchestrator_tier_file_max_chars`
 - `orchestrator_branch_memory_max_chars`
 - `worker_packet_max_chars`
+- `system_recent_run_events_limit` — how many recent SQLite `run_events` rows are rendered into `.lab/state/system.md` (default 40).
 
 ## Pipeline (high level)
 
@@ -132,7 +133,7 @@ If you want to reintroduce limits, set the optional limit fields on `RunConfig`:
 3. **Choose** calls `orchestrator.decide_orchestrator()` (LLM with structured output).
 4. **Worker** builds a **packet**, writes `packet.md` and `worker_output.json` under `memory/episodes/cycle_*/<worker>/`, and runs `agents.base.run_worker()` → Claude or Cursor CLI.
 5. Worker output is **streamed** line-by-line to the `worker_stream` table; the console displays chunks in real time.
-6. **Memory** — Tier A files under `state/` are the default operating context.
+6. **Memory** — Tier A files under `state/` are the default operating context. **`system.md`** is system-only (workspace paths + a short **Recent activity** tail from `run_events`: orchestrator **task** + **kwargs** such as critic `persona`, and per-worker **objective** plus a collapsed excerpt from **`packet.md`**; routing rationale stays in **`context_summary.md`**); agents edit the other Tier A files (notably `research_idea.md` for the research brief).
 
 ## Agents
 
