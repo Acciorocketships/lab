@@ -56,6 +56,40 @@ def test_append_run_event(tmp_path: Path) -> None:
     assert json.loads(rows[0]["payload_json"]) == {"x": 1}
 
 
+def test_recent_worker_run_events_filters_kind(tmp_path: Path) -> None:
+    """recent_worker_run_events returns only graph workers, newest first."""
+    p = tmp_path / "t.db"
+    conn = db.connect_db(p)
+    for c in range(1, 4):
+        db.append_run_event(
+            conn,
+            cycle=c,
+            kind="orchestrator",
+            worker="planner",
+            roadmap_step="",
+            task=f"o{c}",
+            summary="",
+            payload=None,
+            packet_path=None,
+        )
+        db.append_run_event(
+            conn,
+            cycle=c,
+            kind="worker",
+            worker="planner",
+            roadmap_step="",
+            task=f"w{c}",
+            summary="done",
+            payload=None,
+            packet_path=None,
+        )
+    conn.commit()
+    rows = db.recent_worker_run_events(conn, limit=10)
+    assert [r["task"] for r in rows] == ["w3", "w2", "w1"]
+    rows2 = db.recent_worker_run_events(conn, limit=2)
+    assert [r["task"] for r in rows2] == ["w3", "w2"]
+
+
 def test_worker_stream_roundtrip(tmp_path: Path) -> None:
     """Stream chunks write and read back in order."""
     p = tmp_path / "t.db"

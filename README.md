@@ -123,7 +123,7 @@ If you want to reintroduce limits, set the optional limit fields on `RunConfig`:
 - `orchestrator_tier_file_max_chars`
 - `orchestrator_branch_memory_max_chars`
 - `worker_packet_max_chars`
-- `system_recent_run_events_limit` — how many recent SQLite `run_events` rows are rendered into `.lab/state/system.md` (default 40).
+- `system_recent_run_events_limit` — how many recent SQLite `run_events` rows with `kind = worker` are rendered into `.lab/state/system.md` **## Recent activity** (default 10).
 
 ## Pipeline (high level)
 
@@ -132,7 +132,7 @@ If you want to reintroduce limits, set the optional limit fields on `RunConfig`:
 3. **Choose** calls `orchestrator.decide_orchestrator()` (LLM with structured output).
 4. **Worker** builds a **packet**, writes `packet.md` and `worker_output.json` under `memory/episodes/cycle_*/<worker>/`, and runs `agents.base.run_worker()` → Claude or Cursor CLI.
 5. Worker output is **streamed** line-by-line to the `worker_stream` table; the console displays chunks in real time.
-6. **Memory** — Tier A files under `state/` are the default operating context. **`system.md`** is system-only (workspace paths + a short **Recent activity** tail from `run_events`: orchestrator **task** + **kwargs** such as critic `persona`, and per-worker **objective** plus a collapsed excerpt from **`packet.md`**; routing rationale stays in **`context_summary.md`**); agents edit the other Tier A files (notably `research_idea.md` for the research brief).
+6. **Memory** — Tier A files under `state/` are the default operating context. **`system.md`** is system-only (**## Paths** plus **## Recent activity**: recent graph-worker `kind = worker` rows from `run_events`, oldest first in that list — each line uses **objective** plus a collapsed excerpt from **`packet.md`**; orchestrator lines are not included here). Routing rationale stays in **`context_summary.md`**; agents edit the other Tier A files (notably `research_idea.md` for the research brief).
 
 ## Agents
 

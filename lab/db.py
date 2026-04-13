@@ -271,6 +271,17 @@ def recent_run_events(conn: sqlite3.Connection, limit: int = 20) -> list[sqlite3
     )
 
 
+def recent_worker_run_events(conn: sqlite3.Connection, limit: int = 10) -> list[sqlite3.Row]:
+    """Recent graph worker (subagent) rows only, newest first."""
+    return list(
+        conn.execute(
+            "SELECT id, ts, cycle, kind, worker, roadmap_step, task, summary, packet_path, payload_json "
+            "FROM run_events WHERE kind = 'worker' ORDER BY id DESC LIMIT ?",
+            (limit,),
+        )
+    )
+
+
 def add_instruction(conn: sqlite3.Connection, text: str, status: str = "new") -> int:
     """Insert user instruction; returns row id."""
     cur = conn.execute(

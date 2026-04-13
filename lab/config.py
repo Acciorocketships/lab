@@ -48,8 +48,9 @@ class RunConfig:
     orchestrator_tier_file_max_chars: int | None = None
     orchestrator_branch_memory_max_chars: int | None = None
     worker_packet_max_chars: int | None = None
-    # Rows from SQLite run_events shown in .lab/state/system.md (newest tail).
-    system_recent_run_events_limit: int = 40
+    # Graph-worker (run_events kind = worker) rows rendered into .lab/state/system.md ## Recent activity
+    # (newest-first fetch, reversed to oldest-first in the file; orchestrator and async /agent omitted).
+    system_recent_run_events_limit: int = 10
 
     @classmethod
     def from_configs(

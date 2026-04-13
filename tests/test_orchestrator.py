@@ -39,8 +39,11 @@ def test_query_worker_is_valid_route() -> None:
 
 def test_orchestrator_prompt_biases_toward_post_implementation_review() -> None:
     """Routing prompt should encourage reviewer/critic after implementation."""
-    assert "Treat `<code-producing worker> → reviewer` as the normal default" in _ORCH_JSON_SYSTEM
-    assert "`critic` is best used after" in _ORCH_JSON_SYSTEM
+    assert (
+        "`reviewer` should be prioritised as a follow-up after non-trivial code-producing work"
+        in _ORCH_JSON_SYSTEM
+    )
+    assert "`critic` should be prioritised as a follow-up" in _ORCH_JSON_SYSTEM
     assert "prefer independent validation" in _ORCH_JSON_SYSTEM
 
 
@@ -54,7 +57,10 @@ def test_reviewer_and_critic_prompts_require_hands_on_validation() -> None:
 
 def test_orchestrator_and_experimenter_prompts_assign_long_runs_to_experimenter() -> None:
     """Long-running experiments should be launched and monitored by the experimenter."""
-    assert "If a training job takes hours, `experimenter` owns the entire lifecycle" in _ORCH_JSON_SYSTEM
+    assert (
+        "launching, monitoring, analyzing, and interpreting results belong to `experimenter`"
+        in _ORCH_JSON_SYSTEM
+    )
     assert "experimenter" in _ORCH_JSON_SYSTEM
     assert "Do not assume a human or another agent will do it" in experimenter.SYSTEM_PROMPT
     assert "Check back periodically" in experimenter.SYSTEM_PROMPT
@@ -62,8 +68,9 @@ def test_orchestrator_and_experimenter_prompts_assign_long_runs_to_experimenter(
 
 def test_orchestrator_prompt_requires_live_immediate_plan_and_subagent_diversity() -> None:
     """Routing prompt should use system history and send stale planning back to planner."""
-    assert "Use `system.md`'s recent subagent history" in _ORCH_JSON_SYSTEM
-    assert "planning, implementation, review/testing, experimentation, debugging, critique, and reporting" in _ORCH_JSON_SYSTEM
+    assert "Use `system.md`'s **Recent activity** tail" in _ORCH_JSON_SYSTEM
+    assert "kind = worker" in _ORCH_JSON_SYSTEM
+    assert "Prioritise a varied workflow across different worker types" in _ORCH_JSON_SYSTEM
     assert (
         "Route to `planner` whenever the current `immediate_plan.md` is missing, stale, finished, "
         "no longer matches the current roadmap phase, or contains human-gated completion criteria"

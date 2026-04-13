@@ -53,19 +53,13 @@ def format_system_tier_markdown(
 ) -> str:
     """Full body for ``system.md`` (paths + recent run tail). Only called from lab code."""
     pd = _project_dir_for_system_tier(researcher_root, project_dir)
-    recent = (recent_activity or "").strip() or "*(no run events yet)*"
+    recent = (recent_activity or "").strip()
     return (
-        "# System\n\n"
-        "The **lab runtime** overwrites this file with workspace paths and a short tail of SQLite "
-        "`run_events`. Workers must **not** edit this file.\n\n"
         "## Paths\n\n"
         f"- Implementation directory: `{pd}`\n"
         f"- Tier A directory: `{state_dir(researcher_root)}`\n"
         f"- Reports and demos: prefer `{pd / 'reports'}`\n\n"
         "## Recent activity\n\n"
-        "Recent rows from `run_events` (oldest first in this list): orchestrator lines show **task** and "
-        "**kwargs** (e.g. critic `persona`); worker lines show **objective** and a truncated **prompt** "
-        "from `packet.md` when available. Routing summaries live in `context_summary.md`.\n\n"
         f"{recent}\n"
     )
 
@@ -128,14 +122,17 @@ def _format_system_recent_line(
     researcher_root: Path,
     r: Any,
 ) -> str:
-    """One markdown line for ``system.md`` (no run ``summary`` — use task, kwargs, packet excerpt)."""
+    """One markdown line for a ``run_events`` row in ``system.md`` (``summary`` omitted).
+
+    ``refresh_system_tier_from_db`` only passes worker rows; each line uses objective + ``packet.md`` head.
+    """
     kind = str(r["kind"] or "")
     worker = str(r["worker"] or "")
     cycle = int(r["cycle"])
     head = f"- cycle **{cycle}** `{kind}` **`{worker}`**"
-    payload = _decode_run_event_payload(r["payload_json"] if "payload_json" in r.keys() else None)
 
     if kind == "orchestrator":
+        payload = _decode_run_event_payload(r["payload_json"] if "payload_json" in r.keys() else None)
         bits: list[str] = []
         task = str(r["task"] or "").replace("\n", " ").strip()
         if task:
@@ -148,7 +145,7 @@ def _format_system_recent_line(
             bits.append(f"kwargs: {kw}")
         return head + ((" — " + " — ".join(bits)) if bits else "")
 
-    # worker (or other kinds): objective from DB task + packet head
+    # worker (or other non-orchestrator kinds): objective from DB task + packet head
     bits = []
     task = str(r["task"] or "").replace("\n", " ").strip()
     if task:
@@ -162,54 +159,29 @@ def _format_system_recent_line(
     return head + ((" — " + " — ".join(bits)) if bits else "")
 
 
-def _format_system_recent_agent_line(researcher_root: Path, r: Any) -> str:
-    agent_id = int(r["id"])
-    status = str(r["status"] or "running")
-    task = str(r["prompt"] or "").replace("\n", " ").strip()
-    if len(task) > 180:
-        task = task[:177] + "..."
-    bits: list[str] = []
-    if task:
-        bits.append(f"task: {task}")
-    summary = str(r["summary"] or "").replace("\n", " ").strip()
-    if summary:
-        if len(summary) > 180:
-            summary = summary[:177] + "..."
-        bits.append(f"summary: {summary}")
-    pkt = str(r["packet_path"] or "").strip()
-    snip = _packet_prompt_snippet(researcher_root, pkt, _SYSTEM_RECENT_PACKET_SNIPPET_CHARS)
-    if snip:
-        bits.append(f"prompt: {snip}")
-    return f"- agent **{agent_id}** `agent` ({status})" + ((" — " + " — ".join(bits)) if bits else "")
-
-
 def refresh_system_tier_from_db(
     researcher_root: Path,
     project_dir: Path | None,
     db_path: Path,
     *,
-    limit: int = 40,
+    limit: int = 10,
     db_timeout: float = 30.0,
 ) -> None:
-    """Rebuild ``system.md`` from paths + last *limit* ``run_events`` rows (best-effort)."""
+    """Rebuild ``system.md`` paths + last *limit* ``run_events`` rows with ``kind = worker`` (best-effort).
+
+    Orchestrator rows and async ``/agent`` runs are omitted from this tail.
+    """
     try:
         from lab import db as db_mod
 
         conn = db_mod.connect_db(db_path, timeout=db_timeout)
         try:
-            rows = db_mod.recent_run_events(conn, limit=limit)
-            agent_rows = db_mod.list_agent_runs(conn)
+            rows = db_mod.recent_worker_run_events(conn, limit=limit)
         finally:
             conn.close()
-        merged: list[tuple[float, str]] = []
-        for r in rows:
-            merged.append((float(r["ts"]), _format_system_recent_line(researcher_root, r)))
-        for r in agent_rows:
-            ts = float(r["finished_at"] or r["started_at"] or r["created_at"])
-            merged.append((ts, _format_system_recent_agent_line(researcher_root, r)))
-        merged.sort(key=lambda item: item[0])
-        lines = [line for _, line in merged[-limit:]]
-        recent = "\n".join(lines) if lines else "*(no run events yet)*"
+        rows = list(reversed(rows))
+        lines = [_format_system_recent_line(researcher_root, r) for r in rows]
+        recent = "\n".join(lines) if lines else ""
         write_system_tier_file(researcher_root, project_dir, recent_activity=recent)
     except Exception:
         pass
@@ -451,7 +423,7 @@ def reset_runtime_artifacts(
             write_system_tier_file(
                 researcher_root,
                 project_dir,
-                recent_activity="*(memory reset — run the scheduler to repopulate)*",
+                recent_activity="",
             )
         else:
             helpers.write_text(p, _default_tier_a_content(name))
@@ -515,7 +487,7 @@ def ensure_memory_layout(researcher_root: Path, *, project_dir: Path | None = No
                 write_system_tier_file(
                     researcher_root,
                     project_dir,
-                    recent_activity="*(no run events yet — start the scheduler)*",
+                    recent_activity="",
                 )
             else:
                 helpers.write_text(p, _default_tier_a_content(name))
@@ -555,42 +527,19 @@ def _default_tier_a_content(name: str) -> str:
             "## Completed\n\n"
         )
     if name == "roadmap.md":
-        return _default_plan_doc(
-            title="Roadmap",
-            role=(
-                "End-to-end project roadmap from start to finish: phases, milestones, and major deliverables. "
-                "One item here should typically match the scope of the current session’s work in immediate_plan.md."
-            ),
-        )
+        return _default_plan_doc(title="Roadmap")
     if name == "immediate_plan.md":
         return _default_immediate_plan_doc()
     if name == "context_summary.md":
-        return (
-            "# Rolling context summary\n\n"
-            "The **orchestrator** overwrites this each cycle with a compressed history: project facts, "
-            "recent worker/tool outcomes, and patterns (e.g. loops). It is passed to the next orchestrator "
-            "and worker runs.\n\n"
-            "(No content yet.)\n"
-        )
-    if name == SYSTEM_TIER_A_FILE:
-        return (
-            "# System\n\n"
-            "The **lab runtime** overwrites this file with workspace paths and recent `run_events`. "
-            "Workers must **not** edit it.\n\n"
-            "(Paths and activity appear after `ensure_memory_layout` with a project directory or once "
-            "the scheduler runs.)\n"
-        )
+        return "# Rolling context summary\n\n"
     return f"# {name.replace('_', ' ').replace('.md', '')}\n\n"
 
 
 def _default_extended_memory_index() -> str:
     return """# Extended memory index
 
-Index of long-form files under `.lab/memory/extended/`. This file is included **in full** in orchestrator and worker context alongside other Tier A files, so keep it concise and high-signal: path plus a short description, or a few one-line bullets, for what the full file contains. Use it to point from Tier A to longer logs, artifacts, findings, notes, or transcripts that are too large to inline. Layout rules are in the shared prompt (`MEMORY_AND_TIER_A` in `agents/shared_prompt.py`).
-
 ## `.lab/memory/extended/`
 
-- *(path + what it contains / why it matters)*
 """
 
 
@@ -598,19 +547,16 @@ Index of long-form files under `.lab/memory/extended/`. This file is included **
 def _default_skills_index() -> str:
     return (
         "# Skills index\n\n"
-        "List each skill file under `.lab/memory/skills/` with its path and purpose. "
-        "Keep this table aligned with files on disk; `skill_writer` commonly does this, but any worker that adds or changes skills should update it.\n\n"
         "| Path | Purpose |\n"
         "|------|--------|\n"
-        "| *(add rows as you add `.lab/memory/skills/*.md`)* | |\n\n"
+        "| | |\n\n"
     )
 
 
-def _default_plan_doc(*, title: str, role: str) -> str:
+def _default_plan_doc(*, title: str) -> str:
     """Shared plan-shaped scaffold for roadmap.md and immediate_plan.md."""
     return (
         f"# {title}\n\n"
-        f"<!-- {role} -->\n\n"
         "## Overview\n\n\n"
         f"{IMMEDIATE_PLAN_CHECKLIST_HEADER}\n\n"
         "- [ ] \n\n"
@@ -623,9 +569,6 @@ def _default_immediate_plan_doc() -> str:
     """Scaffold ``immediate_plan.md`` with an empty ``## Checklist`` until workers fill it."""
     return (
         "# Immediate plan\n\n"
-        "<!-- Low-level plan for the active task only—same shape as a Cursor or Claude Code "
-        "plan (concrete steps, files, checks). Should map to a single roadmap item in "
-        "roadmap.md when possible. -->\n\n"
         "## Overview\n\n\n"
         f"{IMMEDIATE_PLAN_CHECKLIST_HEADER}\n\n\n"
         "## Notes\n\n\n"

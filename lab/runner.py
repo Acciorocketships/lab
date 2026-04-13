@@ -209,11 +209,11 @@ def write_tier_a_brief(
 
 
 def seed_tier_a_from_run_config(researcher_root: Path, cfg: RunConfig) -> None:
-    """Write system-owned ``system.md`` in Tier A (paths only until DB refresh)."""
+    """Write system-owned ``system.md`` in Tier A (paths + placeholder activity until DB refresh)."""
     memory.write_system_tier_file(
         researcher_root,
         cfg.project_dir,
-        recent_activity="*(no run events yet — start the scheduler)*",
+        recent_activity="",
     )
 
 

@@ -171,13 +171,46 @@ def test_refresh_system_tier_from_db_renders_run_events(tmp_path: Path) -> None:
     memory.refresh_system_tier_from_db(tmp_path, project_dir, db_path, limit=10)
     text = (memory.state_dir(tmp_path) / memory.SYSTEM_TIER_A_FILE).read_text(encoding="utf-8")
     assert "Recent activity" in text
-    assert "`orchestrator`" in text
+    assert "`orchestrator`" not in text
     assert "`worker`" in text
-    assert "Challenge the latest experiment writeup." in text
-    assert "persona='data_scientist'" in text
+    assert "Challenge the latest experiment writeup." not in text
+    assert "persona='data_scientist'" not in text
     assert "critic: need review" not in text
     assert "done planning" not in text
     assert "objective: Plan the next chunk" in text
     assert "prompt:" in text
     assert "# Worker: planner" in text.replace("\n", " ")
     assert str(project_dir) in text
+
+
+def test_refresh_system_tier_from_db_respects_subagent_limit(tmp_path: Path) -> None:
+    project_dir = tmp_path.parent / "proj_workspace"
+    project_dir.mkdir(parents=True, exist_ok=True)
+    memory.ensure_memory_layout(tmp_path, project_dir=project_dir)
+    db_path = tmp_path / "runtime.db"
+    conn = db.connect_db(db_path)
+    try:
+        for i in range(1, 6):
+            db.append_run_event(
+                conn,
+                cycle=i,
+                kind="worker",
+                worker="planner",
+                roadmap_step="",
+                task=f"task {i}",
+                summary="done",
+                payload=None,
+                packet_path=None,
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    memory.refresh_system_tier_from_db(tmp_path, project_dir, db_path, limit=3)
+    text = (memory.state_dir(tmp_path) / memory.SYSTEM_TIER_A_FILE).read_text(encoding="utf-8")
+    assert text.count("objective: task ") == 3
+    assert "objective: task 1" not in text
+    assert "objective: task 2" not in text
+    assert "objective: task 3" in text
+    assert "objective: task 4" in text
+    assert "objective: task 5" in text
