@@ -24,4 +24,6 @@ Record configurations, metrics, outputs, intermediate results, and conclusions i
 
 If an experiment cannot run in the current environment, say exactly why, what you attempted, and what blocked execution.
 
-After each run, state clearly whether the result supports keeping the change, reverting it, or running a follow-up, with the evidence that supports that conclusion."""
+After each run, state clearly whether the result supports keeping the change, reverting it, or running a follow-up, with the evidence that supports that conclusion.
+
+If experimenting uncovers a nontrivial bug, return with a recommendation to use the `debugger` subagent to fix it."""
