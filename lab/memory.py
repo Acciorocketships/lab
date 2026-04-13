@@ -513,6 +513,11 @@ def _episodes_readme_text() -> str:
     )
 
 
+def _tier_a_heading_from_filename(filename: str) -> str:
+    """Derive an H1 from a Tier A filename (e.g. ``status.md`` → ``Status``)."""
+    return filename.removesuffix(".md").replace("_", " ").strip().title()
+
+
 def _default_tier_a_content(name: str) -> str:
     """Seed content for Tier A files."""
     if name == "extended_memory_index.md":
@@ -532,7 +537,7 @@ def _default_tier_a_content(name: str) -> str:
         return _default_immediate_plan_doc()
     if name == "context_summary.md":
         return "# Rolling context summary\n\n"
-    return f"# {name.replace('_', ' ').replace('.md', '')}\n\n"
+    return f"# {_tier_a_heading_from_filename(name)}\n\n"
 
 
 def _default_extended_memory_index() -> str:
@@ -545,12 +550,7 @@ def _default_extended_memory_index() -> str:
 
 
 def _default_skills_index() -> str:
-    return (
-        "# Skills index\n\n"
-        "| Path | Purpose |\n"
-        "|------|--------|\n"
-        "| | |\n\n"
-    )
+    return f"# {_tier_a_heading_from_filename('skills_index.md')}\n\n"
 
 
 def _default_plan_doc(*, title: str) -> str:
