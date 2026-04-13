@@ -115,6 +115,7 @@ def format_cycle_header(
     worker: str,
     task: str,
     *,
+    label: str = "cycle",
     cursor_model: str | None = None,
     elapsed_sec: float = 0.0,
     status: CycleHeaderStatus = "running",
@@ -125,7 +126,7 @@ def format_cycle_header(
     model_bit = (
         f' [dim]({cursor_model})[/]' if (cursor_model is not None and cursor_model != "") else ""
     )
-    return f"[bold]cycle {cycle} · {worker}[/]{model_bit} {dot} [dim]{t}[/]"
+    return f"[bold]{label} {cycle} · {worker}[/]{model_bit} {dot} [dim]{t}[/]"
 
 
 def cycle_header_running_elapsed(orchestrator_ts: float) -> float:
@@ -942,7 +943,7 @@ def make_markup_panel(markup: str, *, title: str = "", expand: bool = True) -> P
     )
 
 
-def wrap_result_renderable(renderable: RenderableType) -> RenderableType:
+def wrap_result_renderable(renderable: RenderableType, *, title: str = "") -> RenderableType:
     if isinstance(renderable, Panel):
         return renderable
     return Panel(
@@ -950,6 +951,8 @@ def wrap_result_renderable(renderable: RenderableType) -> RenderableType:
         box=box.ROUNDED,
         border_style=_SURFACE_BORDER,
         style=f"on {_SURFACE_BG}",
+        title=title,
+        title_align="left",
         padding=(0, 2),
         expand=True,
     )

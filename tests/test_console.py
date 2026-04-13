@@ -654,6 +654,41 @@ def test_poll_run_events_clears_below_stream_after_worker_not_on_orchestrator(
     console._conn.close()
 
 
+def test_kill_agent_processes_uses_fast_shutdown_path(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "runtime.db"
+    cfg = _cfg(tmp_path)
+    console = ResearchConsole(db_path, cfg)
+    conn = console._conn
+    agent_id = db.create_agent_run(conn, prompt="inspect bug")
+
+    class FakeAgentProc:
+        def __init__(self) -> None:
+            self.wait_timeouts: list[float | None] = []
+
+        def kill_group(self, *, wait_timeout: float | None = 5.0) -> None:
+            self.wait_timeouts.append(wait_timeout)
+
+    proc = FakeAgentProc()
+    console._agent_processes = {agent_id: proc}  # type: ignore[assignment]
+
+    refresh_calls: list[float] = []
+
+    def fake_refresh_system_tier_from_db(*args, **kwargs) -> None:
+        refresh_calls.append(float(kwargs["db_timeout"]))
+
+    monkeypatch.setattr(memory, "refresh_system_tier_from_db", fake_refresh_system_tier_from_db)
+
+    console._kill_agent_processes()
+
+    row = db.get_agent_run(conn, agent_id)
+    assert row is not None
+    assert str(row["status"]) == "failed"
+    assert proc.wait_timeouts == [0.2]
+    assert refresh_calls == [0.2]
+
+    console._conn.close()
+
+
 # ---------------------------------------------------------------------------
 # _fetch_last_stream_text prefers the result event over individual deltas
 # ---------------------------------------------------------------------------

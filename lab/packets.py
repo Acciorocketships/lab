@@ -96,3 +96,28 @@ def write_worker_output_file(
         encoding="utf-8",
     )
     return p
+
+
+def write_agent_packet_file(researcher_root: Path, agent_id: int, content: str) -> Path:
+    """Persist packet under memory/episodes/agent_xxx/agent/packet.md."""
+    d = memory.episode_agent_dir(researcher_root, agent_id)
+    helpers.ensure_dir(d)
+    p = d / "packet.md"
+    helpers.write_text(p, content)
+    return p
+
+
+def write_agent_output_file(
+    researcher_root: Path,
+    agent_id: int,
+    result: dict[str, Any],
+) -> Path:
+    """Persist async ``/agent`` result next to its packet."""
+    d = memory.episode_agent_dir(researcher_root, agent_id)
+    helpers.ensure_dir(d)
+    p = d / "worker_output.json"
+    p.write_text(
+        json.dumps(result, indent=2, ensure_ascii=False, default=str) + "\n",
+        encoding="utf-8",
+    )
+    return p

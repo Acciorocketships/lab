@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import signal
 import shutil
 import sqlite3
 import time
@@ -26,6 +28,9 @@ if TYPE_CHECKING:
     from lab.config import RunConfig
     from lab.loop import SchedulerProcessHandle
 
+_FORCED_AGENT_KILL_WAIT_TIMEOUT = 0.2
+_FORCED_AGENT_DB_TIMEOUT = 0.2
+
 @dataclass
 class _RedoSnapshot:
     token: str
@@ -48,6 +53,41 @@ class _LiveDiffState:
 class _LivePlanState:
     widget: Static
     last_text: str = ""
+
+
+@dataclass
+class _AgentSectionState:
+    agent_id: int
+    prompt: str
+    status: str
+    started_ts: float
+    finished_ts: float | None
+    header_widget: Static
+    task_widget: Static | None
+    stream_widget: Static | None
+    result_widget: Static | None = None
+    cumulative_stream_text: str = ""
+    stream_tool_markup: str = ""
+    stream_text_live: str = ""
+    stream_message_closed: bool = False
+    stream_last_event_was_tool: bool = False
+    stream_placeholder_tick: int = 0
+
+    @property
+    def is_running(self) -> bool:
+        return self.status == "running"
+
+    @property
+    def widgets(self) -> list[Static]:
+        out = [self.header_widget]
+        if self.task_widget is not None:
+            out.append(self.task_widget)
+        if self.stream_widget is not None:
+            out.append(self.stream_widget)
+        if self.result_widget is not None:
+            out.append(self.result_widget)
+        return out
+
 
 CSS = """
 Screen {
@@ -191,6 +231,7 @@ class ResearchConsole(App[None]):
         self._current_cycle_widgets: list[Static] = []
         self._file_changes_widget: Static | None = None
         self._checklist_widget: Static | None = None
+        self._cycle_stream_widget: Static | None = None
         self._last_checklist_text = ""
         self._last_file_changes_ts: float = 0.0
         self._orchestrating = False
@@ -203,6 +244,9 @@ class ResearchConsole(App[None]):
         self._diff_widgets: list[Static] = []
         self._live_diff_state: _LiveDiffState | None = None
         self._live_plan_state: _LivePlanState | None = None
+        self._agent_processes: dict[int, SchedulerProcessHandle] = {}
+        self._agent_sections: dict[int, _AgentSectionState] = {}
+        self._last_agent_stream_id = 0
 
     def _cycle_header_cursor_model(self) -> str | None:
         """Cursor CLI ``--model`` value for cycle headers (only when workers use Cursor)."""
@@ -271,6 +315,7 @@ class ResearchConsole(App[None]):
         self._checkpoint_notice_widget = None
         self._diff_widgets = []
         self._live_diff_state = None
+        self._agent_sections = {}
         scroll = self.query_one("#activity-scroll", VerticalScroll)
         stream = self.query_one("#stream-text", Static)
         children = list(getattr(scroll, "children", []))
@@ -310,11 +355,13 @@ class ResearchConsole(App[None]):
         self._cycle_header_widget = None
         self._file_changes_widget = None
         self._checklist_widget = None
+        self._cycle_stream_widget = None
         self._last_checklist_text = ""
         self._last_file_changes_ts = 0.0
         self._worker_start_ts = 0.0
         self._last_worker = ""
         self._last_orchestrator_task = ""
+        self._agent_sections = {}
 
         try:
             rows = list(
@@ -325,17 +372,60 @@ class ResearchConsole(App[None]):
             )
         except sqlite3.OperationalError:
             rows = []
+        try:
+            agent_rows = db.list_agent_runs(self._conn)
+        except sqlite3.OperationalError:
+            agent_rows = []
+        normalized_agent_rows: list[sqlite3.Row] = []
+        for row in agent_rows:
+            if str(row["status"] or "") == "running":
+                pid = int(row["pid"]) if row["pid"] is not None else None
+                if not self._pid_is_alive(pid):
+                    fixed = self._finalize_stale_agent_run(
+                        int(row["id"]),
+                        "agent was left marked running, but no live process exists",
+                    )
+                    if fixed is not None:
+                        normalized_agent_rows.append(fixed)
+                        continue
+            normalized_agent_rows.append(row)
+        agent_rows = normalized_agent_rows
 
         by_cycle: dict[int, dict[str, sqlite3.Row]] = {}
         for row in rows:
             bucket = by_cycle.setdefault(int(row["cycle"]), {})
             bucket[str(row["kind"])] = row
 
-        if not by_cycle:
+        cycle_sections: list[tuple[float, int]] = []
+        for cycle in sorted(by_cycle):
+            worker_row = by_cycle[cycle].get("worker")
+            if worker_row is None:
+                continue
+            orch_row = by_cycle[cycle].get("orchestrator")
+            sort_ts = float(orch_row["ts"]) if orch_row else float(worker_row["ts"])
+            cycle_sections.append((sort_ts, cycle))
+
+        completed_agents = [
+            row for row in agent_rows if str(row["status"] or "") != "running" and row["finished_at"] is not None
+        ]
+        active_agents = [row for row in agent_rows if str(row["status"] or "") == "running"]
+
+        if not cycle_sections and not completed_agents and not active_agents:
             self._write_welcome_lines()
             return
 
-        for cycle in sorted(by_cycle):
+        timeline: list[tuple[float, str, object]] = []
+        for sort_ts, cycle in cycle_sections:
+            timeline.append((sort_ts, "cycle", cycle))
+        for row in completed_agents:
+            timeline.append((float(row["finished_at"]), "agent", row))
+        timeline.sort(key=lambda item: (item[0], 0 if item[1] == "cycle" else 1))
+
+        for _, kind, payload_item in timeline:
+            if kind == "agent":
+                self._create_agent_section(payload_item)  # type: ignore[arg-type]
+                continue
+            cycle = int(payload_item)
             worker_row = by_cycle[cycle].get("worker")
             if worker_row is None:
                 continue
@@ -374,13 +464,36 @@ class ResearchConsole(App[None]):
             if not excerpt:
                 excerpt = events.extract_result_excerpt(worker_row["summary"] or "")
             if excerpt:
-                result_w = self._write_result_box(excerpt)
+                result_w = self._write_result_box(
+                    excerpt,
+                    title=f"[dim]{worker}[/] [dim]cycle {cycle}[/]",
+                )
                 if result_w is not None:
                     self._current_cycle_widgets.append(result_w)
             elif not ok:
                 self._write_activity("  [dim](failed — no excerpt)[/]")
 
-        self._last_cycle = max(by_cycle)
+        for row in sorted(active_agents, key=lambda item: (float(item["started_at"]), int(item["id"]))):
+            agent = self._create_agent_section(row)
+            try:
+                chunks = list(
+                    self._conn.execute(
+                        "SELECT chunk FROM agent_stream WHERE agent_id = ? ORDER BY id ASC",
+                        (agent.agent_id,),
+                    )
+                )
+            except sqlite3.OperationalError:
+                chunks = []
+            for chunk_row in chunks:
+                self._agent_apply_stream_chunk(agent, str(chunk_row["chunk"] or ""))
+        self._reposition_active_agent_sections()
+        if active_agents:
+            latest_agent_id = max(int(row["id"]) for row in active_agents)
+            latest_agent = self._agent_sections.get(latest_agent_id)
+            if latest_agent is not None:
+                self._scroll_widget_to_top(latest_agent.header_widget)
+
+        self._last_cycle = max(by_cycle) if by_cycle else 0
         try:
             row = self._conn.execute("SELECT MAX(id) FROM run_events").fetchone()
             self._last_run_event_id = int(row[0]) if row and row[0] is not None else 0
@@ -391,6 +504,11 @@ class ResearchConsole(App[None]):
             self._last_stream_id = int(row[0]) if row and row[0] is not None else 0
         except sqlite3.OperationalError:
             self._last_stream_id = 0
+        try:
+            row = self._conn.execute("SELECT MAX(id) FROM agent_stream").fetchone()
+            self._last_agent_stream_id = int(row[0]) if row and row[0] is not None else 0
+        except sqlite3.OperationalError:
+            self._last_agent_stream_id = 0
         self._scroll_to_bottom()
 
     def _write_activity(self, markup: str, *, below_stream: bool = False) -> None:
@@ -494,13 +612,13 @@ class ResearchConsole(App[None]):
             return None
         return float(row["ts"]) if row else None
 
-    def _write_result_box(self, text: str) -> Static | None:
+    def _write_result_box(self, text: str, *, title: str = "") -> Static | None:
         """Append a styled result box to the activity scroll area."""
         if not text.strip():
             return None
         scroll = self.query_one("#activity-scroll", VerticalScroll)
         stream = self.query_one("#stream-text", Static)
-        rendered = events.wrap_result_renderable(events.render_markdown(text))
+        rendered = events.wrap_result_renderable(events.render_markdown(text), title=title)
         w = Static(rendered, classes="result-box", expand=True)
         scroll.mount(w, before=stream)
         self.call_after_refresh(lambda: scroll.scroll_end(animate=False))
@@ -517,6 +635,311 @@ class ResearchConsole(App[None]):
         scroll.mount(w, before=stream)
         self.call_after_refresh(lambda: scroll.scroll_end(animate=False))
         return w
+
+    def _render_agent_stream_panel(self, agent: _AgentSectionState) -> None:
+        if agent.stream_widget is None:
+            return
+        parts: list[str] = []
+        if agent.stream_tool_markup:
+            parts.append(agent.stream_tool_markup)
+        message_block = self._format_stream_text_block(agent.stream_text_live)
+        if message_block:
+            if parts:
+                parts.append("")
+            parts.append(message_block)
+        inner = "\n".join(parts)
+        agent.stream_widget.update(events.make_stream_panel(inner))
+        agent.stream_widget.display = bool(inner.strip())
+
+    def _render_cycle_stream_panel(self, markup: str) -> None:
+        widget = self._cycle_stream_widget
+        if widget is not None:
+            status = self.query_one("#stream-text", Static)
+            status.update(events.make_stream_panel(""))
+            status.display = False
+            widget.update(events.make_stream_panel(markup))
+            widget.display = bool(markup.strip())
+            return
+        status = self.query_one("#stream-text", Static)
+        status.update(events.make_stream_panel(markup))
+        status.display = bool(markup.strip())
+
+    def _agent_append_stream_text_delta(self, agent: _AgentSectionState, chunk: str) -> None:
+        if not chunk:
+            return
+        if agent.stream_message_closed or agent.stream_last_event_was_tool:
+            agent.stream_text_live = ""
+            agent.stream_message_closed = False
+        agent.stream_text_live += chunk
+        agent.cumulative_stream_text += chunk
+        agent.stream_last_event_was_tool = False
+
+    def _agent_replace_stream_message(self, agent: _AgentSectionState, text: str) -> None:
+        agent.stream_text_live = text
+        if text:
+            if agent.cumulative_stream_text and not agent.cumulative_stream_text.endswith("\n"):
+                agent.cumulative_stream_text += "\n"
+            agent.cumulative_stream_text += text
+        agent.stream_message_closed = True
+        agent.stream_last_event_was_tool = False
+
+    def _agent_apply_stream_chunk(self, agent: _AgentSectionState, chunk: str) -> None:
+        parsed = events.parse_stream_event(chunk, full_text=True)
+        if parsed is None:
+            return
+        event_type, text = parsed
+        if event_type == "tool" and text.strip():
+            tool_row = self._format_stream_tool_row(text)
+            if tool_row:
+                agent.stream_tool_markup = tool_row
+            agent.stream_last_event_was_tool = True
+        elif event_type == "text" and text.strip():
+            self._agent_append_stream_text_delta(agent, text)
+        elif event_type == "message" and text.strip():
+            self._agent_replace_stream_message(agent, text)
+        elif event_type == "boundary":
+            agent.stream_message_closed = bool(agent.stream_text_live.strip())
+            agent.stream_last_event_was_tool = False
+        self._render_agent_stream_panel(agent)
+
+    def _agent_status_for(self, status: str) -> events.CycleHeaderStatus:
+        return "running" if status == "running" else ("ok" if status == "completed" else "fail")
+
+    def _agent_elapsed(self, agent: _AgentSectionState) -> float:
+        end = time.time() if agent.is_running else float(agent.finished_ts or agent.started_ts)
+        return max(0.0, end - agent.started_ts)
+
+    def _create_agent_section(self, row: sqlite3.Row) -> _AgentSectionState:
+        agent_id = int(row["id"])
+        prompt = str(row["prompt"] or "")
+        status = str(row["status"] or "running")
+        started_ts = float(row["started_at"] or row["created_at"] or time.time())
+        finished_ts = float(row["finished_at"]) if row["finished_at"] is not None else None
+        header = self._mount_activity_widget(
+            events.format_cycle_header(
+                agent_id,
+                "agent",
+                prompt,
+                label="agent",
+                elapsed_sec=max(0.0, (finished_ts or time.time()) - started_ts),
+                status=self._agent_status_for(status),
+            ),
+            classes="activity-line cycle-header",
+        )
+        task_w = self._write_task(prompt)
+        agent = _AgentSectionState(
+            agent_id=agent_id,
+            prompt=prompt,
+            status=status,
+            started_ts=started_ts,
+            finished_ts=finished_ts,
+            header_widget=header,
+            task_widget=task_w,
+            stream_widget=None,
+        )
+        if status == "running":
+            agent.stream_widget = self._mount_activity_widget("", classes="activity-line result-box")
+            dots = "." * ((agent.stream_placeholder_tick % 3) + 1)
+            agent.stream_widget.update(
+                events.make_stream_panel(f"[dim]Running agent{dots}[/]")
+            )
+            agent.stream_widget.display = True
+        else:
+            excerpt = events.extract_result_excerpt(str(row["summary"] or ""))
+            if not excerpt and status == "failed":
+                excerpt = events.extract_error_excerpt(
+                    str(row["summary"] or ""),
+                    str(row["error"] or ""),
+                )
+            if excerpt:
+                agent.result_widget = self._write_result_box(
+                    excerpt,
+                    title=f"[dim]agent {agent_id}[/]",
+                )
+        self._agent_sections[agent_id] = agent
+        return agent
+
+    def _move_widgets_before_stream(self, widgets: list[Static]) -> None:
+        if not widgets:
+            return
+        scroll = self.query_one("#activity-scroll", VerticalScroll)
+        stream = self.query_one("#stream-text", Static)
+        mounted = [widget for widget in widgets if getattr(widget, "parent", None) is scroll]
+        if not mounted:
+            return
+        for widget in mounted:
+            try:
+                scroll.move_child(widget, before=stream)
+            except Exception:
+                pass
+
+    def _reposition_active_agent_sections(self, *, scroll: bool = False) -> None:
+        # Keep the current cycle's widgets together even after the worker has
+        # finished, because the header widget is cleared on completion before the
+        # final result box is appended.
+        if self._current_cycle_widgets:
+            self._move_widgets_before_stream(self._current_cycle_widgets)
+        running = sorted(
+            (agent for agent in self._agent_sections.values() if agent.is_running),
+            key=lambda agent: (agent.started_ts, agent.agent_id),
+        )
+        for agent in running:
+            self._move_widgets_before_stream(agent.widgets)
+        if scroll and (running or self._cycle_header_widget is not None):
+            self._scroll_to_bottom()
+
+    def _has_active_agent_sections(self) -> bool:
+        return any(agent.is_running for agent in self._agent_sections.values())
+
+    def _pid_is_alive(self, pid: int | None) -> bool:
+        if pid is None or pid <= 0:
+            return False
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        except OSError:
+            return False
+        return True
+
+    def _finalize_stale_agent_run(self, agent_id: int, reason: str) -> sqlite3.Row | None:
+        db.finish_agent_run(
+            self._conn,
+            agent_id,
+            status="failed",
+            summary=reason,
+            error=reason,
+        )
+        memory.refresh_system_tier_from_db(
+            self.cfg.researcher_root,
+            self.cfg.project_dir,
+            self.db_path,
+            limit=self.cfg.system_recent_run_events_limit,
+        )
+        return db.get_agent_run(self._conn, agent_id)
+
+    def _finalize_agent_section(self, row: sqlite3.Row) -> None:
+        agent_id = int(row["id"])
+        agent = self._agent_sections.get(agent_id)
+        if agent is None or not agent.is_running:
+            return
+        agent.status = str(row["status"] or "completed")
+        agent.finished_ts = float(row["finished_at"]) if row["finished_at"] is not None else time.time()
+        agent.header_widget.update(
+            events.format_cycle_header(
+                agent_id,
+                "agent",
+                agent.prompt,
+                label="agent",
+                elapsed_sec=self._agent_elapsed(agent),
+                status=self._agent_status_for(agent.status),
+            )
+        )
+        excerpt = events.extract_result_excerpt(str(row["summary"] or ""))
+        if not excerpt and agent.status == "failed":
+            excerpt = events.extract_error_excerpt(str(row["summary"] or ""), str(row["error"] or ""))
+        if excerpt:
+            rendered = events.wrap_result_renderable(
+                events.render_markdown(excerpt),
+                title=f"[dim]agent {agent_id}[/]",
+            )
+            if agent.stream_widget is not None:
+                agent.stream_widget.update(rendered)
+                agent.stream_widget.display = True
+                agent.result_widget = agent.stream_widget
+                agent.stream_widget = None
+            else:
+                agent.result_widget = self._write_result_box(
+                    excerpt,
+                    title=f"[dim]agent {agent_id}[/]",
+                )
+        elif agent.stream_widget is not None:
+            agent.stream_widget.display = False
+            agent.result_widget = agent.stream_widget
+            agent.stream_widget = None
+
+    def _kill_agent_processes(self) -> None:
+        killed_any = False
+        for agent_id, proc in list(self._agent_processes.items()):
+            try:
+                proc.kill_group(wait_timeout=_FORCED_AGENT_KILL_WAIT_TIMEOUT)
+                killed_any = True
+            except Exception:
+                pass
+            try:
+                row = db.get_agent_run(self._conn, agent_id)
+                if row is not None and str(row["status"] or "") == "running":
+                    db.finish_agent_run(
+                        self._conn,
+                        agent_id,
+                        status="failed",
+                        summary="agent stopped when lab shut down or reverted",
+                        error="agent stopped when lab shut down or reverted",
+                    )
+                    killed_any = True
+            except Exception:
+                pass
+        self._agent_processes = {}
+        if killed_any:
+            try:
+                memory.refresh_system_tier_from_db(
+                    self.cfg.researcher_root,
+                    self.cfg.project_dir,
+                    self.db_path,
+                    limit=self.cfg.system_recent_run_events_limit,
+                    db_timeout=_FORCED_AGENT_DB_TIMEOUT,
+                )
+            except Exception:
+                pass
+
+    def _kill_single_agent_process(self, agent_id: int) -> bool:
+        """Stop one async ``/agent`` by id; return True if a live process was signaled."""
+        row = db.get_agent_run(self._conn, agent_id)
+        if row is None:
+            return False
+
+        signaled = False
+        proc = self._agent_processes.pop(agent_id, None)
+        if proc is not None:
+            try:
+                proc.kill_group(wait_timeout=_FORCED_AGENT_KILL_WAIT_TIMEOUT)
+                signaled = True
+            except Exception:
+                pass
+        else:
+            pid = int(row["pid"]) if row["pid"] is not None else None
+            if pid and pid > 0:
+                try:
+                    os.killpg(pid, signal.SIGKILL)
+                    signaled = True
+                except Exception:
+                    try:
+                        os.kill(pid, signal.SIGKILL)
+                        signaled = True
+                    except Exception:
+                        pass
+
+        if str(row["status"] or "") == "running":
+            db.finish_agent_run(
+                self._conn,
+                agent_id,
+                status="failed",
+                summary=f"agent {agent_id} stopped by /stop agent {agent_id}",
+                error=f"agent {agent_id} stopped by /stop agent {agent_id}",
+            )
+            memory.refresh_system_tier_from_db(
+                self.cfg.researcher_root,
+                self.cfg.project_dir,
+                self.db_path,
+                limit=self.cfg.system_recent_run_events_limit,
+                db_timeout=_FORCED_AGENT_DB_TIMEOUT,
+            )
+            updated = db.get_agent_run(self._conn, agent_id)
+            if updated is not None:
+                self._finalize_agent_section(updated)
+        return signaled
 
     def _reset_stream_message_buffers(self) -> None:
         self._stream_tool_markup = ""
@@ -576,22 +999,16 @@ class ResearchConsole(App[None]):
                 parts.append("")
             parts.append(message_block)
         inner = "\n".join(parts)
-        status = self.query_one("#stream-text", Static)
-        status.update(events.make_stream_panel(inner))
-        status.display = bool(inner.strip())
+        self._render_cycle_stream_panel(inner)
 
     def _clear_stream_status(self) -> None:
         self._stream_is_running_placeholder = False
         self._reset_stream_message_buffers()
-        status = self.query_one("#stream-text", Static)
-        status.update(events.make_stream_panel(""))
-        status.display = False
+        self._render_cycle_stream_panel("")
 
     def _set_stream_placeholder(self, markup: str) -> None:
         """Single-line animated status (Running… / Orchestrating…), not the message log."""
-        status = self.query_one("#stream-text", Static)
-        status.update(events.make_stream_panel(markup))
-        status.display = True
+        self._render_cycle_stream_panel(markup)
 
     def _fetch_last_stream_text(self, cycle: int) -> str:
         """Retrieve the full text output from worker_stream for a completed cycle.
@@ -650,6 +1067,16 @@ class ResearchConsole(App[None]):
             return
         self.call_after_refresh(
             lambda: scroll.scroll_to_widget(w, top=True, animate=False, force=True)
+        )
+
+    def _scroll_widget_to_top(self, widget: Static | None) -> None:
+        """Scroll so *widget* aligns with the viewport top."""
+        if widget is None:
+            self._scroll_to_bottom()
+            return
+        scroll = self.query_one("#activity-scroll", VerticalScroll)
+        self.call_after_refresh(
+            lambda: scroll.scroll_to_widget(widget, top=True, animate=False, force=True)
         )
 
     # --- polling --------------------------------------------------------------
@@ -719,9 +1146,13 @@ class ResearchConsole(App[None]):
         self._check_scheduler_health()
         self._refresh_header()
         self._poll_run_events()
+        self._poll_agent_runs()
         self._poll_stream()
+        self._poll_agent_stream()
+        self._poll_agent_stream_placeholders()
         self._poll_animated_stream_status()
         self._refresh_running_cycle_header()
+        self._refresh_running_agent_headers()
         self._refresh_file_changes()
         self._refresh_checklist()
         self._refresh_live_plan()
@@ -834,6 +1265,22 @@ class ResearchConsole(App[None]):
             )
         )
 
+    def _refresh_running_agent_headers(self) -> None:
+        """Tick live durations for any active async ``/agent`` sections."""
+        for agent in self._agent_sections.values():
+            if not agent.is_running:
+                continue
+            agent.header_widget.update(
+                events.format_cycle_header(
+                    agent.agent_id,
+                    "agent",
+                    agent.prompt,
+                    label="agent",
+                    elapsed_sec=self._agent_elapsed(agent),
+                    status="running",
+                )
+            )
+
     def _refresh_live_diff(self) -> None:
         """Repaint an active working-tree diff view while files continue changing."""
         from lab import git_checkpoint
@@ -943,11 +1390,20 @@ class ResearchConsole(App[None]):
                     self._current_cycle_widgets.append(self._checklist_widget)
                     self._last_checklist_text = ""
                     self._refresh_checklist(force=True)
+                    self._cycle_stream_widget = self._mount_activity_widget(
+                        "", classes="activity-line result-box",
+                    )
+                    self._cycle_stream_widget.display = False
+                    self._current_cycle_widgets.append(self._cycle_stream_widget)
                 self._stream_is_running_placeholder = True
                 self._running_worker_tick = 0
                 wdots = "." * ((self._running_worker_tick % 3) + 1)
                 follow = self._activity_viewport_at_bottom()
                 self._set_stream_placeholder(f"[dim]Running {worker}{wdots}[/]")
+                self._reposition_active_agent_sections()
+                # Keep the scheduler's newest cycle visible even when standalone
+                # /agent sections are also active; otherwise /start can look idle
+                # because the new cycle mounts above the currently focused agent UI.
                 if new_cycle and self._cycle_header_widget is not None:
                     self._scroll_cycle_header_to_top()
                 elif follow:
@@ -982,6 +1438,7 @@ class ResearchConsole(App[None]):
                 if not checklist:
                     checklist = self._read_immediate_plan_checklist()
                 self._clear_stream_status()
+                self._cycle_stream_widget = None
                 self._refresh_file_changes(force=True)
                 self._file_changes_widget = None
                 self._update_checklist_widget(checklist, force=True)
@@ -1000,7 +1457,10 @@ class ResearchConsole(App[None]):
                     self._cycle_header_widget = None
                 self._worker_start_ts = 0.0
                 if excerpt:
-                    result_w = self._write_result_box(excerpt)
+                    result_w = self._write_result_box(
+                        excerpt,
+                        title=f"[dim]{worker}[/] [dim]cycle {cycle}[/]",
+                    )
                     if result_w is not None:
                         self._current_cycle_widgets.append(result_w)
                 elif not ok:
@@ -1023,6 +1483,70 @@ class ResearchConsole(App[None]):
                 self._clear_below_stream_feedback()
                 if self._scheduler and self._scheduler.is_alive():
                     self._orchestrating = True
+                self._reposition_active_agent_sections()
+
+    def _poll_agent_runs(self) -> None:
+        """Check for new or completed async ``/agent`` runs."""
+        try:
+            rows = db.list_agent_runs(self._conn)
+        except sqlite3.OperationalError:
+            return
+        seen_ids = {int(row["id"]) for row in rows}
+        for stale_id in list(self._agent_processes):
+            if stale_id not in seen_ids:
+                self._agent_processes.pop(stale_id, None)
+        for row in rows:
+            agent_id = int(row["id"])
+            status = str(row["status"] or "running")
+            pid = int(row["pid"]) if row["pid"] is not None else None
+            proc = self._agent_processes.get(agent_id)
+            if status == "running":
+                dead_local = proc is not None and not proc.is_alive()
+                dead_pid = proc is None and not self._pid_is_alive(pid)
+                if dead_local or dead_pid:
+                    reason = "agent process exited unexpectedly" if pid else "agent was left marked running, but no live process exists"
+                    row = self._finalize_stale_agent_run(agent_id, reason) or row
+                    status = str(row["status"] or "failed")
+                    self._agent_processes.pop(agent_id, None)
+            agent = self._agent_sections.get(agent_id)
+            if agent is None:
+                agent = self._create_agent_section(row)
+                self._reposition_active_agent_sections()
+                self._scroll_widget_to_top(agent.header_widget)
+                continue
+            if agent.status != status and status != "running":
+                self._finalize_agent_section(row)
+                self._agent_processes.pop(agent_id, None)
+
+    def _poll_agent_stream(self) -> None:
+        """Append stream events to each live async agent section."""
+        try:
+            rows = db.agent_stream_chunks_since(self._conn, self._last_agent_stream_id)
+        except sqlite3.OperationalError:
+            return
+        for row in rows:
+            self._last_agent_stream_id = int(row["id"])
+            agent = self._agent_sections.get(int(row["agent_id"]))
+            if agent is None:
+                continue
+            follow = self._activity_viewport_at_bottom()
+            self._agent_apply_stream_chunk(agent, str(row["chunk"] or ""))
+            if follow:
+                self._scroll_to_bottom()
+
+    def _poll_agent_stream_placeholders(self) -> None:
+        """Animate Running agent… until tool/text stream content replaces the panel."""
+        for agent in self._agent_sections.values():
+            if not agent.is_running or agent.stream_widget is None:
+                continue
+            if agent.stream_tool_markup or agent.stream_text_live.strip():
+                continue
+            agent.stream_placeholder_tick += 1
+            dots = "." * ((agent.stream_placeholder_tick % 3) + 1)
+            agent.stream_widget.update(
+                events.make_stream_panel(f"[dim]Running agent{dots}[/]")
+            )
+            agent.stream_widget.display = True
 
     def _poll_stream(self) -> None:
         """Append stream events to the live panel.
@@ -1162,10 +1686,14 @@ class ResearchConsole(App[None]):
             self._cmd_plan()
             return
 
+        if cmd == "agent":
+            body = (rest + "\n" + tail if tail else rest).strip()
+            self._cmd_agent(body)
+            return
+
         handler = {
             "start": self._cmd_start,
             "pause": self._cmd_pause,
-            "stop": self._cmd_stop,
             "exit": self._cmd_exit,
             "help": self._cmd_help,
             "reset": self._cmd_reset,
@@ -1173,7 +1701,9 @@ class ResearchConsole(App[None]):
             "redo": self._cmd_redo,
         }.get(cmd)
 
-        if handler:
+        if cmd == "stop":
+            self._cmd_stop(rest)
+        elif handler:
             handler()
         else:
             self._write_below_stream_box(f"  [red]Unknown command:[/] /{cmd}")
@@ -1287,6 +1817,7 @@ class ResearchConsole(App[None]):
             )
             return
         self._kill_scheduler()
+        self._kill_agent_processes()
         self._revert_to_checkpoint(undo_last_completed_worker=True)
         self._redo_stack.append(snap)
         self._auto_restarts = 0
@@ -1300,6 +1831,7 @@ class ResearchConsole(App[None]):
             return
         was_running = bool(self._scheduler and self._scheduler.is_alive())
         self._kill_scheduler()
+        self._kill_agent_processes()
         snap = self._redo_stack.pop()
         if not self._restore_redo_snapshot(snap):
             self._write_activity(
@@ -1332,10 +1864,33 @@ class ResearchConsole(App[None]):
         self._auto_restarts = 0
         self._restart_scheduler()
 
-    def _cmd_stop(self) -> None:
-        """Kill the scheduler immediately and revert any in-flight cycle."""
+    def _cmd_stop(self, rest: str = "") -> None:
+        """Stop everything, or target one standalone async agent via ``/stop agent N``."""
+        parts = rest.strip().split()
+        if parts:
+            if len(parts) == 2 and parts[0].lower() == "agent":
+                try:
+                    agent_id = int(parts[1])
+                except ValueError:
+                    self._write_below_stream_box("  [red]Usage:[/] /stop agent [id]")
+                    return
+                row = db.get_agent_run(self._conn, agent_id)
+                if row is None:
+                    self._write_below_stream_box(f"  [red]No such agent:[/] {agent_id}")
+                    return
+                if str(row["status"] or "") != "running":
+                    self._write_below_stream_box(f"  [dim]Agent {agent_id} is not running.[/]")
+                    return
+                self._kill_single_agent_process(agent_id)
+                self._write_below_stream_box(f"  [yellow]Stopped agent {agent_id}.[/]")
+                return
+            self._write_below_stream_box("  [red]Usage:[/] /stop OR /stop agent [id]")
+            return
+
+        # No args: keep the original global stop behaviour.
         db.set_graceful_pause_pending(self._conn, False)
         self._kill_scheduler()
+        self._kill_agent_processes()
         self._revert_to_checkpoint()
         db.set_control_mode(self._conn, "paused")
         self._conn.commit()
@@ -1366,10 +1921,15 @@ class ResearchConsole(App[None]):
         self._write_activity("  [dim]Shutting down...[/]", below_stream=True)
         db.set_graceful_pause_pending(self._conn, False)
         self._kill_scheduler()
+        self._kill_agent_processes()
         self._revert_to_checkpoint()
         db.set_control_mode(self._conn, "paused")
         self._conn.commit()
-        self.set_timer(0.3, self.exit)
+        # Defer exit without Textual's one-shot Timer: Timer._tick skips callbacks
+        # when app._exit is already True, which can strand shutdown if a prior exit
+        # did not finish. InvokeLater / call_after_refresh is not subject to that guard.
+        if not self.call_after_refresh(self.exit):
+            self.exit()
 
     def _cmd_plan(self) -> None:
         self._live_plan_state = None
@@ -1392,8 +1952,10 @@ class ResearchConsole(App[None]):
         self._write_below_stream_box(
             "  [bold]Commands[/]\n"
             "  [bold]/start[/]        Start the background agent\n"
+            "  [bold]/agent [prompt][/] Run a standalone async subagent on the given prompt\n"
             "  [bold]/pause[/]        Pause after the current worker finishes\n"
-            "  [bold]/stop[/]         Stop immediately (kill worker, revert in-flight cycle)\n"
+            "  [bold]/stop[/]         Stop everything immediately (workers + /agent runs)\n"
+            "  [bold]/stop agent [id][/] Stop just one standalone /agent run\n"
             "  [bold]/exit[/]         Stop agent and quit\n"
             "  [bold]/plan[/]         Show the live roadmap checklist\n"
             "  [bold]/diff[/]         Line-by-line diff. If args are given: [bold]/diff n[/] = diff in cycle n; [bold]/diff n m[/] = diff from cycle n to end of cycle m\n"
@@ -1405,8 +1967,36 @@ class ResearchConsole(App[None]):
             "  [dim]Enter[/] sends · [dim]Shift+Enter[/] for newline · navigate lines with arrows\n"
         )
 
+    def _cmd_agent(self, body: str) -> None:
+        if not body.strip():
+            self._write_below_stream_box("  [red]/agent[/] requires a prompt")
+            return
+        from lab.loop import spawn_agent_run
+
+        backend = self.cfg.default_worker_backend
+        if backend not in ("claude", "cursor"):
+            backend = "cursor"
+        model = self.cfg.cursor_agent_model if backend == "cursor" else ""
+        agent_id = db.create_agent_run(self._conn, prompt=body, backend=backend, model=model or "")
+        researcher_root = project_researcher_root(self.cfg.project_dir)
+        proc = spawn_agent_run(
+            self.db_path,
+            researcher_root,
+            self.cfg.project_dir,
+            self.cfg,
+            agent_id,
+        )
+        self._agent_processes[agent_id] = proc
+        db.update_agent_run_pid(self._conn, agent_id, proc.pid)
+        row = db.get_agent_run(self._conn, agent_id)
+        if row is not None and agent_id not in self._agent_sections:
+            agent = self._create_agent_section(row)
+            self._reposition_active_agent_sections()
+            self._scroll_widget_to_top(agent.header_widget)
+
     def _cmd_reset(self) -> None:
         self._kill_scheduler()
+        self._kill_agent_processes()
         self._conn.close()
         try:
             reset_project_preserving_research_idea(self.cfg.project_dir)
@@ -1426,6 +2016,8 @@ class ResearchConsole(App[None]):
         self._last_file_changes_ts = 0.0
         self._last_stream_text = ""
         self._current_cycle_widgets = []
+        self._agent_sections = {}
+        self._last_agent_stream_id = 0
         self._auto_restarts = 0
         self._orchestrating_tick = 0
         self._running_worker_tick = 0
@@ -1843,6 +2435,7 @@ class ResearchConsole(App[None]):
     def action_quit(self) -> None:
         db.set_graceful_pause_pending(self._conn, False)
         self._kill_scheduler()
+        self._kill_agent_processes()
         self._revert_to_checkpoint()
         db.set_control_mode(self._conn, "paused")
         self._conn.commit()

@@ -11,7 +11,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from lab import memory
+from lab import agent_runtime, memory
 from lab.workflows import research_graph
 
 if TYPE_CHECKING:
@@ -42,7 +42,11 @@ class SchedulerProcessHandle:
         except subprocess.TimeoutExpired:
             return
 
-    def kill_group(self) -> None:
+    @property
+    def pid(self) -> int:
+        return int(self._proc.pid)
+
+    def kill_group(self, *, wait_timeout: float | None = 5.0) -> None:
         """SIGKILL the entire process group (scheduler + child workers)."""
         if self._proc.poll() is not None:
             return
@@ -53,8 +57,10 @@ class SchedulerProcessHandle:
                 self._proc.kill()
             except OSError:
                 pass
+        if wait_timeout is None or wait_timeout <= 0:
+            return
         try:
-            self._proc.wait(timeout=5)
+            self._proc.wait(timeout=wait_timeout)
         except subprocess.TimeoutExpired:
             pass
 
@@ -68,6 +74,17 @@ def _run_scheduler(db_path: Path, researcher_root: Path, project_dir: Path, cfg:
         researcher_root=researcher_root,
         project_dir=project_dir,
         checkpoint_path=ckpt,
+    )
+
+
+def _run_agent(db_path: Path, researcher_root: Path, project_dir: Path, cfg: RunConfig, agent_id: int) -> None:
+    """Child process entry: standalone async ``/agent`` worker."""
+    agent_runtime.run_agent(
+        agent_id=agent_id,
+        db_path=db_path,
+        cfg=cfg,
+        researcher_root=researcher_root,
+        project_dir=project_dir,
     )
 
 
@@ -134,12 +151,52 @@ def spawn_scheduler(
     return SchedulerProcessHandle(proc)
 
 
+def spawn_agent_run(
+    db_path: Path,
+    researcher_root: Path,
+    project_dir: Path,
+    cfg: RunConfig,
+    agent_id: int,
+) -> SchedulerProcessHandle:
+    """Spawn one standalone async ``/agent`` subprocess."""
+    memory.ensure_memory_layout(researcher_root, project_dir=project_dir)
+    log_path = researcher_root / f"agent_{agent_id}.log"
+    log_fh = open(log_path, "a")  # noqa: SIM115
+    proc = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "lab.loop",
+            "run-agent",
+            str(db_path),
+            str(agent_id),
+            _serialize_run_config(cfg),
+        ],
+        cwd=str(project_dir),
+        env=_subprocess_env(),
+        stdout=log_fh,
+        stderr=log_fh,
+        start_new_session=True,
+    )
+    return SchedulerProcessHandle(proc)
+
+
 def _run_scheduler_from_cli(argv: list[str]) -> int:
     if len(argv) != 2:
         raise SystemExit("usage: python -m lab.loop run-scheduler <db_path> <run_config_json>")
     db_path = Path(argv[0])
     cfg = _deserialize_run_config(argv[1])
     _run_scheduler(db_path, cfg.researcher_root, cfg.project_dir, cfg)
+    return 0
+
+
+def _run_agent_from_cli(argv: list[str]) -> int:
+    if len(argv) != 3:
+        raise SystemExit("usage: python -m lab.loop run-agent <db_path> <agent_id> <run_config_json>")
+    db_path = Path(argv[0])
+    agent_id = int(argv[1])
+    cfg = _deserialize_run_config(argv[2])
+    _run_agent(db_path, cfg.researcher_root, cfg.project_dir, cfg, agent_id)
     return 0
 
 
@@ -150,6 +207,8 @@ def main(argv: list[str] | None = None) -> int:
     command = args.pop(0)
     if command == "run-scheduler":
         return _run_scheduler_from_cli(args)
+    if command == "run-agent":
+        return _run_agent_from_cli(args)
     raise SystemExit(f"unknown command: {command}")
 
 

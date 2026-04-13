@@ -162,23 +162,53 @@ def _format_system_recent_line(
     return head + ((" — " + " — ".join(bits)) if bits else "")
 
 
+def _format_system_recent_agent_line(researcher_root: Path, r: Any) -> str:
+    agent_id = int(r["id"])
+    status = str(r["status"] or "running")
+    task = str(r["prompt"] or "").replace("\n", " ").strip()
+    if len(task) > 180:
+        task = task[:177] + "..."
+    bits: list[str] = []
+    if task:
+        bits.append(f"task: {task}")
+    summary = str(r["summary"] or "").replace("\n", " ").strip()
+    if summary:
+        if len(summary) > 180:
+            summary = summary[:177] + "..."
+        bits.append(f"summary: {summary}")
+    pkt = str(r["packet_path"] or "").strip()
+    snip = _packet_prompt_snippet(researcher_root, pkt, _SYSTEM_RECENT_PACKET_SNIPPET_CHARS)
+    if snip:
+        bits.append(f"prompt: {snip}")
+    return f"- agent **{agent_id}** `agent` ({status})" + ((" — " + " — ".join(bits)) if bits else "")
+
+
 def refresh_system_tier_from_db(
     researcher_root: Path,
     project_dir: Path | None,
     db_path: Path,
     *,
     limit: int = 40,
+    db_timeout: float = 30.0,
 ) -> None:
     """Rebuild ``system.md`` from paths + last *limit* ``run_events`` rows (best-effort)."""
     try:
         from lab import db as db_mod
 
-        conn = db_mod.connect_db(db_path)
+        conn = db_mod.connect_db(db_path, timeout=db_timeout)
         try:
             rows = db_mod.recent_run_events(conn, limit=limit)
+            agent_rows = db_mod.list_agent_runs(conn)
         finally:
             conn.close()
-        lines = [_format_system_recent_line(researcher_root, r) for r in reversed(rows)]
+        merged: list[tuple[float, str]] = []
+        for r in rows:
+            merged.append((float(r["ts"]), _format_system_recent_line(researcher_root, r)))
+        for r in agent_rows:
+            ts = float(r["finished_at"] or r["started_at"] or r["created_at"])
+            merged.append((ts, _format_system_recent_agent_line(researcher_root, r)))
+        merged.sort(key=lambda item: item[0])
+        lines = [line for _, line in merged[-limit:]]
         recent = "\n".join(lines) if lines else "*(no run events yet)*"
         write_system_tier_file(researcher_root, project_dir, recent_activity=recent)
     except Exception:
@@ -408,6 +438,16 @@ def episodes_cycle_relpath(*, cycle: int, worker: str) -> str:
 def episode_cycle_dir(researcher_root: Path, cycle: int, worker: str) -> Path:
     """Absolute path to cycle_<n>/<worker>/ (packet.md, worker_output.json)."""
     return episodes_dir(researcher_root) / f"cycle_{cycle:06d}" / worker
+
+
+def episodes_agent_relpath(*, agent_id: int) -> str:
+    """Path under researcher root to one async ``/agent`` episode directory."""
+    return f"memory/episodes/agent_{agent_id:06d}/agent"
+
+
+def episode_agent_dir(researcher_root: Path, agent_id: int) -> Path:
+    """Absolute path to agent_<n>/agent/ (packet.md, worker_output.json)."""
+    return episodes_dir(researcher_root) / f"agent_{agent_id:06d}" / "agent"
 
 
 def skills_dir(researcher_root: Path) -> Path:
@@ -692,6 +732,36 @@ def append_episode_index_entry(
         f"\n### Cycle {cycle} — `{worker}`\n\n"
         f"- **Task:** {task_s}\n"
         f"- **Reason:** {reason_s}\n"
+        f"- **Input:** [`packet.md`]({rel}/packet.md)\n"
+        f"- **Output:** [`worker_output.json`]({rel}/worker_output.json)\n"
+    )
+    if not idx.exists():
+        helpers.write_text(idx, _episode_index_header().rstrip() + "\n")
+    prev = helpers.read_text(idx, default="")
+    helpers.write_text(idx, prev.rstrip() + block + "\n")
+
+
+def append_agent_episode_index_entry(
+    researcher_root: Path,
+    *,
+    agent_id: int,
+    task: str,
+    episode_relpath: str,
+) -> None:
+    """Append one async ``/agent`` block to ``memory/episodes/index.md``."""
+    idx = episodes_dir(researcher_root) / "index.md"
+    helpers.ensure_dir(idx.parent)
+    base = episode_relpath.strip().rstrip("/")
+    prefix = "memory/episodes/"
+    if base.startswith(prefix):
+        rel = base[len(prefix) :]
+    else:
+        rel = base
+    task_s = (task or "").replace("\n", " ").strip()
+    block = (
+        f"\n### Agent {agent_id} — `agent`\n\n"
+        f"- **Task:** {task_s}\n"
+        f"- **Reason:** Direct `/agent` invocation\n"
         f"- **Input:** [`packet.md`]({rel}/packet.md)\n"
         f"- **Output:** [`worker_output.json`]({rel}/worker_output.json)\n"
     )

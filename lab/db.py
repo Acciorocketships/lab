@@ -74,6 +74,30 @@ CREATE TABLE IF NOT EXISTS forced_run (
   worker TEXT NOT NULL DEFAULT '',
   task TEXT NOT NULL DEFAULT ''
 );
+
+CREATE TABLE IF NOT EXISTS agent_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at REAL NOT NULL,
+  started_at REAL NOT NULL,
+  finished_at REAL,
+  status TEXT NOT NULL DEFAULT 'running',
+  pid INTEGER,
+  prompt TEXT NOT NULL DEFAULT '',
+  summary TEXT NOT NULL DEFAULT '',
+  error TEXT NOT NULL DEFAULT '',
+  backend TEXT NOT NULL DEFAULT '',
+  model TEXT NOT NULL DEFAULT '',
+  packet_path TEXT,
+  output_path TEXT
+);
+
+CREATE TABLE IF NOT EXISTS agent_stream (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  agent_id INTEGER NOT NULL,
+  chunk TEXT NOT NULL,
+  ts REAL NOT NULL,
+  FOREIGN KEY(agent_id) REFERENCES agent_runs(id) ON DELETE CASCADE
+);
 """
 
 
@@ -96,13 +120,21 @@ def _ensure_system_state_columns(conn: sqlite3.Connection) -> None:
         )
 
 
-def connect_db(db_path: Path) -> sqlite3.Connection:
+def _ensure_agent_run_columns(conn: sqlite3.Connection) -> None:
+    """Apply lightweight migrations for ``agent_runs`` (existing DBs)."""
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(agent_runs)").fetchall()}
+    if "pid" not in cols:
+        conn.execute("ALTER TABLE agent_runs ADD COLUMN pid INTEGER")
+
+
+def connect_db(db_path: Path, *, timeout: float = 30.0) -> sqlite3.Connection:
     """Open SQLite with WAL; shared across processes for TUI + scheduler."""
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path), check_same_thread=False, timeout=30.0)
+    conn = sqlite3.connect(str(db_path), check_same_thread=False, timeout=timeout)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
     _ensure_system_state_columns(conn)
+    _ensure_agent_run_columns(conn)
     conn.execute(
         "INSERT OR IGNORE INTO forced_run (id, worker, task) VALUES (1, '', '')"
     )
@@ -341,3 +373,110 @@ def clear_stream(conn: sqlite3.Connection, cycle: int | None = None) -> None:
     else:
         conn.execute("DELETE FROM worker_stream")
     conn.commit()
+
+
+# --- async /agent runs ------------------------------------------------------
+
+def create_agent_run(
+    conn: sqlite3.Connection,
+    *,
+    prompt: str,
+    backend: str = "",
+    model: str = "",
+) -> int:
+    """Create one async ``/agent`` run and return its id."""
+    now = time.time()
+    cur = conn.execute(
+        """INSERT INTO agent_runs
+           (created_at, started_at, finished_at, status, pid, prompt, summary, error, backend, model, packet_path, output_path)
+           VALUES (?, ?, NULL, 'running', NULL, ?, '', '', ?, ?, NULL, NULL)""",
+        (now, now, prompt.strip(), backend.strip(), model.strip()),
+    )
+    conn.commit()
+    return int(cur.lastrowid)
+
+
+def list_agent_runs(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Return all ``/agent`` runs oldest-first."""
+    return list(
+        conn.execute(
+            "SELECT id, created_at, started_at, finished_at, status, pid, prompt, summary, error, backend, model, packet_path, output_path "
+            "FROM agent_runs ORDER BY created_at ASC, id ASC"
+        )
+    )
+
+
+def get_agent_run(conn: sqlite3.Connection, agent_id: int) -> sqlite3.Row | None:
+    """Lookup one async ``/agent`` run."""
+    return conn.execute(
+        "SELECT id, created_at, started_at, finished_at, status, pid, prompt, summary, error, backend, model, packet_path, output_path "
+        "FROM agent_runs WHERE id = ?",
+        (agent_id,),
+    ).fetchone()
+
+
+def update_agent_run_paths(
+    conn: sqlite3.Connection,
+    agent_id: int,
+    *,
+    packet_path: str | None = None,
+    output_path: str | None = None,
+) -> None:
+    """Persist packet/output paths for one agent run."""
+    row = get_agent_run(conn, agent_id)
+    if row is None:
+        return
+    conn.execute(
+        "UPDATE agent_runs SET packet_path = ?, output_path = ? WHERE id = ?",
+        (
+            packet_path if packet_path is not None else row["packet_path"],
+            output_path if output_path is not None else row["output_path"],
+            agent_id,
+        ),
+    )
+    conn.commit()
+
+
+def update_agent_run_pid(conn: sqlite3.Connection, agent_id: int, pid: int | None) -> None:
+    """Persist subprocess pid for one agent run."""
+    conn.execute(
+        "UPDATE agent_runs SET pid = ? WHERE id = ?",
+        (pid, agent_id),
+    )
+    conn.commit()
+
+
+def finish_agent_run(
+    conn: sqlite3.Connection,
+    agent_id: int,
+    *,
+    status: str,
+    summary: str,
+    error: str = "",
+    output_path: str | None = None,
+) -> None:
+    """Mark one agent run finished."""
+    conn.execute(
+        "UPDATE agent_runs SET finished_at = ?, status = ?, pid = NULL, summary = ?, error = ?, output_path = COALESCE(?, output_path) WHERE id = ?",
+        (time.time(), status, summary, error, output_path, agent_id),
+    )
+    conn.commit()
+
+
+def append_agent_stream_chunk(conn: sqlite3.Connection, agent_id: int, chunk: str) -> None:
+    """Write one streaming output chunk from a running async ``/agent``."""
+    conn.execute(
+        "INSERT INTO agent_stream (agent_id, chunk, ts) VALUES (?, ?, ?)",
+        (agent_id, chunk, time.time()),
+    )
+    conn.commit()
+
+
+def agent_stream_chunks_since(conn: sqlite3.Connection, after_id: int = 0) -> list[sqlite3.Row]:
+    """Return agent-stream chunks with id > *after_id*, oldest first."""
+    return list(
+        conn.execute(
+            "SELECT id, agent_id, chunk, ts FROM agent_stream WHERE id > ? ORDER BY id ASC LIMIT 500",
+            (after_id,),
+        )
+    )

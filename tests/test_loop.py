@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import signal
 from pathlib import Path
 
 from lab.config import RunConfig
@@ -64,3 +65,32 @@ def test_spawn_scheduler_launches_subprocess(monkeypatch, tmp_path: Path) -> Non
     handle.terminate()
     handle.join(timeout=1)
     assert not handle.is_alive()
+
+
+def test_kill_group_can_skip_wait(monkeypatch) -> None:
+    waits: list[float | None] = []
+    kills: list[object] = []
+
+    class FakePopen:
+        pid = 4321
+
+        def poll(self) -> int | None:
+            return None
+
+        def kill(self) -> None:
+            kills.append("kill")
+
+        def wait(self, timeout: float | None = None) -> int:
+            waits.append(timeout)
+            return 0
+
+    def fake_killpg(pid: int, sig: int) -> None:
+        kills.append((pid, sig))
+
+    monkeypatch.setattr("lab.loop.os.killpg", fake_killpg)
+
+    handle = SchedulerProcessHandle(FakePopen())
+    handle.kill_group(wait_timeout=0)
+
+    assert kills == [(4321, signal.SIGKILL)]
+    assert waits == []
