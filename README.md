@@ -1,6 +1,8 @@
 # lab
 
-Long-lived **multi-agent AI researcher** in Python: a **LangGraph** supervisor loop, **SQLite** for control/events, **file-based memory** (Tier A–E), and **worker agents** driven by **Claude Code** or **Cursor** CLI in headless mode. The **orchestrator** uses a normal OpenAI-compatible API (OpenAI, OpenRouter, or a local server).
+**lab** is a long-running research assistant for a codebase or project folder. You describe what you want investigated or built; a **supervisor loop** (LangGraph) keeps work moving across specialized **subagents**. An **orchestrator** model (any OpenAI-compatible API: OpenAI, OpenRouter, or a local server) decides which subagent runs next and what task it gets. Each **worker** subagent runs in the real repo via **Claude Code** or **Cursor** agent CLI in headless mode, so it can edit files, run commands, and use tools like a normal coding agent.
+
+The system is built around **markdown memory** under your project’s `.lab/` tree: a small set of always-on “Tier A” files holds the brief, roadmap, status, and rolling summaries, while deeper notes, skills, and per-run artifacts live in structured folders. That layout is what both the orchestrator and the workers read and update, so progress survives across cycles without fitting the whole history into one prompt.
 
 ## Quick start
 
@@ -8,10 +10,10 @@ Long-lived **multi-agent AI researcher** in Python: a **LangGraph** supervisor l
 # 1. Install
 pip install .
 
-# 2. One-time global setup (model, credentials, preferences)
+# 2. One-time global setup (model, credentials, worker backend)
 lab setup
 
-# 3. Initialize a project
+# 3. Initialize a project (creates .lab/ under the current directory)
 cd my-project
 lab init
 
@@ -19,146 +21,130 @@ lab init
 lab
 ```
 
-Once in the console, type `/start` to begin the background agent, `/pause` to pause after the current worker finishes, `/stop` to halt immediately, or `/exit` to quit. Plain text is queued as an instruction to the agent.
+In the console, use `/start` to run the background supervisor, `/pause` to finish the current worker then stop scheduling, `/stop` to halt immediately, or `/exit` to quit. Plain text lines are queued as **instructions** for the agent (merged into Tier A memory for workers to act on).
 
 ## CLI commands
 
 | Command | Description |
 |---------|-------------|
-| `lab setup` | Interactive wizard: choose model provider, model, credentials (OAuth or API key), worker backend. Writes `~/.lab/config.toml` (add code style in `[preferences]` yourself if you want). |
-| `lab init` | Initialize the current directory as a research project. Creates `.lab/` with config, memory layout, and seed files. Accepts `--idea` and `--criteria` flags, or prompts interactively. |
-| `lab` | Start the interactive console (requires `lab setup` and `lab init` first). |
+| `lab` | Open the interactive console. Requires `lab setup` and `lab init` in the project directory (or cwd). |
+| `lab setup` | Interactive wizard: model provider, model name, credentials (OAuth or API key), default worker backend. Writes `~/.lab/config.toml`. |
+| `lab init` | Initialize the current directory as a lab project. Creates `.lab/` (config, memory layout, seed Tier A files). Prompts for a single **research brief** (goals, approach, and what “done” means). If `.lab/` already exists, asks before overwriting. |
 
 ## Console commands
 
 | Command | Action |
 |---------|--------|
-| `/start` | Start the background research agent |
-| `/pause` | Pause after the current worker (subagent) finishes — no kill, no revert |
-| `/stop` | Stop immediately: kill the worker process and revert any in-flight cycle |
-| `/exit` | Stop the agent and quit the console |
-| `/branches` | Show branch registry |
-| `/reset` | Clear SQLite and runtime memory (Tier A except `research_idea.md` and `preferences.md`, episodes, extended, branches, skills, experiments); syncs `[project]` brief and preferences in `config.toml` from those files; does not change your project code |
-| `/undo` | Stop the scheduler if running, restore the project tree and DB to before the current or last worker (git checkpoints); if the agent was running, restart it for a fresh orchestrator step (if paused, stays paused) |
-| `/help` | List all commands |
-| plain text | Queue as an instruction to the agent |
+| `/start` | Start the background supervisor (scheduler + LangGraph cycles). |
+| `/pause` | Pause after the current graph worker finishes (no kill, no revert). |
+| `/stop` | Stop immediately: kill workers and any `/agent` runs. `/stop agent n` stops one standalone async agent by id. |
+| `/exit` | Stop everything and quit the console. |
+| `/agent …` | Run a **standalone** async worker on the given prompt (same CLI backend as graph workers, but not chosen by the orchestrator). |
+| `/plan` | Show the live roadmap checklist from Tier A (`roadmap.md`). |
+| `/diff` | Line diff of captured changes. `/diff n` = cycle `n`; `/diff n m` = from cycle `n` through end of cycle `m`. |
+| `/reset` | Clear runtime database and lab artifacts under `.lab/` except `research_idea.md` and `preferences.md`; project source tree unchanged. |
+| `/undo` | Revert project tree and runtime state to before the current or last graph worker (git checkpoints); restarts orchestrator only if the agent was running. |
+| `/redo` | Restore the last undone checkpoint and replay local edits when possible. |
+| `/help` | List commands. |
+| Plain text | Queued as user instructions for the research loop. |
 
-## Programmatic API (`lab.runner`)
+## Subagents
 
-The `lab` CLI is a thin wrapper. Scripts and tests should call the same functions:
+Two kinds of execution show up in the UI:
 
-| Function | Purpose |
-|----------|---------|
-| `run_lab_console(project_dir=None)` | Start the console using `~/.lab/` and `<project>/.lab/config.toml` (default project = current working directory). |
-| `ensure_console_ready(project_dir)` | Validate config, merge, prepare DB; returns `(db_path, RunConfig)`. |
-| `run_console_session(db_path, cfg)` | Start the TUI with an explicit `RunConfig` (no TOML). Used by `scripts/run.py` and unit tests. |
-| `init_project_at(project_dir, pcfg, overwrite=False)` | Full project init after global setup. |
-| `bootstrap_bench_project(project_dir, gcfg=..., pcfg=...)` | Write global + project TOML and seed memory in one step (e.g. automated tests). |
-| `run_interactive_global_setup()` | Interactive wizard (same as `lab setup`). |
-| `seed_tier_a_from_run_config(researcher_root, cfg)` | Write system-owned `.lab/state/system.md` (paths; run tail filled once the scheduler runs). |
+1. **Graph workers** — the orchestrator picks one per cycle from `lab/workflows/research_graph.py`. Each gets a **packet** (objective, rolling summary, Tier A, branch memory) and runs the configured worker CLI in the **project directory** (the repo under study).
+2. **Standalone `/agent` runs** — you type `/agent` with a prompt; the console spawns the same kind of CLI worker **outside** the LangGraph cycle. Use these for one-off tasks without steering the main roadmap loop.
 
-Example (explicit config, no global TOML — typical for `scripts/run.py`):
+Graph workers:
 
-```python
-from pathlib import Path
-from lab.config import RunConfig
-from lab.runner import run_console_session, seed_tier_a_from_run_config
-from lab import memory
+| Worker | Role |
+|--------|------|
+| **planner** | Turns goals, user instructions, and acceptance criteria into a concrete sequence of work; maintains roadmap-style structure and handoffs across other roles. |
+| **query** | **Local** investigation: codebase layout, where behavior lives, tests and configs, constraints for the next step. Prefer over **researcher** when uncertainty is about the repo, not the outside world. |
+| **researcher** | **External** context: web and literature, datasets, libraries, comparable projects, baselines—cited, synthesized, written into memory for others to use. |
+| **executer** | One-off operations: shell, environment checks, file moves, temporary scripts, non-product “glue” edits—not feature implementation or experiment **execution**. |
+| **implementer** | Product code and tests: small, reviewable changes, iterative baselines before polish. |
+| **debugger** | Root-cause analysis: hypotheses, instrumentation, evidence, localized fixes. |
+| **experimenter** | Owns **running** experiments end-to-end (launch, monitor, analyze, interpret)—not merely writing experiment code. |
+| **critic** | Challenges direction, assumptions, and completion claims; persona chosen by the orchestrator (`engineer`, `data_scientist`, `theoretical_scientist`, `researcher`, `reviewer`, `manager`). |
+| **reviewer** | Code-quality and preference gate after substantive implementation work; expects memory and docs to stay consistent with changes. |
+| **reporter** | User-facing reports, plots, demos, and summaries from current memory and artifacts. |
+| **skill_writer** | Captures reusable procedures under `.lab/memory/skills/` and keeps `skills_index.md` aligned. |
+| **done** | Not a CLI worker: orchestrator-only signal that the brief and roadmap support stopping the loop. |
 
-cfg = RunConfig(...)  # researcher_root, project_dir, model, etc.
-memory.ensure_memory_layout(cfg.researcher_root)
-seed_tier_a_from_run_config(cfg.researcher_root, cfg)
-run_console_session(cfg.researcher_root / "runtime.db", cfg)
-```
+Routing hints live in the orchestrator system prompt in `lab/orchestrator.py` (e.g. when to prefer `query` vs `researcher`, when to follow code work with `reviewer`, when to run `critic` before `done`).
 
-## Layout
+## Memory and context management
 
-- `lab/` — package (orchestration, DB, memory, tools, agents, UI, workflows).
-- `lab/runner.py` — shared entry points for CLI, scripts, and tests.
-- `tests/` — pytest.
+### Where memory lives
 
-Two directories per project:
+Everything is under the **researcher root** `<project>/.lab/`. Canonical Tier A filenames and helpers are in `lab/memory.py`.
 
 | Location | Purpose |
 |----------|---------|
-| **Global config** | `~/.lab/` — model settings, credentials, OAuth tokens, default preferences (`code_style`) copied into new projects. Shared across all projects. |
-| **Researcher root** | `<project_dir>/.lab/` — project-specific config, memory (Tier A–E), SQLite DB, experiments. |
-| **Project directory** | The repo or tree under study; workers run CLI tools with this as cwd. |
+| `.lab/state/*.md` | **Tier A** — operating memory loaded every orchestrator turn and packed into worker prompts (with the exceptions below). |
+| `.lab/memory/extended/` | Long-form notes, logs, raw synthesis. **Bodies are not inlined** into orchestrator or worker packets—only the **index** in Tier A (`extended_memory_index.md`) is included; workers open files on disk when needed. |
+| `.lab/memory/branch/<branch>.md` | Per-git-branch notes (name encoding: `/` → `__`). |
+| `.lab/memory/episodes/` | Per-cycle **packet** and **worker output** artifacts for audit and debugging. |
+| `.lab/memory/skills/` | Reusable procedures; indexed from Tier A `skills_index.md`. |
+
+Shared rules for what each Tier A file means, who may edit it, and how `user_instructions.md` queues work are in `lab/agents/shared_prompt.py` (`MEMORY_AND_TIER_A`). In short: workers keep Tier A truthful in the **same** run as their changes; **`system.md`** (paths + recent activity tail) and **`context_summary.md`** (rolling compressed history) are **runtime-owned** and must not be edited by workers.
+
+### Orchestrator context
+
+Each cycle, `format_orchestrator_context()` in `lab/memory.py` builds the routing prompt: previous `context_summary`, last worker result summary, Tier A bodies (except the `context_summary.md` file entry, which is supplied separately as the “previous summary” block), and optional **branch memory**. The orchestrator returns structured JSON (`worker`, `task`, `reason`, `context_summary`, etc.); a fresh **`context_summary`** is written to disk when provided.
+
+### Worker packets
+
+`lab/packets.build_worker_packet()` assembles markdown for the CLI worker: **objective**, **rolling context summary** (from `context_summary.md`), conduct hints for long-running commands, **Tier A** sections (again skipping the raw `context_summary.md` file chunk—summary is already in its own section), optional **branch memory**, then optional role-specific sections from `lab/workflows/research_graph.py`. If `worker_packet_max_chars` is set on `RunConfig`, the packet is head/tail truncated with a marker.
+
+### Context size and limits
+
+By default the app does **not** clip orchestrator input or worker packets in Python; the full assembled text is sent and the **model/provider** enforces its window (you get an error instead of silent truncation). To cap sizes, set optional fields on `RunConfig` such as `orchestrator_input_max_chars`, `orchestrator_prev_summary_max_chars`, `orchestrator_last_worker_max_chars`, `orchestrator_tier_file_max_chars`, `orchestrator_branch_memory_max_chars`, `worker_packet_max_chars`, and `system_recent_run_events_limit` (how many recent graph-worker events feed the **Recent activity** section in `system.md`).
+
+## Layout
+
+- `lab/` — package (orchestration, persistence, memory, tools, agents, UI, workflows).
+- `lab/runner.py` — shared entry points for CLI, scripts, and tests.
+- `tests/` — pytest.
+
+| Location | Purpose |
+|----------|---------|
+| **Global config** | `~/.lab/` — model settings, credentials, OAuth tokens, default preferences (`code_style`) copied into new projects. |
+| **Researcher root** | `<project>/.lab/` — project config, Tier A state and supporting memory folders, runtime database, experiments. |
+| **Project directory** | The repo or tree under study; workers use this as their working directory. |
 
 ## Configuration
 
 ### Global (`~/.lab/config.toml`)
 
-Created by `lab setup`. Contains model provider/name, API keys or OAuth client id, worker backend. Optional default **preferences** go under `[preferences]` as `code_style` — on `lab init`, that value is copied into the project file; edit the file by hand; multiline values work as TOML literal blocks.
+Created by `lab setup`. Contains model provider/name, API keys or OAuth client id, worker backend. Optional default **preferences** under `[preferences]` as `code_style` — on `lab init`, that value is copied into the project; you can edit `preferences.md` in the project afterward.
 
 ### Per-project (`.lab/config.toml`)
 
-Created by `lab init`. Contains a **research brief** (`research_idea`) and **preferences** (`preferences` under `[project]`). At init, preferences start as a copy of global `code_style`; the running lab uses only this project field (change global defaults for future inits, or edit the project TOML for this repo).
+Created by `lab init`. Holds machine-oriented fields; the human-facing **brief** and **preferences** live in Tier A (`research_idea.md`, `preferences.md`) and are what workers read.
 
 ### Model providers
 
-- **openai**: Uses `OPENAI_API_KEY` or OAuth (Authorization Code + PKCE). Run `lab setup` and choose "openai" to trigger the browser OAuth flow.
-- **openrouter**: Provide an OpenRouter API key during `lab setup`. Base URL defaults to `https://openrouter.ai/api/v1`.
+- **openai**: `OPENAI_API_KEY` or OAuth (Authorization Code + PKCE). `lab setup` with provider `openai` can start the browser flow.
+- **openrouter**: OpenRouter API key during `lab setup`. Base URL defaults to `https://openrouter.ai/api/v1`.
 - **local**: OpenAI-compatible server (e.g. Ollama at `http://127.0.0.1:11434/v1`).
 
 ### Worker backends
 
 Workers use **Claude Code** (`claude -p`) or **Cursor agent** (`cursor agent -p`). Choose during `lab setup`.
 
-- **cursor**: Runs `cursor agent -p "<prompt>" --trust`. No subprocess timeout by default; set `LAB_CURSOR_TIMEOUT_SEC` to cap runtime in seconds if needed.
-- **claude**: Runs `claude -p --output-format json`. Install with `npm i -g @anthropic-ai/claude-code`. No subprocess timeout by default; set `LAB_CLAUDE_TIMEOUT_SEC` to cap runtime in seconds if needed.
-
-### Context truncation
-
-By default, the app no longer truncates orchestrator context or worker packets in Python. We pass the
-full assembled prompt and let the upstream provider/model enforce its own context window. This means
-you will get a provider/model error if the prompt is too large, rather than silently losing
-instructions or context in app code.
-
-If you want to reintroduce limits, set the optional limit fields on `RunConfig`:
-
-- `orchestrator_input_max_chars`
-- `orchestrator_prev_summary_max_chars`
-- `orchestrator_last_worker_max_chars`
-- `orchestrator_tier_file_max_chars`
-- `orchestrator_branch_memory_max_chars`
-- `worker_packet_max_chars`
-- `system_recent_run_events_limit` — how many recent SQLite `run_events` rows with `kind = worker` are rendered into `.lab/state/system.md` **## Recent activity** (default 10).
+- **cursor**: `cursor agent -p "<prompt>" --trust`. Optional `LAB_CURSOR_TIMEOUT_SEC` caps runtime in seconds.
+- **claude**: `claude -p --output-format json` (e.g. `npm i -g @anthropic-ai/claude-code`). Optional `LAB_CLAUDE_TIMEOUT_SEC`.
 
 ## Pipeline (high level)
 
-1. **Console (Textual)** and **scheduler** share **SQLite** (`control_events`, `system_state`, `run_events`, `worker_stream`).
-2. Each **cycle**, the **LangGraph** in `workflows/research_graph.py` runs: `ingest` → `choose` → `worker` → `update`.
-3. **Choose** calls `orchestrator.decide_orchestrator()` (LLM with structured output).
-4. **Worker** builds a **packet**, writes `packet.md` and `worker_output.json` under `memory/episodes/cycle_*/<worker>/`, and runs `agents.base.run_worker()` → Claude or Cursor CLI.
-5. Worker output is **streamed** line-by-line to the `worker_stream` table; the console displays chunks in real time.
-6. **Memory** — Tier A files under `state/` are the default operating context. **`system.md`** is system-only (**## Paths** plus **## Recent activity**: recent graph-worker `kind = worker` rows from `run_events`, oldest first in that list — each line uses **objective** plus a collapsed excerpt from **`packet.md`**; orchestrator lines are not included here). Routing rationale stays in **`context_summary.md`**; agents edit the other Tier A files (notably `research_idea.md` for the research brief).
-
-## Agents
-
-| Agent | Role |
-|-------|------|
-| Planner | Backlog / plan / branching strategy |
-| Researcher | Gather information: web/papers, codebase questions, file exploration |
-| Executer | One-off ops: shell, ephemeral scripts, non-code edits |
-| Implementer | Code + tests |
-| Debugger | Hypotheses, instrumentation |
-| Experimenter | Runs, metrics |
-| Critic | Multi-persona review |
-| Reviewer | Enforces preferences |
-| Reporter | Answers and reports |
-| Skill writer | `memory/skills/` + `skills_index.md` |
-| Done | Orchestrator signals the brief in `research_idea.md` and `roadmap.md` support completion |
-
-## Memory system
-
-File-based memory lives under the **researcher root** (`<project_dir>/.lab/`). See `lab/memory.py` for the canonical list of Tier A filenames.
-
-- **A** — `state/*.md` — operating memory (loaded every cycle).
-- **B** — `memory/extended/` — long-form notes; describe them in Tier A `extended_memory_index.md` (included in context with other Tier A files).
-- **C** — `memory/branch/<branch>.md` — one file per active branch.
-- **D** — `memory/episodes/` — per worker run + `index.md`.
-- **E** — `memory/skills/` — reusable procedures; indexed from Tier A `skills_index.md`.
+1. **Console** (Textual) and **scheduler** coordinate mode (active/paused), cycles, and worker processes.
+2. Each **cycle**, the LangGraph in `workflows/research_graph.py` runs: ingest → choose → worker → update.
+3. **Choose** calls `orchestrator.decide_orchestrator()` (structured LLM output).
+4. **Worker** writes `packet.md` and `worker_output.json` under `memory/episodes/cycle_*/<worker>/` and runs `agents.base.run_worker()` (Claude or Cursor).
+5. Worker stdout/stderr streams into the console in real time.
+6. **Memory** updates flow from worker edits to Tier A and related trees; the orchestrator refreshes **`context_summary.md`**; **`system.md`** is refreshed from durable run metadata for a short **Recent activity** tail.
 
 ## Development
 
@@ -170,10 +156,11 @@ pytest -q
 
 ## Scripts (`scripts/`)
 
-- `scripts/run.py` — bench project launcher: builds a `RunConfig` for `data/bench_rl_project` and calls `runner.run_console_session` (same core as `lab`, without TOML).
+- `scripts/run.py` — bench-style launcher: builds a `RunConfig` for `data/bench_rl_project` and calls `runner.run_console_session` (same core as `lab`, without relying on TOML for that path).
 - `scripts/oauth_login.py` — calls `runner.run_oauth_browser_for_global` (same OAuth path as `lab setup`).
 
 ## Recovery
 
-- SQLite and Tier A files under `<project_dir>/.lab/state/` hold durable control and operating memory.
-- LangGraph checkpoint wiring is reserved; the default loop re-invokes the graph each cycle.
+- **Tier A** under `.lab/state/` holds the durable brief, roadmap, and rolling summary.
+- **`/undo`** / **`/redo`** use git checkpoints over the project tree plus lab runtime state.
+- **`/reset`** clears lab runtime and most memory while preserving `research_idea.md` and `preferences.md`.
