@@ -117,6 +117,18 @@ def test_legacy_project_brief_removed_on_ensure(tmp_path: Path) -> None:
     assert (memory.state_dir(tmp_path) / memory.SYSTEM_TIER_A_FILE).is_file()
 
 
+def test_legacy_root_logs_migrated_on_ensure(tmp_path: Path) -> None:
+    (tmp_path / "scheduler.log").write_text("scheduler line\n", encoding="utf-8")
+    (tmp_path / "agent_2.log").write_text("agent line\n", encoding="utf-8")
+
+    memory.ensure_memory_layout(tmp_path)
+
+    assert not (tmp_path / "scheduler.log").exists()
+    assert not (tmp_path / "agent_2.log").exists()
+    assert (memory.logs_dir(tmp_path) / "scheduler.log").read_text(encoding="utf-8") == "scheduler line\n"
+    assert (memory.logs_dir(tmp_path) / "agent_2.log").read_text(encoding="utf-8") == "agent line\n"
+
+
 def test_refresh_system_tier_from_db_renders_run_events(tmp_path: Path) -> None:
     project_dir = tmp_path.parent / "proj_workspace"
     project_dir.mkdir(parents=True, exist_ok=True)

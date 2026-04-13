@@ -257,6 +257,21 @@ def clear_worker_diff_baseline(researcher_root: Path) -> None:
         pass
 
 
+def logs_dir(researcher_root: Path) -> Path:
+    """Runtime stdout/stderr logs for scheduler and async agents."""
+    return researcher_root / "logs"
+
+
+def scheduler_log_path(researcher_root: Path) -> Path:
+    """Background scheduler stdout/stderr sink."""
+    return logs_dir(researcher_root) / "scheduler.log"
+
+
+def agent_log_path(researcher_root: Path, agent_id: int) -> Path:
+    """Per-agent stdout/stderr sink."""
+    return logs_dir(researcher_root) / f"agent_{agent_id}.log"
+
+
 def _snapshot_line_count(project_dir: Path, relpath: str) -> int:
     fpath = project_dir / relpath
     try:
@@ -378,6 +393,24 @@ def _clear_dir_contents(path: Path, *, keep: frozenset[str] = frozenset()) -> No
             child.unlink()
 
 
+def _migrate_legacy_root_logs(researcher_root: Path) -> None:
+    """Move old root-level ``*.log`` files under ``logs/``."""
+    target_dir = logs_dir(researcher_root)
+    helpers.ensure_dir(target_dir)
+    for legacy in researcher_root.glob("*.log"):
+        target = target_dir / legacy.name
+        try:
+            if target.exists():
+                if legacy.stat().st_size > 0:
+                    with legacy.open("rb") as src, target.open("ab") as dst:
+                        dst.write(src.read())
+                legacy.unlink()
+            else:
+                legacy.replace(target)
+        except OSError:
+            continue
+
+
 def reset_runtime_artifacts(
     researcher_root: Path,
     *,
@@ -390,6 +423,12 @@ def reset_runtime_artifacts(
     _clear_dir_contents(researcher_root / "memory" / "branch")
     _clear_dir_contents(episodes_dir(researcher_root), keep=frozenset({"README.md"}))
     _clear_dir_contents(skills_dir(researcher_root))
+    _clear_dir_contents(logs_dir(researcher_root))
+    for legacy in researcher_root.glob("*.log"):
+        try:
+            legacy.unlink()
+        except OSError:
+            pass
     if project_dir is not None:
         _clear_dir_contents(experiments_dir(project_dir))
 
@@ -459,12 +498,14 @@ def ensure_memory_layout(researcher_root: Path, *, project_dir: Path | None = No
     """Create dirs and empty Tier A files if missing."""
     for sub in (
         "state",
+        "logs",
         "memory/extended",
         "memory/branch",
         "memory/episodes",
         "memory/skills",
     ):
         helpers.ensure_dir(researcher_root / sub)
+    _migrate_legacy_root_logs(researcher_root)
     _remove_legacy_project_brief(researcher_root)
     # experiments/ under project_dir is created on first experiment (see experiments.new_experiment_id).
     for name in TIER_A_FILES:

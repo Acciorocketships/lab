@@ -5,7 +5,7 @@ import signal
 from pathlib import Path
 
 from lab.config import RunConfig
-from lab.loop import SchedulerProcessHandle, spawn_scheduler
+from lab.loop import SchedulerProcessHandle, spawn_agent_run, spawn_scheduler
 
 
 def _cfg(tmp_path: Path) -> RunConfig:
@@ -62,9 +62,52 @@ def test_spawn_scheduler_launches_subprocess(monkeypatch, tmp_path: Path) -> Non
     assert cmd[4] == str(db_path)
     payload = json.loads(cmd[5])
     assert payload["project_dir"] == str(cfg.project_dir)
+    stdout_fh = calls[0]["kwargs"]["stdout"]
+    assert Path(stdout_fh.name) == cfg.researcher_root / "logs" / "scheduler.log"
     handle.terminate()
     handle.join(timeout=1)
     assert not handle.is_alive()
+
+
+def test_spawn_agent_run_writes_logs_under_logs_subdir(monkeypatch, tmp_path: Path) -> None:
+    db_path = tmp_path / "runtime.db"
+    cfg = _cfg(tmp_path)
+    calls: list[dict[str, object]] = []
+
+    class FakePopen:
+        def __init__(self, cmd: list[str], **kwargs) -> None:
+            calls.append({"cmd": cmd, "kwargs": kwargs})
+            self.returncode = None
+
+        def poll(self) -> int | None:
+            return self.returncode
+
+        def terminate(self) -> None:
+            self.returncode = -15
+
+        def wait(self, timeout: float | None = None) -> int:
+            return self.returncode or 0
+
+    monkeypatch.setattr("lab.loop.subprocess.Popen", FakePopen)
+
+    handle = spawn_agent_run(
+        db_path,
+        cfg.researcher_root,
+        cfg.project_dir,
+        cfg,
+        7,
+    )
+
+    assert isinstance(handle, SchedulerProcessHandle)
+    assert len(calls) == 1
+    cmd = calls[0]["cmd"]
+    assert cmd[3] == "run-agent"
+    assert cmd[4] == str(db_path)
+    assert cmd[5] == "7"
+    stdout_fh = calls[0]["kwargs"]["stdout"]
+    assert Path(stdout_fh.name) == cfg.researcher_root / "logs" / "agent_7.log"
+    handle.terminate()
+    handle.join(timeout=1)
 
 
 def test_kill_group_can_skip_wait(monkeypatch) -> None:

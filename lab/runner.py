@@ -388,9 +388,6 @@ def reset_project_preserving_research_idea(project_dir: Path) -> None:
     db_path = researcher_root / "runtime.db"
     db.obliterate_runtime_db(db_path)
     delete_checkpoint_branch(project_dir)
-    log_path = researcher_root / "scheduler.log"
-    if log_path.is_file():
-        log_path.unlink()
     memory.reset_runtime_artifacts(
         researcher_root,
         preserved_research_idea_md=preserved,

@@ -106,6 +106,9 @@ def test_reset_project_preserving_research_idea(tmp_path: Path, monkeypatch) -> 
 
     rr = project_dir / ".lab"
     (rr / "memory" / "extended" / "notes.md").write_text("x", encoding="utf-8")
+    (rr / "logs" / "scheduler.log").write_text("scheduler output", encoding="utf-8")
+    (rr / "logs" / "agent_3.log").write_text("agent output", encoding="utf-8")
+    (rr / "legacy.log").write_text("legacy output", encoding="utf-8")
     (memory.state_dir(rr) / "research_idea.md").write_text(
         "# Research brief\n\nMy preserved brief\n", encoding="utf-8"
     )
@@ -130,3 +133,6 @@ def test_reset_project_preserving_research_idea(tmp_path: Path, monkeypatch) -> 
     conn.close()
 
     assert not (rr / "memory" / "extended" / "notes.md").exists()
+    assert (rr / "logs").is_dir()
+    assert not any((rr / "logs").glob("*.log"))
+    assert not (rr / "legacy.log").exists()

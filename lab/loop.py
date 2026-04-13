@@ -131,7 +131,7 @@ def spawn_scheduler(
     the Textual TUI.
     """
     memory.ensure_memory_layout(researcher_root, project_dir=project_dir)
-    log_path = researcher_root / "scheduler.log"
+    log_path = memory.scheduler_log_path(researcher_root)
     log_fh = open(log_path, "a")  # noqa: SIM115
     proc = subprocess.Popen(
         [
@@ -160,7 +160,7 @@ def spawn_agent_run(
 ) -> SchedulerProcessHandle:
     """Spawn one standalone async ``/agent`` subprocess."""
     memory.ensure_memory_layout(researcher_root, project_dir=project_dir)
-    log_path = researcher_root / f"agent_{agent_id}.log"
+    log_path = memory.agent_log_path(researcher_root, agent_id)
     log_fh = open(log_path, "a")  # noqa: SIM115
     proc = subprocess.Popen(
         [
