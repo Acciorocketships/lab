@@ -1952,10 +1952,9 @@ class ResearchConsole(App[None]):
         self._write_below_stream_box(
             "  [bold]Commands[/]\n"
             "  [bold]/start[/]        Start the background agent\n"
-            "  [bold]/agent [prompt][/] Run a standalone async subagent on the given prompt\n"
+            f"  [bold]/agent {rich_escape('[text]')}[/] Run a standalone async subagent on the given prompt\n"
             "  [bold]/pause[/]        Pause after the current worker finishes\n"
-            "  [bold]/stop[/]         Stop everything immediately (workers + /agent runs)\n"
-            "  [bold]/stop agent [id][/] Stop just one standalone /agent run\n"
+            "  [bold]/stop[/]         Stop everything immediately (workers + /agent runs). Use [bold]/stop agent n[/] to stop a specific agent\n"
             "  [bold]/exit[/]         Stop agent and quit\n"
             "  [bold]/plan[/]         Show the live roadmap checklist\n"
             "  [bold]/diff[/]         Line-by-line diff. If args are given: [bold]/diff n[/] = diff in cycle n; [bold]/diff n m[/] = diff from cycle n to end of cycle m\n"
