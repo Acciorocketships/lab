@@ -5,10 +5,10 @@ from pathlib import Path
 from lab import db, memory
 
 
-def test_default_extended_memory_index_scopes_to_extended_only(tmp_path: Path) -> None:
+def test_default_extended_memory_index_is_minimal_seed(tmp_path: Path) -> None:
     memory.ensure_memory_layout(tmp_path)
     text = (memory.state_dir(tmp_path) / "extended_memory_index.md").read_text(encoding="utf-8")
-    assert "## `.lab/memory/extended/`" in text
+    assert text.strip() == "# Extended Memory Index"
     assert "memory/branch/" not in text
     assert "memory/episodes/" not in text
 

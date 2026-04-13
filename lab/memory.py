@@ -541,11 +541,7 @@ def _default_tier_a_content(name: str) -> str:
 
 
 def _default_extended_memory_index() -> str:
-    return """# Extended memory index
-
-## `.lab/memory/extended/`
-
-"""
+    return f"# {_tier_a_heading_from_filename('extended_memory_index.md')}\n\n"
 
 
 
