@@ -22,3 +22,17 @@ def test_claude_missing(tmp_path: Path) -> None:
 def test_cursor_available_flag() -> None:
     """Module exposes availability check."""
     assert isinstance(cursor_cli.available(), bool)
+
+
+def test_cursor_empty_output_is_failure() -> None:
+    """A zero-exit Cursor run with no output should be treated as a failure."""
+    out = cursor_cli._parse_result(0, "", "")
+    assert out["ok"] is False
+    assert out["parsed"] == {"error": "empty_output"}
+
+
+def test_claude_empty_output_is_failure() -> None:
+    """A zero-exit Claude run with no output should be treated as a failure."""
+    out = claude_code._parse_result(0, "", "")
+    assert out["ok"] is False
+    assert out["parsed"] == {"error": "empty_output"}

@@ -74,6 +74,27 @@ def test_user_instructions_new_has_pending(tmp_path: Path) -> None:
     assert memory.user_instructions_new_has_pending(tmp_path)
 
 
+def test_tier_a_total_chars_excludes_system_files_by_default(tmp_path: Path) -> None:
+    memory.ensure_memory_layout(tmp_path)
+    (memory.state_dir(tmp_path) / "roadmap.md").write_text("abc", encoding="utf-8")
+    (memory.state_dir(tmp_path) / "system.md").write_text("12345", encoding="utf-8")
+    total = memory.tier_a_total_chars(tmp_path)
+    total_with_system = memory.tier_a_total_chars(tmp_path, include_system_files=True)
+    assert total_with_system > total
+    assert total >= 3
+
+
+def test_tier_a_files_over_char_limit_excludes_system_files_by_default(tmp_path: Path) -> None:
+    memory.ensure_memory_layout(tmp_path)
+    (memory.state_dir(tmp_path) / "roadmap.md").write_text("a" * 120, encoding="utf-8")
+    (memory.state_dir(tmp_path) / "system.md").write_text("b" * 200, encoding="utf-8")
+    over = memory.tier_a_files_over_char_limit(tmp_path, 100)
+    over_with_system = memory.tier_a_files_over_char_limit(tmp_path, 100, include_system_files=True)
+    assert over["roadmap.md"] == 120
+    assert "system.md" not in over
+    assert over_with_system["system.md"] == 200
+
+
 def test_extract_immediate_plan_checklist_returns_only_canonical_section() -> None:
     text = (
         "# Immediate plan\n\n"

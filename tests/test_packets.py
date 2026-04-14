@@ -81,3 +81,31 @@ def test_build_worker_packet_extended_not_inlined(tmp_path: Path) -> None:
     assert "yyyy" not in text  # body not pasted
     assert "### extended_memory_index.md" in text
     assert "memory/extended/log.md" in text
+
+
+def test_build_worker_packet_soft_clips_oversized_tier_a_files(tmp_path: Path) -> None:
+    """Huge Tier A files are clipped per-file even without a global packet budget."""
+    memory.ensure_memory_layout(tmp_path)
+    roadmap_head = "ROADMAP_HEAD_MARKER"
+    roadmap_tail = "ROADMAP_TAIL_MARKER"
+    user_head = "USER_HEAD_MARKER"
+    user_tail = "USER_TAIL_MARKER"
+    (memory.state_dir(tmp_path) / "roadmap.md").write_text(
+        roadmap_head + ("R" * 60_000) + roadmap_tail, encoding="utf-8"
+    )
+    (memory.state_dir(tmp_path) / "user_instructions.md").write_text(
+        user_head + ("U" * 60_000) + user_tail, encoding="utf-8"
+    )
+
+    text = packets.build_worker_packet(
+        worker="planner",
+        researcher_root=tmp_path,
+        task="Plan next steps",
+    )
+
+    assert roadmap_head in text
+    assert roadmap_tail in text
+    assert user_head in text
+    assert user_tail in text
+    assert "oversized Tier A file" in text
+    assert len(text) < 80_000

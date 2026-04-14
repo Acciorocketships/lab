@@ -88,6 +88,7 @@ You are the orchestrator. Route the project to exactly one next worker.
 - Output an updated `context_summary` by merging the prior summary with the last worker output.
 - Keep durable project facts, recent tool outcomes, and important patterns such as loops; drop stale detail.
 - Use concise markdown in `context_summary`.
+- Do not copy raw LaTeX, backslash commands, Windows-style paths, or fenced code blocks into `context_summary`; paraphrase them in plain text.
 
 **Critic personas**
 When routing to `critic`, set `worker_kwargs` to `{"persona": "<persona>"}` using one of these exact strings:

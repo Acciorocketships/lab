@@ -145,6 +145,325 @@ def test_execute_worker_query_uses_query_prompt(tmp_path: Path, monkeypatch) -> 
     assert "Search the local codebase and researcher files" in packet
 
 
+def test_execute_worker_retries_after_empty_output_with_smaller_packet(tmp_path: Path, monkeypatch) -> None:
+    """An empty worker response should trigger one retry with a bounded packet."""
+    cfg = RunConfig(
+        researcher_root=tmp_path,
+        project_dir=tmp_path / "p",
+        orchestrator_backend="openai",
+        openai_api_key=None,
+        openai_base_url=None,
+        openai_model="gpt-4o-mini",
+        default_worker_backend="cursor",
+        cursor_agent_model="composer-2",
+    )
+    memory.ensure_memory_layout(tmp_path)
+    cfg.project_dir.mkdir()
+
+    original_build_packet = research_graph.packets.build_worker_packet
+
+    def _fake_build_worker_packet(*args, max_chars=None, **kwargs) -> str:
+        if max_chars is None:
+            return "A" * 150_000
+        return original_build_packet(*args, max_chars=max_chars, **kwargs)
+
+    monkeypatch.setattr(research_graph.packets, "build_worker_packet", _fake_build_worker_packet)
+    oversized_calls = [0]
+
+    def _fake_oversized(*args, **kwargs):
+        oversized_calls[0] += 1
+        if oversized_calls[0] == 1:
+            return ({}, {})
+        return (
+            {
+                "extended_memory_index.md": 1000,
+                "research_idea.md": 1000,
+                "preferences.md": 1000,
+                "roadmap.md": 75_000,
+                "immediate_plan.md": 1000,
+                "status.md": 1000,
+                "skills_index.md": 1000,
+                "lessons.md": 1000,
+                "user_instructions.md": 1000,
+            },
+            {"roadmap.md": 75_000},
+        )
+
+    monkeypatch.setattr(research_graph, "_oversized_tier_files_for_auto_compactor", _fake_oversized)
+
+    seen_packets: list[str] = []
+
+    def _fake_run_worker(pkt: str, **kwargs) -> dict[str, object]:
+        seen_packets.append(pkt)
+        if len(seen_packets) == 1:
+            return {
+                "ok": False,
+                "error": "cursor agent returned no output",
+                "stdout": "",
+                "stderr": "",
+                "parsed": {"error": "empty_output"},
+            }
+        if len(seen_packets) == 2:
+            assert "# Worker: memory_compactor" in pkt
+            return {"ok": True, "parsed": {"result": "Compacted Tier A"}}  # internal auto-run
+        return {"ok": True, "parsed": {"result": "Recovered on retry"}}
+
+    monkeypatch.setattr(research_graph.agents_base, "run_worker", _fake_run_worker)
+
+    state: ResearchState = {
+        "current_goal": "Plan the next phase",
+        "current_branch": "",
+        "current_worker": "planner",
+        "cycle_count": 0,
+        "control_mode": "active",
+        "pending_instructions": [],
+        "last_action_summary": "",
+        "roadmap_step": "",
+        "orchestrator_task": "Plan the next phase",
+        "orchestrator_reason": "Planning is stale",
+        "acceptance_satisfied": False,
+        "shutdown_requested": False,
+        "worker_kwargs": {},
+    }
+
+    out = research_graph.execute_worker(
+        state,
+        cfg=cfg,
+        researcher_root=tmp_path,
+        project_dir=cfg.project_dir,
+    )
+
+    assert out["worker_ok"] is True
+    assert out["last_action_summary"] == "Recovered on retry"
+    assert len(seen_packets) == 3
+    assert len(seen_packets[0]) > len(seen_packets[2])
+    assert len(seen_packets[2]) <= 120_100
+
+
+def test_execute_worker_auto_compacts_large_tier_a_before_main_worker(tmp_path: Path, monkeypatch) -> None:
+    """Any over-threshold Tier A file should trigger the internal compactor before the chosen worker."""
+    cfg = RunConfig(
+        researcher_root=tmp_path,
+        project_dir=tmp_path / "p",
+        orchestrator_backend="openai",
+        openai_api_key=None,
+        openai_base_url=None,
+        openai_model="gpt-4o-mini",
+        default_worker_backend="cursor",
+        cursor_agent_model="composer-2",
+    )
+    memory.ensure_memory_layout(tmp_path)
+    cfg.project_dir.mkdir()
+
+    monkeypatch.setattr(
+        research_graph,
+        "_tier_size_snapshot",
+        lambda *args, **kwargs: {
+            "extended_memory_index.md": 1000,
+            "research_idea.md": 1000,
+            "preferences.md": 1000,
+            "roadmap.md": 75_000,
+            "immediate_plan.md": 1000,
+            "status.md": 1000,
+            "skills_index.md": 1000,
+            "lessons.md": 1000,
+            "user_instructions.md": 1000,
+        },
+    )
+
+    packets_seen: list[str] = []
+
+    def _fake_run_worker(pkt: str, **kwargs) -> dict[str, object]:
+        packets_seen.append(pkt)
+        if len(packets_seen) == 1:
+            assert "# Worker: memory_compactor" in pkt
+            return {"ok": True, "parsed": {"result": "Compacted Tier A memory"}}
+        return {"ok": True, "parsed": {"result": "Main worker completed"}}
+
+    monkeypatch.setattr(research_graph.agents_base, "run_worker", _fake_run_worker)
+
+    state: ResearchState = {
+        "current_goal": "Plan the next phase",
+        "current_branch": "",
+        "current_worker": "planner",
+        "cycle_count": 0,
+        "control_mode": "active",
+        "pending_instructions": [],
+        "last_action_summary": "",
+        "roadmap_step": "",
+        "orchestrator_task": "Plan the next phase",
+        "orchestrator_reason": "roadmap.md is too large",
+        "acceptance_satisfied": False,
+        "shutdown_requested": False,
+        "worker_kwargs": {},
+    }
+
+    out = research_graph.execute_worker(
+        state,
+        cfg=cfg,
+        researcher_root=tmp_path,
+        project_dir=cfg.project_dir,
+    )
+
+    assert out["worker_ok"] is True
+    assert out["last_action_summary"] == "Main worker completed"
+    assert len(packets_seen) == 2
+    assert "# Worker: planner" in packets_seen[1]
+
+
+def test_execute_worker_skips_repeated_auto_compactor_when_size_has_not_exceeded_saved_threshold(tmp_path: Path, monkeypatch) -> None:
+    """The auto-compactor should not rerun until a file grows past its saved threshold."""
+    cfg = RunConfig(
+        researcher_root=tmp_path,
+        project_dir=tmp_path / "p",
+        orchestrator_backend="openai",
+        openai_api_key=None,
+        openai_base_url=None,
+        openai_model="gpt-4o-mini",
+        default_worker_backend="cursor",
+        cursor_agent_model="composer-2",
+    )
+    memory.ensure_memory_layout(tmp_path)
+    cfg.project_dir.mkdir()
+
+    snapshot = {
+        "extended_memory_index.md": 1000,
+        "research_idea.md": 1000,
+        "preferences.md": 1000,
+        "roadmap.md": 75_000,
+        "immediate_plan.md": 1000,
+        "status.md": 1000,
+        "skills_index.md": 1000,
+        "lessons.md": 1000,
+        "user_instructions.md": 1000,
+    }
+    monkeypatch.setattr(research_graph, "_tier_size_snapshot", lambda *args, **kwargs: snapshot.copy())
+    monkeypatch.setattr(research_graph, "_tier_size_snapshot", lambda *args, **kwargs: snapshot.copy())
+    memory.write_auto_compactor_state(
+        tmp_path,
+        {
+            "file_thresholds": {"roadmap.md": 75_000},
+        },
+    )
+
+    packets_seen: list[str] = []
+
+    def _fake_run_worker(pkt: str, **kwargs) -> dict[str, object]:
+        packets_seen.append(pkt)
+        assert "# Worker: memory_compactor" not in pkt
+        return {"ok": True, "parsed": {"result": "Main worker completed"}}
+
+    monkeypatch.setattr(research_graph.agents_base, "run_worker", _fake_run_worker)
+
+    state: ResearchState = {
+        "current_goal": "Plan the next phase",
+        "current_branch": "",
+        "current_worker": "planner",
+        "cycle_count": 0,
+        "control_mode": "active",
+        "pending_instructions": [],
+        "last_action_summary": "",
+        "roadmap_step": "",
+        "orchestrator_task": "Plan the next phase",
+        "orchestrator_reason": "roadmap.md is too large",
+        "acceptance_satisfied": False,
+        "shutdown_requested": False,
+        "worker_kwargs": {},
+    }
+
+    out = research_graph.execute_worker(
+        state,
+        cfg=cfg,
+        researcher_root=tmp_path,
+        project_dir=cfg.project_dir,
+    )
+
+    assert out["worker_ok"] is True
+    assert packets_seen and len(packets_seen) == 1
+    assert "# Worker: planner" in packets_seen[0]
+
+
+def test_execute_worker_retries_auto_compactor_after_file_grows_past_saved_threshold(tmp_path: Path, monkeypatch) -> None:
+    """If a large file grows beyond its saved threshold, the compactor becomes eligible again."""
+    cfg = RunConfig(
+        researcher_root=tmp_path,
+        project_dir=tmp_path / "p",
+        orchestrator_backend="openai",
+        openai_api_key=None,
+        openai_base_url=None,
+        openai_model="gpt-4o-mini",
+        default_worker_backend="cursor",
+        cursor_agent_model="composer-2",
+    )
+    memory.ensure_memory_layout(tmp_path)
+    cfg.project_dir.mkdir()
+
+    monkeypatch.setattr(
+        research_graph,
+        "_tier_size_snapshot",
+        lambda *args, **kwargs: {
+            "extended_memory_index.md": 1000,
+            "research_idea.md": 1000,
+            "preferences.md": 1000,
+            "roadmap.md": 75_500,
+            "immediate_plan.md": 1000,
+            "status.md": 1000,
+            "skills_index.md": 1000,
+            "lessons.md": 1000,
+            "user_instructions.md": 1000,
+        },
+    )
+    memory.write_auto_compactor_state(
+        tmp_path,
+        {
+            "file_thresholds": {"roadmap.md": 75_000},
+        },
+    )
+
+    packets_seen: list[str] = []
+
+    def _fake_run_worker(pkt: str, **kwargs) -> dict[str, object]:
+        packets_seen.append(pkt)
+        if len(packets_seen) == 1:
+            assert "# Worker: memory_compactor" in pkt
+            return {"ok": True, "parsed": {"result": "Compacted Tier A memory"}}
+        return {"ok": True, "parsed": {"result": "Main worker completed"}}
+
+    monkeypatch.setattr(research_graph.agents_base, "run_worker", _fake_run_worker)
+
+    state: ResearchState = {
+        "current_goal": "Plan the next phase",
+        "current_branch": "",
+        "current_worker": "planner",
+        "cycle_count": 0,
+        "control_mode": "active",
+        "pending_instructions": [],
+        "last_action_summary": "",
+        "roadmap_step": "",
+        "orchestrator_task": "Plan the next phase",
+        "orchestrator_reason": "roadmap.md grew again",
+        "acceptance_satisfied": False,
+        "shutdown_requested": False,
+        "worker_kwargs": {},
+    }
+
+    out = research_graph.execute_worker(
+        state,
+        cfg=cfg,
+        researcher_root=tmp_path,
+        project_dir=cfg.project_dir,
+    )
+
+    assert out["worker_ok"] is True
+    assert len(packets_seen) == 2
+    assert "# Worker: memory_compactor" in packets_seen[0]
+
+
+def test_memory_compactor_is_internal_only() -> None:
+    """The orchestrator cannot choose the internal compactor worker directly."""
+    assert "memory_compactor" not in research_graph._WORKER_MODULES
+
+
 def test_update_state_snapshots_immediate_plan_checklist(tmp_path: Path) -> None:
     cfg = RunConfig(
         researcher_root=tmp_path,

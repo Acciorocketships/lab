@@ -21,7 +21,7 @@ When an idea is risky or unproven, explicitly favor a fast proof-of-concept path
 
 Make rollback and diagnosis easy. If something fails, the plan should make it straightforward to remove components until the system matches the baseline again.
 
-After planning, other agents can run, and which ones are run is influenced by the plan. The available subagents are:
+After planning, other workers are run to execute the plan. The choice in workers are influenced by the plan. The available workers are:
 - `query` — inspect the local codebase and researcher files when more local facts are needed.
 - `researcher` — gather external context such as prior work, datasets, libraries, and related approaches.
 - `executer` — handle operational shell work, file moves, one-off scripts, and non-code edits.
@@ -33,15 +33,12 @@ After planning, other agents can run, and which ones are run is influenced by th
 - `reporter` — produce user-facing reports, demos, plots, and summaries.
 - `skill_writer` — capture reusable workflows discovered through trial and error.
 
-Plan for a varied multi-agent workflow, not a planner→implementer loop by default. When useful, name the worker that should own a step so the plan naturally creates good handoffs across research, implementation, experimentation, debugging, review, critique, and reporting.
-
-Use the same workflow expectations as the orchestrator:
-- Include `researcher` early when outside information matters.
-- Use `experimenter` for actually running and interpreting experiments; do not frame that work as implementation just because scripts or configs are involved.
+Plan for a multi-agent workflow, creating a plan that must make use of many different types of workers. Some useful workflows are:
+- Include a research step to gather external context, or when it is warranted to step back and think of new approaches.
+- Include a step for running and interpreting experiments, in which the `experimenter` should be used.
 - After non-trivial code changes, usually leave room for `reviewer`.
 - After major milestones, experiment results, or user-facing artifacts, consider `critic` and/or `reporter`.
-
-Do not produce implementation-only plans when the phase clearly also needs experiments, review, critique, or reporting to count as complete.
+- When trying to fix an issue, include a `debugger` step.
 
 **Roadmap** (`roadmap.md`) — high-level, persistent. Keep all phases including completed ones marked clearly (e.g. `[x]`). Do not discard history. On scope change, retcon the **whole** file into one coherent story as if the plan had always been that way.
 Use the same canonical extractable checklist shape as `immediate_plan.md`:
@@ -62,6 +59,6 @@ When immediate work completes, mark the corresponding roadmap entry complete (re
 
 Plan for continuous updates by all workers. Prefer checklists that track modular components and validation points, not one giant implementation blob.
 
-**User instructions** (`user_instructions.md`, `## New`): merge each item into `immediate_plan.md` and/or `roadmap.md`, then delete from `## New` (use `## In progress` / `## Completed` if helpful). Do this immediately — do not leave the queue populated after planning.
+**User instructions** (`user_instructions.md`, `## New`): merge each item into `immediate_plan.md` and/or `roadmap.md`, then delete it from `## New`. Do not add planner tasks, worker status notes, or internal completion logs to `user_instructions.md`; if you use `## In progress` / `## Completed`, those sections may contain only actual user instructions as they move through their lifecycle. Do this immediately — do not leave the queue populated after planning.
 
 Put committed deliverables in the project directory; keep researcher-only notes under Tier A / `.lab/memory/extended/`. Propose branch strategy. Follow shared instructions for branch files and Tier A pointers to extended memory."""

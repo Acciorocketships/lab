@@ -18,6 +18,7 @@ from lab.agents import (
     executer,
     experimenter,
     implementer,
+    memory_compactor,
     planner,
     query,
     reporter as reporter_mod,
@@ -204,6 +205,190 @@ def choose_action(
     }
 
 
+def _worker_extra_sections(worker: str, mod: Any, worker_kwargs: dict[str, str]) -> dict[str, str]:
+    """Shared packet sections for normal workers and internal maintenance workers."""
+    role_hint = (getattr(mod, "SYSTEM_PROMPT", "") if mod else "").strip()
+    if worker == "critic" and mod is not None:
+        persona = worker_kwargs.get("persona", "")
+        role_hint = critic_mod.critic_prompt(persona).strip()
+    extra: dict[str, str] = {}
+    shared_work = shared_prompt.SHARED_WORK_GUIDANCE.strip()
+    shared = shared_prompt.MEMORY_AND_TIER_A.strip()
+    if role_hint:
+        extra["Role"] = role_hint
+    if shared_work:
+        extra["Shared guidance"] = shared_work
+    if shared:
+        extra["Memory & Tier A"] = shared
+    return extra
+
+
+def _worker_summary(result: dict[str, Any]) -> str:
+    """Compact textual summary derived from a worker result payload."""
+    parsed = result.get("parsed")
+    result_text = ""
+    if isinstance(parsed, dict):
+        result_text = parsed.get("result", "") or ""
+        if not result_text and parsed.get("raw"):
+            result_text = str(parsed["raw"])
+        if not result_text and parsed.get("error"):
+            result_text = str(parsed["error"])
+    elif isinstance(parsed, str):
+        result_text = parsed
+    return result_text or str(parsed or result)
+
+
+def _tier_size_snapshot(researcher_root: Path) -> dict[str, int]:
+    """Current non-system Tier A file sizes."""
+    return memory.tier_a_file_sizes(researcher_root)
+
+
+def _auto_compactor_effective_thresholds(
+    researcher_root: Path,
+    current_sizes: dict[str, int],
+) -> dict[str, int]:
+    """Per-file thresholds: base soft-clip threshold, optionally raised by prior compaction."""
+    base = packets.WORKER_TIER_A_SOFT_CLIP_THRESHOLD_CHARS
+    thresholds = {name: base for name in current_sizes}
+    state = memory.read_auto_compactor_state(researcher_root)
+    if not isinstance(state, dict):
+        return thresholds
+    file_thresholds = state.get("file_thresholds")
+    if not isinstance(file_thresholds, dict):
+        return thresholds
+    for name, value in file_thresholds.items():
+        if name not in thresholds:
+            continue
+        try:
+            thresholds[name] = max(base, int(value))
+        except (TypeError, ValueError):
+            continue
+    return thresholds
+
+
+def _oversized_tier_files_for_auto_compactor(researcher_root: Path) -> tuple[dict[str, int], dict[str, int]]:
+    """Return current sizes and files exceeding their current effective compaction thresholds."""
+    sizes = _tier_size_snapshot(researcher_root)
+    thresholds = _auto_compactor_effective_thresholds(researcher_root, sizes)
+    oversized = {
+        name: size
+        for name, size in sizes.items()
+        if size > thresholds.get(name, packets.WORKER_TIER_A_SOFT_CLIP_THRESHOLD_CHARS)
+    }
+    return sizes, oversized
+
+
+def _record_auto_compactor_outcome(
+    researcher_root: Path,
+    result: dict[str, Any],
+) -> None:
+    """Persist per-file retry thresholds after a compactor run."""
+    del result
+    _, post_oversized = _oversized_tier_files_for_auto_compactor(researcher_root)
+    if not post_oversized:
+        memory.clear_auto_compactor_state(researcher_root)
+        return
+    memory.write_auto_compactor_state(
+        researcher_root,
+        {
+            "file_thresholds": {
+                name: max(packets.WORKER_TIER_A_SOFT_CLIP_THRESHOLD_CHARS, size)
+                for name, size in post_oversized.items()
+            },
+        },
+    )
+
+
+def _run_internal_memory_compactor(
+    *,
+    cyc: int,
+    state: ResearchState,
+    cfg: RunConfig,
+    researcher_root: Path,
+    project_dir: Path,
+    db_path: Path | None,
+    reason: str,
+) -> dict[str, Any]:
+    """Run the internal Tier A compactor once and persist its artifacts."""
+    task = (
+        f"Automatically compact Tier A because {reason}. Reduce verbosity aggressively while "
+        "preserving important project truth, canonical formatting, and real user instructions only."
+    )
+    packet = packets.build_worker_packet(
+        worker="memory_compactor",
+        researcher_root=researcher_root,
+        task=task,
+        extra_sections=_worker_extra_sections("memory_compactor", memory_compactor, {}),
+        current_branch=str(state.get("current_branch", "") or ""),
+        max_chars=_AUTO_COMPACTOR_PACKET_MAX_CHARS,
+    )
+    packets.write_packet_file(researcher_root, cyc, "memory_compactor", packet)
+    packet_rel = memory.episodes_cycle_relpath(cycle=cyc, worker="memory_compactor")
+
+    on_chunk = None
+    stream_conn = None
+    if db_path is not None:
+        stream_conn = _conn(db_path)
+
+        def on_chunk(chunk: str, _c=stream_conn, _cyc=cyc) -> None:
+            try:
+                db.append_stream_chunk(_c, _cyc, "memory_compactor", chunk)
+            except Exception:
+                pass
+
+    try:
+        result = agents_base.run_worker(
+            packet,
+            backend=cfg.default_worker_backend if cfg.default_worker_backend in ("claude", "cursor") else "cursor",
+            project_cwd=project_dir,
+            cursor_agent_model=cfg.cursor_agent_model,
+            on_chunk=on_chunk,
+        )
+    finally:
+        if stream_conn is not None:
+            stream_conn.close()
+
+    packets.write_worker_output_file(researcher_root, cyc, "memory_compactor", result)
+    summary = _worker_summary(result)
+
+    if db_path is not None:
+        conn = _conn(db_path)
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            db.append_run_event(
+                conn,
+                cycle=cyc,
+                kind="worker",
+                worker="memory_compactor",
+                roadmap_step=str(state.get("roadmap_step", "")),
+                task=task,
+                summary=summary,
+                payload={
+                    "worker_ok": result.get("ok", True),
+                    "auto_trigger_reason": reason,
+                },
+                packet_path=packet_rel,
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        memory.append_episode_index_entry(
+            researcher_root,
+            cycle=cyc,
+            worker="memory_compactor",
+            task=task,
+            reason=f"automatic maintenance: {reason}",
+            episode_relpath=packet_rel,
+        )
+        memory.refresh_system_tier_from_db(
+            researcher_root,
+            project_dir,
+            db_path,
+            limit=cfg.system_recent_run_events_limit,
+        )
+    return result
+
+
 def execute_worker(
     state: ResearchState,
     *,
@@ -226,28 +411,40 @@ def execute_worker(
         }
     mod = _WORKER_MODULES.get(worker)
     worker_kwargs: dict[str, str] = state.get("worker_kwargs") or {}
-    role_hint = (getattr(mod, "SYSTEM_PROMPT", "") if mod else "").strip()
-    # Critic: use persona-specific prompt when the orchestrator supplies one.
-    if worker == "critic" and mod is not None:
-        persona = worker_kwargs.get("persona", "")
-        role_hint = critic_mod.critic_prompt(persona).strip()
-    extra: dict[str, str] = {}
-    shared_work = shared_prompt.SHARED_WORK_GUIDANCE.strip()
-    shared = shared_prompt.MEMORY_AND_TIER_A.strip()
-    if role_hint:
-        extra["Role"] = role_hint
-    if shared_work:
-        extra["Shared guidance"] = shared_work
-    if shared:
-        extra["Memory & Tier A"] = shared
-    pkt = packets.build_worker_packet(
-        worker=worker,
-        researcher_root=researcher_root,
-        task=task,
-        extra_sections=extra if extra else None,
-        current_branch=str(state.get("current_branch", "") or ""),
-        max_chars=cfg.worker_packet_max_chars,
-    )
+    _, oversized_tier_files = _oversized_tier_files_for_auto_compactor(researcher_root)
+    auto_compacted = False
+    if oversized_tier_files:
+        details = ", ".join(
+            f"{name}={size}"
+            for name, size in sorted(oversized_tier_files.items())
+        )
+        compactor_result = _run_internal_memory_compactor(
+            cyc=cyc,
+            state=state,
+            cfg=cfg,
+            researcher_root=researcher_root,
+            project_dir=project_dir,
+            db_path=db_path,
+            reason=(
+                "these Tier A files exceeded the soft-clip threshold "
+                f"({packets.WORKER_TIER_A_SOFT_CLIP_THRESHOLD_CHARS} chars): {details}"
+            ),
+        )
+        _record_auto_compactor_outcome(researcher_root, compactor_result)
+        auto_compacted = True
+    extra = _worker_extra_sections(str(worker), mod, worker_kwargs)
+    packet_kwargs = {
+        "worker": worker,
+        "researcher_root": researcher_root,
+        "task": task,
+        "extra_sections": extra if extra else None,
+        "current_branch": str(state.get("current_branch", "") or ""),
+    }
+
+    def _build_packet(max_chars: int | None) -> str:
+        return packets.build_worker_packet(max_chars=max_chars, **packet_kwargs)
+
+    pkt = _build_packet(cfg.worker_packet_max_chars)
     packets.write_packet_file(researcher_root, cyc, worker, pkt)
     relpath = memory.episodes_cycle_relpath(cycle=cyc, worker=worker)
     backend = cfg.default_worker_backend
@@ -274,6 +471,37 @@ def execute_worker(
         cursor_agent_model=cfg.cursor_agent_model,
         on_chunk=on_chunk,
     )
+    parsed = res.get("parsed")
+    retry_max_chars = cfg.worker_packet_max_chars
+    if retry_max_chars is None or retry_max_chars > _EMPTY_OUTPUT_RETRY_PACKET_MAX_CHARS:
+        retry_max_chars = _EMPTY_OUTPUT_RETRY_PACKET_MAX_CHARS
+    if (
+        isinstance(parsed, dict)
+        and parsed.get("error") == "empty_output"
+    ):
+        if not auto_compacted:
+            _, oversized_tier_files = _oversized_tier_files_for_auto_compactor(researcher_root)
+            if oversized_tier_files:
+                compactor_result = _run_internal_memory_compactor(
+                    cyc=cyc,
+                    state=state,
+                    cfg=cfg,
+                    researcher_root=researcher_root,
+                    project_dir=project_dir,
+                    db_path=db_path,
+                    reason="the previous worker run returned empty_output",
+                )
+                _record_auto_compactor_outcome(researcher_root, compactor_result)
+                auto_compacted = True
+        pkt = _build_packet(retry_max_chars)
+        packets.write_packet_file(researcher_root, cyc, worker, pkt)
+        res = agents_base.run_worker(
+            pkt,
+            backend=backend,
+            project_cwd=project_dir,
+            cursor_agent_model=cfg.cursor_agent_model,
+            on_chunk=on_chunk,
+        )
     packets.write_worker_output_file(researcher_root, cyc, worker, res)
     parsed = res.get("parsed")
     worker_ok = res.get("ok", True)
@@ -427,6 +655,8 @@ def _state_from_db(db_path: Path) -> ResearchState:
 _log = logging.getLogger(__name__)
 
 _MAX_CONSECUTIVE_ERRORS = 5
+_EMPTY_OUTPUT_RETRY_PACKET_MAX_CHARS = 120_000
+_AUTO_COMPACTOR_PACKET_MAX_CHARS = 90_000
 
 
 def _root_cause(exc: BaseException) -> BaseException:

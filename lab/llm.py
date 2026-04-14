@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import string
 import time
 from typing import Any, TypeVar
 
@@ -20,6 +21,8 @@ _log = logging.getLogger(__name__)
 
 _JSON_RETRIES = 3
 _RETRY_BACKOFF_SEC = 1.0
+_JSON_STRING_ESCAPE_CHARS = set('"\\/bfnrt')
+_HEX_DIGITS = set(string.hexdigits)
 
 
 def _client(base_url: str | None, api_key: str | None) -> OpenAI:
@@ -110,6 +113,65 @@ def describe_orchestrator_credential_source(cfg: RunConfig) -> str:
     return "No credentials matched for orchestrator backend"
 
 
+def _repair_invalid_json_string_escapes(text: str) -> str:
+    r"""Best-effort fix for invalid backslashes inside JSON string values.
+
+    Some providers return JSON objects whose string fields contain raw LaTeX or
+    Windows-like paths such as ``\tilde`` or ``\Users``. Those are invalid JSON
+    escapes and make strict parsing fail even when the rest of the object is
+    well-formed. This pass only modifies backslashes that appear *inside* JSON
+    strings and are not part of a valid JSON escape sequence.
+    """
+    out: list[str] = []
+    in_string = False
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if not in_string:
+            out.append(ch)
+            if ch == '"':
+                in_string = True
+            i += 1
+            continue
+
+        if ch == '"':
+            out.append(ch)
+            in_string = False
+            i += 1
+            continue
+
+        if ch != "\\":
+            out.append(ch)
+            i += 1
+            continue
+
+        if i + 1 >= n:
+            out.append("\\\\")
+            i += 1
+            continue
+
+        nxt = text[i + 1]
+        if nxt in _JSON_STRING_ESCAPE_CHARS:
+            out.append("\\")
+            out.append(nxt)
+            i += 2
+            continue
+        if nxt == "u":
+            hex_seq = text[i + 2 : i + 6]
+            if len(hex_seq) == 4 and all(c in _HEX_DIGITS for c in hex_seq):
+                out.append("\\")
+                out.append("u")
+                out.extend(hex_seq)
+                i += 6
+                continue
+
+        out.append("\\\\")
+        i += 1
+
+    return "".join(out)
+
+
 def generate(
     messages: list[dict[str, str]],
     *,
@@ -145,6 +207,18 @@ def generate(
             try:
                 return response_format.model_validate_json(text)
             except (ValidationError, ValueError) as exc:
+                repaired = _repair_invalid_json_string_escapes(text)
+                if repaired != text:
+                    try:
+                        parsed = response_format.model_validate_json(repaired)
+                        _log.warning(
+                            "LLM returned JSON with invalid string escapes; repaired and accepted on attempt %d/%d",
+                            attempt + 1,
+                            _JSON_RETRIES,
+                        )
+                        return parsed
+                    except (ValidationError, ValueError):
+                        pass
                 last_err = exc
                 _log.warning(
                     "LLM returned invalid JSON (attempt %d/%d, %d chars): %s",

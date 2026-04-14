@@ -156,6 +156,16 @@ def _parse_result(returncode: int | None, stdout: str, stderr: str) -> dict[str,
     out = stdout.strip()
     err = stderr.strip()
 
+    if not out and not err:
+        return {
+            "ok": False,
+            "error": "cursor agent returned no output",
+            "exit_code": returncode or 0,
+            "stdout": "",
+            "stderr": "",
+            "parsed": {"error": "empty_output"},
+        }
+
     for line in reversed(out.splitlines()):
         line = line.strip()
         if not line:

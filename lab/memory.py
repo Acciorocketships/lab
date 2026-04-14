@@ -201,6 +201,11 @@ def worker_diff_baseline_path(researcher_root: Path) -> Path:
     return researcher_root / "worker_diff_baseline.json"
 
 
+def auto_compactor_state_path(researcher_root: Path) -> Path:
+    """Runtime guard state for suppressing ineffective auto-compactor loops."""
+    return researcher_root / "auto_compactor_state.json"
+
+
 def write_worker_diff_baseline(researcher_root: Path, payload: dict[str, Any]) -> None:
     """Persist baseline; overwritten at each worker start."""
     p = worker_diff_baseline_path(researcher_root)
@@ -223,6 +228,34 @@ def read_worker_diff_baseline(researcher_root: Path) -> dict[str, Any] | None:
 def clear_worker_diff_baseline(researcher_root: Path) -> None:
     """Remove baseline after the worker run completes."""
     p = worker_diff_baseline_path(researcher_root)
+    try:
+        p.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def read_auto_compactor_state(researcher_root: Path) -> dict[str, Any] | None:
+    """Load persisted auto-compactor guard state, or None if missing/invalid."""
+    p = auto_compactor_state_path(researcher_root)
+    if not p.is_file():
+        return None
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def write_auto_compactor_state(researcher_root: Path, payload: dict[str, Any]) -> None:
+    """Persist auto-compactor guard state."""
+    p = auto_compactor_state_path(researcher_root)
+    helpers.ensure_dir(p.parent)
+    p.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+def clear_auto_compactor_state(researcher_root: Path) -> None:
+    """Remove persisted auto-compactor guard state."""
+    p = auto_compactor_state_path(researcher_root)
     try:
         p.unlink(missing_ok=True)
     except OSError:
@@ -429,6 +462,7 @@ def reset_runtime_artifacts(
             helpers.write_text(p, _default_tier_a_content(name))
     _ensure_episodes_readme(researcher_root)
     clear_worker_diff_baseline(researcher_root)
+    clear_auto_compactor_state(researcher_root)
 
 
 def extended_dir(researcher_root: Path) -> Path:
@@ -825,4 +859,49 @@ def load_tier_a_bundle(researcher_root: Path) -> dict[str, str]:
     out: dict[str, str] = {}
     for name in TIER_A_FILES:
         out[name] = helpers.read_text(state_dir(researcher_root) / name)
+    return out
+
+
+def tier_a_total_chars(
+    researcher_root: Path,
+    *,
+    include_system_files: bool = False,
+) -> int:
+    """Total characters across Tier A files, optionally excluding system-managed files."""
+    total = 0
+    for name in TIER_A_FILES:
+        if not include_system_files and name in {"system.md", "context_summary.md"}:
+            continue
+        total += len(helpers.read_text(state_dir(researcher_root) / name))
+    return total
+
+
+def tier_a_files_over_char_limit(
+    researcher_root: Path,
+    limit: int,
+    *,
+    include_system_files: bool = False,
+) -> dict[str, int]:
+    """Return Tier A files whose current length exceeds ``limit``."""
+    out: dict[str, int] = {}
+    for name in TIER_A_FILES:
+        if not include_system_files and name in {"system.md", "context_summary.md"}:
+            continue
+        size = len(helpers.read_text(state_dir(researcher_root) / name))
+        if size > limit:
+            out[name] = size
+    return out
+
+
+def tier_a_file_sizes(
+    researcher_root: Path,
+    *,
+    include_system_files: bool = False,
+) -> dict[str, int]:
+    """Return current Tier A file sizes in characters."""
+    out: dict[str, int] = {}
+    for name in TIER_A_FILES:
+        if not include_system_files and name in {"system.md", "context_summary.md"}:
+            continue
+        out[name] = len(helpers.read_text(state_dir(researcher_root) / name))
     return out
