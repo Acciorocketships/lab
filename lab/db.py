@@ -69,6 +69,8 @@ CREATE TABLE IF NOT EXISTS worker_stream (
   ts REAL NOT NULL
 );
 
+CREATE INDEX IF NOT EXISTS idx_worker_stream_cycle ON worker_stream(cycle, id);
+
 CREATE TABLE IF NOT EXISTS forced_run (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   worker TEXT NOT NULL DEFAULT '',

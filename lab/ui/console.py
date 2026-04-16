@@ -202,11 +202,46 @@ Screen {
 class ActivityScroll(VerticalScroll):
     """Activity log scroller that notifies the app when the user nears the top."""
 
+    _wants_bottom: bool = False
+    _prepend_baseline: tuple[int, float] | None = None
+
     def watch_scroll_y(self, old_value: float, new_value: float) -> None:
+        if self._wants_bottom:
+            mx = float(self.max_scroll_y)
+            if mx > 0 and new_value < mx:
+                self.scroll_target_y = mx
+                self.scroll_y = mx
+                return
+        elif self._prepend_baseline is not None:
+            base_height, base_y = self._prepend_baseline
+            delta = self.virtual_size.height - base_height
+            if delta > 0:
+                target_y = base_y + delta
+                if abs(new_value - target_y) > 1:
+                    self.scroll_target_y = target_y
+                    self.scroll_y = target_y
+                    self._prepend_baseline = (self.virtual_size.height, target_y)
+                    return
         super().watch_scroll_y(old_value, new_value)
         handler = getattr(self.app, "_on_activity_scroll_y", None)
         if handler is not None:
             handler(new_value)
+
+    def watch_virtual_size(self, old_size, new_size) -> None:
+        if old_size.height == new_size.height:
+            return
+        if self._wants_bottom:
+            target = float(self.max_scroll_y)
+            self.scroll_target_y = target
+            self.scroll_y = target
+        elif self._prepend_baseline is not None:
+            base_height, base_y = self._prepend_baseline
+            delta = new_size.height - base_height
+            if delta > 0:
+                target_y = base_y + delta
+                self.scroll_target_y = target_y
+                self.scroll_y = target_y
+                self._prepend_baseline = (new_size.height, target_y)
 
 
 class ResearchConsole(App[None]):
@@ -264,6 +299,8 @@ class ResearchConsole(App[None]):
         self._history_lazy_prefix: list[tuple[float, str, object]] | None = None
         self._history_lazy_anchor: Static | None = None
         self._history_lazy_loading = False
+        self._history_lazy_ready = False
+        self._history_suppress_scroll = False
 
     def _cycle_header_cursor_model(self) -> str | None:
         """Cursor CLI ``--model`` value for cycle headers (only when workers use Cursor)."""
@@ -290,6 +327,7 @@ class ResearchConsole(App[None]):
 
     def on_mount(self) -> None:
         self._cleanup_orphaned_cycles()
+        self._sync_rebuild_ids_from_db()
         self._refresh_header()
         stream = self.query_one("#stream-text", Static)
         stream.display = False
@@ -298,7 +336,7 @@ class ResearchConsole(App[None]):
             Static("  [dim]Loading session…[/]", classes="activity-line", id="session-loading"),
             before=stream,
         )
-        self.set_timer(0, self._complete_initial_activity_rebuild)
+        self.set_timer(0.01, self._complete_initial_activity_rebuild)
         self.set_interval(0.3, self._poll)
 
     def _complete_initial_activity_rebuild(self) -> None:
@@ -406,6 +444,8 @@ class ResearchConsole(App[None]):
         self._history_lazy_prefix = None
         self._history_lazy_anchor = None
         self._history_lazy_loading = False
+        self._history_lazy_ready = False
+        self._history_suppress_scroll = False
         self._clear_activity_log()
         self._current_cycle_widgets = []
         self._cycle_header_widget = None
@@ -506,21 +546,23 @@ class ResearchConsole(App[None]):
         return [], list(reversed(collected_rev))
 
     @staticmethod
-    def _oldest_prefix_chunk_n_cycles(
+    def _newest_prefix_chunk_n_cycles(
         prefix: list[tuple[float, str, object]], n_cycles: int,
     ) -> tuple[list[tuple[float, str, object]], list[tuple[float, str, object]]]:
-        """Take the oldest ``n_cycles`` worker cycles from *prefix* (oldest first), plus agents before that point."""
+        """Take the newest ``n_cycles`` worker cycles from the *end* of *prefix*.
+
+        Returns ``(remaining_prefix, chunk)`` where *chunk* is chronological
+        (oldest first) and contains the items closest to the already-visible tail.
+        """
         if not prefix or n_cycles <= 0:
-            return [], prefix
-        out: list[tuple[float, str, object]] = []
+            return prefix, []
         seen = 0
-        for i, item in enumerate(prefix):
-            out.append(item)
-            if item[1] == "cycle":
+        for i in range(len(prefix) - 1, -1, -1):
+            if prefix[i][1] == "cycle":
                 seen += 1
                 if seen >= n_cycles:
-                    return out, prefix[i + 1 :]
-        return out, []
+                    return prefix[:i], prefix[i:]
+        return [], list(prefix)
 
     def _run_events_full_rows_for_cycles(self, cycles: set[int]) -> list[sqlite3.Row]:
         if not cycles:
@@ -591,16 +633,36 @@ class ResearchConsole(App[None]):
 
         self._mount_active_agents(active_agents)
         self._mount_before = None
+        widgets_before = len(self._current_cycle_widgets)
         for item in tail:
             self._mount_timeline_item(item, by_cycle, excerpts)
+        first_tail_widget = (
+            self._current_cycle_widgets[widgets_before]
+            if len(self._current_cycle_widgets) > widgets_before
+            else None
+        )
 
         self._sync_rebuild_ids_from_db()
         self._scroll_to_bottom()
 
         self._history_lazy_prefix = prefix if prefix else None
-        self._history_lazy_anchor = self._find_topmost_activity_widget() if prefix else None
+        self._history_lazy_anchor = first_tail_widget if prefix and first_tail_widget else None
+        if self._history_lazy_prefix:
+            self.set_timer(1.0, self._arm_lazy_history)
+
+    def _arm_lazy_history(self) -> None:
+        if self._history_lazy_prefix:
+            self._history_suppress_scroll = True
+            self.call_after_refresh(self._arm_lazy_history_final)
+
+    def _arm_lazy_history_final(self) -> None:
+        if self._history_lazy_prefix:
+            self._history_lazy_ready = True
+        self._history_suppress_scroll = False
 
     def _on_activity_scroll_y(self, new_value: float) -> None:
+        if not self._history_lazy_ready or self._history_suppress_scroll:
+            return
         if not self._history_lazy_prefix or self._history_lazy_loading:
             return
         try:
@@ -621,7 +683,11 @@ class ResearchConsole(App[None]):
         pref = self._history_lazy_prefix
         if not pref:
             return
-        chunk, rest = self._oldest_prefix_chunk_n_cycles(pref, self._ACTIVITY_SCROLL_BATCH_CYCLES)
+        anchor = self._history_lazy_anchor
+        if anchor is not None and getattr(anchor, "parent", None) is None:
+            self._history_lazy_prefix = None
+            return
+        rest, chunk = self._newest_prefix_chunk_n_cycles(pref, self._ACTIVITY_SCROLL_BATCH_CYCLES)
         if not chunk:
             self._history_lazy_prefix = rest or None
             return
@@ -632,34 +698,42 @@ class ResearchConsole(App[None]):
         excerpts = self._bulk_fetch_last_stream_text_by_cycles(sorted(cycles))
 
         try:
-            scroll = self.query_one("#activity-scroll", VerticalScroll)
-            old_max = scroll.max_scroll_y
-            old_y = scroll.scroll_y
+            scroll = self.query_one("#activity-scroll", ActivityScroll)
         except Exception:
-            old_max = 0.0
-            old_y = 0.0
             scroll = None
 
+        if scroll is not None:
+            self._history_suppress_scroll = True
+            scroll._wants_bottom = False
+            scroll._prepend_baseline = (scroll.virtual_size.height, float(scroll.scroll_y))
+
         self._mount_before = self._history_lazy_anchor
+        widgets_before = len(self._current_cycle_widgets)
         for item in chunk:
             self._mount_timeline_item(item, by_cycle, excerpts)
         self._mount_before = None
 
-        self._history_lazy_anchor = self._find_topmost_activity_widget()
+        new_anchor = (
+            self._current_cycle_widgets[widgets_before]
+            if len(self._current_cycle_widgets) > widgets_before
+            else self._history_lazy_anchor
+        )
+        self._history_lazy_anchor = new_anchor
         self._history_lazy_prefix = rest if rest else None
 
-        if scroll is None:
-            return
-
-        def _restore_scroll_top() -> None:
+        if scroll is not None:
             try:
-                s = self.query_one("#activity-scroll", VerticalScroll)
-                delta = float(s.max_scroll_y) - float(old_max)
-                s.scroll_y = min(float(s.max_scroll_y), float(old_y) + delta)
+                self.set_timer(2.0, self._clear_prepend_baseline)
             except Exception:
                 pass
 
-        self.call_after_refresh(_restore_scroll_top)
+    def _clear_prepend_baseline(self) -> None:
+        try:
+            scroll = self.query_one("#activity-scroll", ActivityScroll)
+            scroll._prepend_baseline = None
+        except Exception:
+            pass
+        self._history_suppress_scroll = False
 
     def _load_rebuild_data(
         self,
@@ -1501,8 +1575,26 @@ class ResearchConsole(App[None]):
         )
 
     def _scroll_to_bottom(self) -> None:
-        scroll = self.query_one("#activity-scroll", VerticalScroll)
-        self.call_after_refresh(lambda: scroll.scroll_end(animate=False))
+        self._history_suppress_scroll = True
+        try:
+            scroll = self.query_one("#activity-scroll", ActivityScroll)
+            scroll._prepend_baseline = None
+            scroll._wants_bottom = True
+        except Exception:
+            self._history_suppress_scroll = False
+            return
+        try:
+            self.set_timer(2.0, self._clear_wants_bottom)
+        except Exception:
+            pass
+
+    def _clear_wants_bottom(self) -> None:
+        try:
+            scroll = self.query_one("#activity-scroll", ActivityScroll)
+            scroll._wants_bottom = False
+        except Exception:
+            pass
+        self._history_suppress_scroll = False
 
 
     def _activity_viewport_at_bottom(self) -> bool:
