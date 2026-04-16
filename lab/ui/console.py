@@ -32,6 +32,11 @@ if TYPE_CHECKING:
 _FORCED_AGENT_KILL_WAIT_TIMEOUT = 0.2
 _FORCED_AGENT_DB_TIMEOUT = 0.2
 _FORCED_SCHEDULER_KILL_WAIT_TIMEOUT = 0.1
+_FAST_POLL_INTERVAL_SEC = 0.1
+_ANIMATION_POLL_INTERVAL_SEC = 0.2
+_SLOW_POLL_INTERVAL_SEC = 0.75
+_MEMORY_COMPACTOR_PLACEHOLDER_CACHE_SEC = 0.5
+
 
 @dataclass
 class _RedoSnapshot:
@@ -55,6 +60,13 @@ class _LiveDiffState:
 class _LivePlanState:
     widget: Static
     last_text: str = ""
+
+
+@dataclass
+class _PendingPromptEditState:
+    target: str
+    path: Path
+    heading: str
 
 
 @dataclass
@@ -286,12 +298,16 @@ class ResearchConsole(App[None]):
         self._orchestrating_tick = 0
         self._stream_is_running_placeholder = False
         self._running_worker_tick = 0
+        self._scheduler_start_pending = False
+        self._memory_compactor_placeholder_cached = False
+        self._memory_compactor_placeholder_checked_at = 0.0
         self._welcome_widgets: list[Static] = []
         self._redo_stack: list[_RedoSnapshot] = []
         self._checkpoint_notice_widget: Static | None = None
         self._diff_widgets: list[Static] = []
         self._live_diff_state: _LiveDiffState | None = None
         self._live_plan_state: _LivePlanState | None = None
+        self._pending_prompt_edit: _PendingPromptEditState | None = None
         self._agent_processes: dict[int, SchedulerProcessHandle] = {}
         self._agent_sections: dict[int, _AgentSectionState] = {}
         self._last_agent_stream_id = 0
@@ -301,6 +317,7 @@ class ResearchConsole(App[None]):
         self._history_lazy_loading = False
         self._history_lazy_ready = False
         self._history_suppress_scroll = False
+        self._history_deferred_agent_ids: set[int] = set()
 
     def _cycle_header_cursor_model(self) -> str | None:
         """Cursor CLI ``--model`` value for cycle headers (only when workers use Cursor)."""
@@ -337,7 +354,9 @@ class ResearchConsole(App[None]):
             before=stream,
         )
         self.set_timer(0.01, self._complete_initial_activity_rebuild)
-        self.set_interval(0.3, self._poll)
+        self.set_interval(_FAST_POLL_INTERVAL_SEC, self._poll_fast)
+        self.set_interval(_ANIMATION_POLL_INTERVAL_SEC, self._poll_animation)
+        self.set_interval(_SLOW_POLL_INTERVAL_SEC, self._poll_slow)
 
     def _complete_initial_activity_rebuild(self) -> None:
         """Run after first paint so the terminal shows a loading line instead of blocking on_mount.
@@ -442,6 +461,7 @@ class ResearchConsole(App[None]):
         """
         self._cancel_pending_rebuild_chain()
         self._history_lazy_prefix = None
+        self._history_deferred_agent_ids = set()
         self._history_lazy_anchor = None
         self._history_lazy_loading = False
         self._history_lazy_ready = False
@@ -646,6 +666,9 @@ class ResearchConsole(App[None]):
         self._scroll_to_bottom()
 
         self._history_lazy_prefix = prefix if prefix else None
+        self._history_deferred_agent_ids = {
+            int(item[2]["id"]) for item in prefix if item[1] == "agent"
+        } if prefix else set()
         self._history_lazy_anchor = first_tail_widget if prefix and first_tail_widget else None
         if self._history_lazy_prefix:
             self.set_timer(1.0, self._arm_lazy_history)
@@ -720,6 +743,11 @@ class ResearchConsole(App[None]):
         )
         self._history_lazy_anchor = new_anchor
         self._history_lazy_prefix = rest if rest else None
+        for item in chunk:
+            if item[1] == "agent":
+                self._history_deferred_agent_ids.discard(int(item[2]["id"]))
+        if not self._history_lazy_prefix:
+            self._history_deferred_agent_ids.clear()
 
         if scroll is not None:
             try:
@@ -1019,6 +1047,7 @@ class ResearchConsole(App[None]):
             expand=True,
         )
         scroll.mount(widget, after=stream)
+        self._scroll_to_bottom()
         return widget
 
     def _write_below_stream_renderable(
@@ -1029,6 +1058,7 @@ class ResearchConsole(App[None]):
         stream = self.query_one("#stream-text", Static)
         widget = Static(renderable, classes=classes, expand=True)
         scroll.mount(widget, after=stream)
+        self._scroll_to_bottom()
         return widget
 
     def _dismiss_checkpoint_notice(self) -> None:
@@ -1486,7 +1516,7 @@ class ResearchConsole(App[None]):
         self._render_cycle_stream_panel("")
 
     def _set_stream_placeholder(self, markup: str) -> None:
-        """Single-line animated status (Running… / Orchestrating…), not the message log."""
+        """Single-line animated status (Running… / Orchestrating… / Compressing Memory…), not the message log."""
         self._render_cycle_stream_panel(markup)
 
     @staticmethod
@@ -1526,7 +1556,7 @@ class ResearchConsole(App[None]):
                 " ROW_NUMBER() OVER (PARTITION BY cycle ORDER BY id DESC) AS rn"
                 " FROM worker_stream WHERE cycle IN ("
                 + ph
-                + ") ) SELECT cycle, chunk FROM ranked WHERE rn <= 200 "
+                + ") AND worker != 'memory_compactor' ) SELECT cycle, chunk FROM ranked WHERE rn <= 200 "
                 "ORDER BY cycle ASC, rn ASC"
             )
             try:
@@ -1560,11 +1590,15 @@ class ResearchConsole(App[None]):
         Prefers the ``result`` event emitted at the end of a stream-json
         session (contains the complete assistant response).  Falls back to the
         last individual text chunk when no result event is available.
+
+        Internal ``memory_compactor`` chunks are excluded; they must not appear
+        in user-visible excerpts or history.
         """
         try:
             rows = list(
                 self._conn.execute(
-                    "SELECT chunk FROM worker_stream WHERE cycle = ? ORDER BY id DESC LIMIT 200",
+                    "SELECT chunk FROM worker_stream WHERE cycle = ? "
+                    "AND worker != 'memory_compactor' ORDER BY id DESC LIMIT 200",
                     (cycle,),
                 )
             )
@@ -1690,25 +1724,66 @@ class ResearchConsole(App[None]):
             hdr = "[bold]lab[/]"
         self.query_one("#header", Static).update(hdr)
 
-    def _poll(self) -> None:
-        """Periodic poll: update header, run events, stream chunks, and health check."""
+    def _poll_fast(self) -> None:
+        """Fast poll for stream/event handling and lightweight animation updates."""
         self._check_scheduler_health()
-        self._refresh_header()
         self._poll_run_events()
         self._poll_agent_runs()
         self._poll_stream()
         self._poll_agent_stream()
+
+    def _poll_animation(self) -> None:
+        """Dedicated animation loop so placeholder dots don't wait on other refresh work."""
         self._poll_agent_stream_placeholders()
         self._poll_animated_stream_status()
         self._refresh_running_cycle_header()
         self._refresh_running_agent_headers()
+
+    def _poll_slow(self) -> None:
+        """Slower poll for heavier repo/file refreshes that need less cadence."""
+        self._refresh_header()
         self._refresh_file_changes()
         self._refresh_checklist()
         self._refresh_live_plan()
         self._refresh_live_diff()
 
+    def _memory_compactor_stream_before_worker_event(self) -> bool:
+        """True while Tier A compaction is in flight: stream chunks exist but no worker row yet."""
+        now = time.time()
+        if now - self._memory_compactor_placeholder_checked_at < _MEMORY_COMPACTOR_PLACEHOLDER_CACHE_SEC:
+            return self._memory_compactor_placeholder_cached
+        try:
+            row = self._conn.execute(
+                """
+                SELECT 1 FROM worker_stream ws
+                WHERE ws.worker = 'memory_compactor'
+                  AND NOT EXISTS (
+                    SELECT 1 FROM run_events re
+                    WHERE re.cycle = ws.cycle
+                      AND re.kind = 'worker'
+                      AND re.worker = 'memory_compactor'
+                  )
+                LIMIT 1
+                """
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return False
+        self._memory_compactor_placeholder_cached = row is not None
+        self._memory_compactor_placeholder_checked_at = now
+        return self._memory_compactor_placeholder_cached
+
+    def _invalidate_memory_compactor_placeholder_cache(self) -> None:
+        self._memory_compactor_placeholder_checked_at = 0.0
+        self._memory_compactor_placeholder_cached = False
+
     def _poll_animated_stream_status(self) -> None:
-        """Animate Orchestrating… or Running {worker}… until stream chunks replace the panel."""
+        """Animate Orchestrating… / Compressing Memory… or Running {worker}… until stream replaces the panel."""
+        if self._scheduler_start_pending:
+            self._orchestrating = True
+            self._orchestrating_tick += 1
+            dots = "." * ((self._orchestrating_tick % 3) + 1)
+            self._set_stream_placeholder(f"[dim]Orchestrating{dots}[/]")
+            return
         if self._scheduler is None or not self._scheduler.is_alive():
             self._orchestrating = False
             self._stream_is_running_placeholder = False
@@ -1731,7 +1806,10 @@ class ResearchConsole(App[None]):
         if self._orchestrating:
             self._orchestrating_tick += 1
             dots = "." * ((self._orchestrating_tick % 3) + 1)
-            self._set_stream_placeholder(f"[dim]Orchestrating{dots}[/]")
+            if self._memory_compactor_stream_before_worker_event():
+                self._set_stream_placeholder(f"[dim]Compressing Memory{dots}[/]")
+            else:
+                self._set_stream_placeholder(f"[dim]Orchestrating{dots}[/]")
             return
         if self._stream_is_running_placeholder and self._worker_start_ts > 0:
             self._running_worker_tick += 1
@@ -1774,9 +1852,22 @@ class ResearchConsole(App[None]):
         self._restart_scheduler()
 
     def _restart_scheduler(self) -> None:
+        if self._scheduler_start_pending:
+            return
+        self._scheduler_start_pending = True
+        self._orchestrating = True
+        self._orchestrating_tick = 0
+        self._set_stream_placeholder("[dim]Orchestrating.[/]")
+        self._scroll_to_bottom()
+        self.call_after_refresh(self._start_scheduler_after_refresh)
+
+    def _start_scheduler_after_refresh(self) -> None:
+        if not self._scheduler_start_pending:
+            return
         from lab.loop import spawn_scheduler
 
         researcher_root = project_researcher_root(self.cfg.project_dir)
+        self._scheduler_start_pending = False
         db.enqueue_event(self._conn, "resume", None)
         self._conn.commit()
         self._scheduler = spawn_scheduler(
@@ -1884,6 +1975,9 @@ class ResearchConsole(App[None]):
             worker = row["worker"]
             task = row["task"] or ""
 
+            if worker == "memory_compactor":
+                self._invalidate_memory_compactor_placeholder_cache()
+
             if kind == "orchestrator":
                 self._orchestrating = False
                 new_cycle = cycle != self._last_cycle or worker != self._last_worker
@@ -1983,6 +2077,8 @@ class ResearchConsole(App[None]):
                     stream_excerpt = events.extract_result_excerpt(self._last_stream_text)
                 summary_excerpt = events.extract_result_excerpt(row["summary"] or "")
                 excerpt = stream_excerpt or (summary_excerpt if ok else "")
+                if worker == "memory_compactor" and ok:
+                    excerpt = ""
                 checklist = str(payload.get("immediate_plan_checklist", "") or "").strip()
                 if not checklist:
                     checklist = self._read_immediate_plan_checklist()
@@ -2057,6 +2153,8 @@ class ResearchConsole(App[None]):
                     row = self._finalize_stale_agent_run(agent_id, reason) or row
                     status = str(row["status"] or "failed")
                     self._agent_processes.pop(agent_id, None)
+            if agent_id in self._history_deferred_agent_ids:
+                continue
             agent = self._agent_sections.get(agent_id)
             if agent is None:
                 agent = self._create_agent_section(row)
@@ -2111,6 +2209,9 @@ class ResearchConsole(App[None]):
         had_tool = False
         for row in rows:
             self._last_stream_id = row["id"]
+            if row["worker"] == "memory_compactor":
+                self._invalidate_memory_compactor_placeholder_cache()
+                continue
             parsed = events.parse_stream_event(row["chunk"], full_text=True)
             if parsed is None:
                 continue
@@ -2161,6 +2262,17 @@ class ResearchConsole(App[None]):
         self._submit_prompt_text(text)
 
     def _submit_prompt_text(self, raw: str) -> None:
+        pending_edit = self._pending_prompt_edit
+        first_line = raw.splitlines()[0].strip() if raw.splitlines() else ""
+        if pending_edit is not None and not first_line.startswith("/"):
+            self._remove_welcome_intro()
+            self._clear_below_stream_feedback()
+            self._write_pending_edit_body(pending_edit, raw.strip())
+            self._pending_prompt_edit = None
+            label = "research idea" if pending_edit.target == "idea" else "preferences"
+            self._write_below_stream_box(f"  [green]Updated {label}.[/]")
+            return
+
         text = raw.strip()
         if not text:
             return
@@ -2210,6 +2322,9 @@ class ResearchConsole(App[None]):
         cmd = parts[0].lower().removeprefix("/")
         rest = parts[1] if len(parts) > 1 else ""
 
+        if self._pending_prompt_edit is not None and cmd != "edit":
+            self._pending_prompt_edit = None
+
         if cmd == "instruction":
             body = (rest + "\n" + tail if tail else rest).strip()
             if not body:
@@ -2232,6 +2347,10 @@ class ResearchConsole(App[None]):
 
         if cmd == "plan":
             self._cmd_plan()
+            return
+
+        if cmd == "edit":
+            self._cmd_edit(rest)
             return
 
         if cmd == "agent":
@@ -2397,9 +2516,11 @@ class ResearchConsole(App[None]):
         mode = db.get_system_state(self._conn).get("control_mode", "active")
         scheduler_alive = bool(self._scheduler and self._scheduler.is_alive())
 
-        if mode != "active" or not scheduler_alive:
+        if scheduler_alive and mode != "active":
             db.set_control_mode(self._conn, "active")
             db.enqueue_event(self._conn, "resume", None)
+        elif not scheduler_alive and mode != "active":
+            db.set_control_mode(self._conn, "active")
         self._conn.commit()
 
         if scheduler_alive:
@@ -2486,16 +2607,82 @@ class ResearchConsole(App[None]):
             return
         self._live_plan_state = _LivePlanState(widget=widget, last_text=checklist)
 
+    def _pending_edit_spec(
+        self,
+        target: str,
+    ) -> _PendingPromptEditState | None:
+        normalized = target.strip().lower()
+        state_root = memory.state_dir(self.cfg.researcher_root)
+        if normalized == "idea":
+            return _PendingPromptEditState(
+                target="idea",
+                path=state_root / "research_idea.md",
+                heading="# Research brief",
+            )
+        if normalized in {"prefs", "preferences"}:
+            return _PendingPromptEditState(
+                target="prefs",
+                path=state_root / "preferences.md",
+                heading="# Preferences",
+            )
+        return None
+
+    def _read_pending_edit_body(self, pending: _PendingPromptEditState) -> str:
+        content = helpers.read_text(pending.path, default=f"{pending.heading}\n\n")
+        lines = content.splitlines()
+        if lines and lines[0].strip() == pending.heading:
+            return "\n".join(lines[1:]).lstrip("\n").rstrip("\n")
+        return content.strip("\n")
+
+    def _write_pending_edit_body(
+        self,
+        pending: _PendingPromptEditState,
+        body: str,
+    ) -> None:
+        cleaned = body.strip()
+        content = f"{pending.heading}\n\n"
+        if cleaned:
+            content += f"{cleaned}\n"
+        helpers.write_text(pending.path, content)
+
+    def _load_prompt_text(self, text: str) -> None:
+        prompt = self.query_one("#prompt", PromptTextArea)
+        prompt.text = text
+        prompt._adjust_height()
+        lines = text.split("\n")
+        prompt.move_cursor((len(lines) - 1, len(lines[-1])), record_width=False)
+        prompt.focus()
+        try:
+            prompt.scroll_cursor_visible()
+        except Exception:
+            pass
+
+    def _cmd_edit(self, rest: str) -> None:
+        pending = self._pending_edit_spec(rest)
+        if pending is None:
+            self._pending_prompt_edit = None
+            self._write_below_stream_box(
+                f"  [red]Usage:[/] {rich_escape('/edit [idea|prefs]')}"
+            )
+            return
+        self._pending_prompt_edit = pending
+        self._load_prompt_text(self._read_pending_edit_body(pending))
+        label = "research idea" if pending.target == "idea" else "preferences"
+        self._write_below_stream_box(
+            f"  [yellow]Editing {label}.[/] The next non-command submission will overwrite [bold]{pending.path.name}[/]."
+        )
+
     def _cmd_help(self) -> None:
         self._write_below_stream_box(
             "  [bold]Commands[/]\n"
             "  [bold]/start[/]        Start the background agent\n"
-            f"  [bold]/agent {rich_escape('[text]')}[/] Run a standalone async subagent on the given prompt\n"
+            "  [bold]/agent[/]        /agent [prompt] runs a standalone subagent, useful for asking questions\n"
             "  [bold]/pause[/]        Pause after the current worker finishes\n"
             "  [bold]/stop[/]         Stop everything immediately (workers + /agent runs). Use [bold]/stop agent n[/] to stop a specific agent\n"
             "  [bold]/exit[/]         Stop agent and quit\n"
+            "  [bold]/edit[/]         /edit idea to edit the research idea; /edit prefs to edit the preferences.\n"
             "  [bold]/plan[/]         Show the live roadmap checklist\n"
-            "  [bold]/diff[/]         Line-by-line diff. If args are given: [bold]/diff n[/] = diff in cycle n; [bold]/diff n m[/] = diff from cycle n to end of cycle m\n"
+            "  [bold]/diff[/]         Line-by-line diff on current cycle. [bold]/diff n[/] = diff in cycle n; [bold]/diff n m[/] = diff in cycle range (inclusive)\n"
             "  [bold]/reset[/]        Clear DB and runtime memory; keep research_idea.md + preferences.md; project code unchanged\n"
             "  [bold]/undo[/]         Revert since last worker; restarts orchestrator only if agent was running\n"
             "  [bold]/redo[/]         Restore the last undone checkpoint and replay local edits on top\n"

@@ -12,10 +12,12 @@ from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
 
+from lab.ui import console as console_mod
 from lab import db, git_checkpoint, memory
 from lab.config import RunConfig
 from lab.ui import events
 from lab.ui.console import ResearchConsole
+
 
 def _console_query_stub(captured: list[str]):
     """Minimal Textual stand-ins so console methods can mount activity lines."""
@@ -49,6 +51,37 @@ def _console_query_stub(captured: list[str]):
         if sel == "#activity-scroll":
             return FakeScroll()
         return FakeStatic()
+
+    return fake_query
+
+
+class _FakePrompt:
+    def __init__(self) -> None:
+        self.text = ""
+        self.focused = False
+        self.cursor_location: tuple[int, int] | None = None
+        self.adjust_count = 0
+
+    def _adjust_height(self) -> None:
+        self.adjust_count += 1
+
+    def move_cursor(self, location: tuple[int, int], **kwargs) -> None:
+        self.cursor_location = location
+
+    def focus(self) -> None:
+        self.focused = True
+
+    def scroll_cursor_visible(self) -> None:
+        pass
+
+
+def _console_query_with_prompt_stub(captured: list[str], prompt: _FakePrompt):
+    base_query = _console_query_stub(captured)
+
+    def fake_query(sel: str, *args, **kwargs):
+        if sel == "#prompt":
+            return prompt
+        return base_query(sel, *args, **kwargs)
 
     return fake_query
 
@@ -122,6 +155,48 @@ def test_cmd_start_clears_graceful_pause_pending(tmp_path: Path) -> None:
     console._conn.close()
 
 
+def test_cmd_start_with_dead_scheduler_defers_spawn_until_after_refresh(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "runtime.db"
+    cfg = _cfg(tmp_path)
+    console = ResearchConsole(db_path, cfg)
+    conn = console._conn
+    db.get_system_state(conn)
+    db.set_control_mode(conn, "paused")
+    conn.commit()
+
+    writes: list[str] = []
+    scheduled: list[object] = []
+    placeholders: list[str] = []
+    console.query_one = _console_query_stub(writes)  # type: ignore[method-assign]
+    console.call_after_refresh = lambda callback: scheduled.append(callback)  # type: ignore[method-assign]
+    console._set_stream_placeholder = lambda markup: placeholders.append(markup)  # type: ignore[method-assign]
+    console._scroll_to_bottom = lambda: None  # type: ignore[method-assign]
+
+    class FakeScheduler:
+        def is_alive(self) -> bool:
+            return True
+
+    monkeypatch.setattr("lab.loop.spawn_scheduler", lambda *args, **kwargs: FakeScheduler())
+
+    console._cmd_start()
+
+    assert console._scheduler_start_pending is True
+    assert console._orchestrating is True
+    assert placeholders == ["[dim]Orchestrating.[/]"]
+    assert db.get_system_state(conn)["control_mode"] == "active"
+    assert db.fetch_pending_events(conn) == []
+    assert len(scheduled) == 1
+
+    scheduled[0]()
+
+    pending = db.fetch_pending_events(conn)
+    assert [row["kind"] for row in pending] == ["resume"]
+    assert console._scheduler is not None
+    assert console._scheduler_start_pending is False
+
+    console._conn.close()
+
+
 def test_submit_prompt_text_enqueues_instruction_then_runs_start(tmp_path: Path) -> None:
     db_path = tmp_path / "runtime.db"
     cfg = _cfg(tmp_path)
@@ -178,6 +253,268 @@ def test_submit_prompt_text_instruction_then_start_separately_resumes_immediatel
     assert console._orchestrating is True
 
     console._conn.close()
+
+
+def test_cmd_edit_idea_prefills_prompt_without_heading(tmp_path: Path) -> None:
+    db_path = tmp_path / "runtime.db"
+    cfg = _cfg(tmp_path)
+    console = ResearchConsole(db_path, cfg)
+    prompt = _FakePrompt()
+    writes: list[str] = []
+    console.query_one = _console_query_with_prompt_stub(writes, prompt)  # type: ignore[method-assign]
+
+    state_dir = memory.state_dir(cfg.researcher_root)
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / "research_idea.md").write_text(
+        "# Research brief\n\nLine one\n\nLine two\n",
+        encoding="utf-8",
+    )
+
+    console._submit_prompt_text("/edit idea")
+
+    assert prompt.text == "Line one\n\nLine two"
+    assert prompt.focused is True
+    assert prompt.cursor_location == (2, len("Line two"))
+    assert console._pending_prompt_edit is not None
+    assert console._pending_prompt_edit.target == "idea"
+
+    console._conn.close()
+
+
+def test_cmd_edit_prefs_prefills_prompt_without_heading(tmp_path: Path) -> None:
+    db_path = tmp_path / "runtime.db"
+    cfg = _cfg(tmp_path)
+    console = ResearchConsole(db_path, cfg)
+    prompt = _FakePrompt()
+    writes: list[str] = []
+    console.query_one = _console_query_with_prompt_stub(writes, prompt)  # type: ignore[method-assign]
+
+    state_dir = memory.state_dir(cfg.researcher_root)
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / "preferences.md").write_text(
+        "# Preferences\n\n- simple\n- readable\n",
+        encoding="utf-8",
+    )
+
+    console._submit_prompt_text("/edit prefs")
+
+    assert prompt.text == "- simple\n- readable"
+    assert prompt.focused is True
+    assert prompt.cursor_location == (1, len("- readable"))
+    assert console._pending_prompt_edit is not None
+    assert console._pending_prompt_edit.target == "prefs"
+
+    console._conn.close()
+
+
+def test_submit_prompt_text_after_edit_idea_rewrites_research_brief(tmp_path: Path) -> None:
+    db_path = tmp_path / "runtime.db"
+    cfg = _cfg(tmp_path)
+    console = ResearchConsole(db_path, cfg)
+    prompt = _FakePrompt()
+    writes: list[str] = []
+    console.query_one = _console_query_with_prompt_stub(writes, prompt)  # type: ignore[method-assign]
+
+    state_dir = memory.state_dir(cfg.researcher_root)
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / "research_idea.md").write_text(
+        "# Research brief\n\nOriginal idea\n",
+        encoding="utf-8",
+    )
+
+    console._submit_prompt_text("/edit idea")
+    console._submit_prompt_text("Updated idea\n\nWith details")
+
+    assert (
+        (state_dir / "research_idea.md").read_text(encoding="utf-8")
+        == "# Research brief\n\nUpdated idea\n\nWith details\n"
+    )
+    assert console._pending_prompt_edit is None
+
+    console._conn.close()
+
+
+def test_submit_prompt_text_after_edit_prefs_rewrites_preferences(tmp_path: Path) -> None:
+    db_path = tmp_path / "runtime.db"
+    cfg = _cfg(tmp_path)
+    console = ResearchConsole(db_path, cfg)
+    prompt = _FakePrompt()
+    writes: list[str] = []
+    console.query_one = _console_query_with_prompt_stub(writes, prompt)  # type: ignore[method-assign]
+
+    state_dir = memory.state_dir(cfg.researcher_root)
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / "preferences.md").write_text(
+        "# Preferences\n\n- old pref\n",
+        encoding="utf-8",
+    )
+
+    console._submit_prompt_text("/edit preferences")
+    console._submit_prompt_text("- new pref\n- another pref")
+
+    assert (
+        (state_dir / "preferences.md").read_text(encoding="utf-8")
+        == "# Preferences\n\n- new pref\n- another pref\n"
+    )
+    assert console._pending_prompt_edit is None
+
+    console._conn.close()
+
+
+def test_submit_prompt_text_after_edit_allows_empty_body(tmp_path: Path) -> None:
+    db_path = tmp_path / "runtime.db"
+    cfg = _cfg(tmp_path)
+    console = ResearchConsole(db_path, cfg)
+    prompt = _FakePrompt()
+    writes: list[str] = []
+    console.query_one = _console_query_with_prompt_stub(writes, prompt)  # type: ignore[method-assign]
+
+    state_dir = memory.state_dir(cfg.researcher_root)
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / "research_idea.md").write_text(
+        "# Research brief\n\nExisting body\n",
+        encoding="utf-8",
+    )
+
+    console._submit_prompt_text("/edit idea")
+    console._submit_prompt_text("")
+
+    assert (
+        (state_dir / "research_idea.md").read_text(encoding="utf-8")
+        == "# Research brief\n\n"
+    )
+    assert console._pending_prompt_edit is None
+
+    console._conn.close()
+
+
+def test_slash_command_during_pending_edit_does_not_save_file(tmp_path: Path) -> None:
+    db_path = tmp_path / "runtime.db"
+    cfg = _cfg(tmp_path)
+    console = ResearchConsole(db_path, cfg)
+    prompt = _FakePrompt()
+    writes: list[str] = []
+    console.query_one = _console_query_with_prompt_stub(writes, prompt)  # type: ignore[method-assign]
+
+    state_dir = memory.state_dir(cfg.researcher_root)
+    state_dir.mkdir(parents=True, exist_ok=True)
+    original = "# Preferences\n\n- keep me\n"
+    (state_dir / "preferences.md").write_text(original, encoding="utf-8")
+
+    console._submit_prompt_text("/edit prefs")
+    console._submit_prompt_text("/help")
+
+    assert (state_dir / "preferences.md").read_text(encoding="utf-8") == original
+    assert console._pending_prompt_edit is None
+    assert any("Commands" in message for message in writes)
+
+    console._conn.close()
+
+
+def test_cmd_edit_invalid_usage_shows_helpful_message(tmp_path: Path) -> None:
+    db_path = tmp_path / "runtime.db"
+    cfg = _cfg(tmp_path)
+    console = ResearchConsole(db_path, cfg)
+    prompt = _FakePrompt()
+    writes: list[str] = []
+    console.query_one = _console_query_with_prompt_stub(writes, prompt)  # type: ignore[method-assign]
+
+    console._submit_prompt_text("/edit roadmap")
+
+    assert any("Usage:" in message and "/edit [idea|prefs]" in message for message in writes)
+    assert console._pending_prompt_edit is None
+
+    console._conn.close()
+
+
+def test_on_mount_schedules_fast_and_slow_poll_loops(tmp_path: Path) -> None:
+    db_path = tmp_path / "runtime.db"
+    cfg = _cfg(tmp_path)
+    console = ResearchConsole(db_path, cfg)
+    writes: list[str] = []
+    timer_calls: list[tuple[float, str]] = []
+    interval_calls: list[tuple[float, str]] = []
+    console.query_one = _console_query_stub(writes)  # type: ignore[method-assign]
+    console.set_timer = lambda interval, callback: timer_calls.append((interval, callback.__name__))  # type: ignore[method-assign]
+    console.set_interval = lambda interval, callback: interval_calls.append((interval, callback.__name__))  # type: ignore[method-assign]
+    console._cleanup_orphaned_cycles = lambda: None  # type: ignore[method-assign]
+    console._sync_rebuild_ids_from_db = lambda: None  # type: ignore[method-assign]
+
+    console.on_mount()
+
+    assert timer_calls == [(0.01, "_complete_initial_activity_rebuild")]
+    assert interval_calls == [
+        (console_mod._FAST_POLL_INTERVAL_SEC, "_poll_fast"),
+        (console_mod._ANIMATION_POLL_INTERVAL_SEC, "_poll_animation"),
+        (console_mod._SLOW_POLL_INTERVAL_SEC, "_poll_slow"),
+    ]
+
+    console._conn.close()
+
+
+def test_fetch_last_stream_text_excludes_memory_compactor(tmp_path: Path) -> None:
+    """Internal memory_compactor stream rows must not leak into visible excerpts."""
+    db_path = tmp_path / "runtime.db"
+    cfg = _cfg(tmp_path)
+    console = ResearchConsole(db_path, cfg)
+    conn = console._conn
+
+    db.append_stream_chunk(
+        conn,
+        cycle=1,
+        worker="memory_compactor",
+        chunk=json.dumps(
+            {
+                "type": "content_block_delta",
+                "delta": {"type": "text_delta", "text": "secret compaction"},
+            }
+        ),
+    )
+    db.append_stream_chunk(
+        conn,
+        cycle=1,
+        worker="planner",
+        chunk=json.dumps(
+            {
+                "type": "content_block_delta",
+                "delta": {"type": "text_delta", "text": "visible planner"},
+            }
+        ),
+    )
+
+    got = console._fetch_last_stream_text(cycle=1)
+    assert "visible planner" in got
+    assert "secret compaction" not in got
+
+    conn.close()
+
+
+def test_memory_compactor_placeholder_query_is_cached(tmp_path: Path, monkeypatch) -> None:
+    db_path = tmp_path / "runtime.db"
+    cfg = _cfg(tmp_path)
+    console = ResearchConsole(db_path, cfg)
+
+    class _FakeCursor:
+        def fetchone(self):
+            return object()
+
+    class _FakeConn:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def execute(self, *args, **kwargs):
+            self.calls += 1
+            return _FakeCursor()
+
+    fake_conn = _FakeConn()
+    console._conn.close()
+    console._conn = fake_conn  # type: ignore[assignment]
+    times = iter([100.0, 100.1])
+    monkeypatch.setattr(console_mod.time, "time", lambda: next(times))
+
+    assert console._memory_compactor_stream_before_worker_event() is True
+    assert console._memory_compactor_stream_before_worker_event() is True
+    assert fake_conn.calls == 1
 
 
 def test_cmd_pause_when_idle_sets_paused(tmp_path: Path) -> None:
@@ -1383,5 +1720,101 @@ def test_poll_animated_stream_status_clears_stale_placeholder_when_paused(tmp_pa
 
     assert console._orchestrating is False
     assert stream.display is False
+
+    console._conn.close()
+
+
+def test_poll_animated_stream_status_memory_compactor_placeholder(tmp_path: Path) -> None:
+    """Pre-orchestrator compaction streams before the worker run_event; no transcript in the log."""
+    db_path = tmp_path / "runtime.db"
+    cfg = _cfg(tmp_path)
+    console = ResearchConsole(db_path, cfg)
+    conn = console._conn
+    db.get_system_state(conn)
+    db.set_control_mode(conn, "active")
+    db.append_stream_chunk(conn, 2, "memory_compactor", "chunk")
+    conn.commit()
+
+    class AliveScheduler:
+        def is_alive(self) -> bool:
+            return True
+
+    class FakeStatic:
+        def __init__(self) -> None:
+            self.display = True
+            self.last = None
+
+        def update(self, value) -> None:
+            self.last = value
+
+    stream = FakeStatic()
+
+    def fake_query(sel: str, *args, **kwargs):
+        if sel == "#stream-text":
+            return stream
+        return _console_query_stub([])(sel, *args, **kwargs)
+
+    console.query_one = fake_query  # type: ignore[method-assign]
+    console._scheduler = AliveScheduler()
+    console._orchestrating = True
+    console._orchestrating_tick = 0
+
+    console._poll_animated_stream_status()
+
+    assert stream.last is not None
+    inner = stream.last.renderable
+    assert "Compressing Memory" in inner.plain
+
+    db.append_run_event(
+        conn,
+        cycle=2,
+        kind="worker",
+        worker="memory_compactor",
+        roadmap_step="",
+        task="t",
+        summary="done",
+        payload={"worker_ok": True},
+    )
+    conn.commit()
+    console._orchestrating_tick = 0
+    console._poll_run_events()
+    console._poll_animated_stream_status()
+
+    inner2 = stream.last.renderable
+    assert "Orchestrating" in inner2.plain
+    assert "Compressing Memory" not in inner2.plain
+
+    console._conn.close()
+
+
+def test_poll_animated_stream_status_keeps_animating_while_scheduler_start_is_pending(tmp_path: Path) -> None:
+    db_path = tmp_path / "runtime.db"
+    cfg = _cfg(tmp_path)
+    console = ResearchConsole(db_path, cfg)
+
+    class FakeStatic:
+        def __init__(self) -> None:
+            self.display = True
+            self.last = None
+
+        def update(self, value) -> None:
+            self.last = value
+
+    stream = FakeStatic()
+
+    def fake_query(sel: str, *args, **kwargs):
+        if sel == "#stream-text":
+            return stream
+        return _console_query_stub([])(sel, *args, **kwargs)
+
+    console.query_one = fake_query  # type: ignore[method-assign]
+    console._scheduler_start_pending = True
+    console._orchestrating_tick = 0
+
+    console._poll_animated_stream_status()
+
+    assert stream.last is not None
+    inner = stream.last.renderable
+    assert "Orchestrating" in inner.plain
 
     console._conn.close()
