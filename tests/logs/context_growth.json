@@ -2,141 +2,141 @@
   "cycles": [
     {
       "cycle": 0,
-      "ctx_len": 3181,
-      "pkt_len": 2637,
+      "ctx_len": 3109,
+      "pkt_len": 2565,
       "roadmap_len": 95,
       "summary_len": 1150
     },
     {
       "cycle": 1,
-      "ctx_len": 3203,
-      "pkt_len": 2659,
+      "ctx_len": 3131,
+      "pkt_len": 2587,
       "roadmap_len": 117,
       "summary_len": 1150
     },
     {
       "cycle": 2,
-      "ctx_len": 3225,
-      "pkt_len": 2681,
+      "ctx_len": 3153,
+      "pkt_len": 2609,
       "roadmap_len": 139,
       "summary_len": 1150
     },
     {
       "cycle": 3,
-      "ctx_len": 3247,
-      "pkt_len": 2703,
+      "ctx_len": 3175,
+      "pkt_len": 2631,
       "roadmap_len": 161,
       "summary_len": 1150
     },
     {
       "cycle": 4,
-      "ctx_len": 3269,
-      "pkt_len": 2725,
+      "ctx_len": 3197,
+      "pkt_len": 2653,
       "roadmap_len": 183,
       "summary_len": 1150
     },
     {
       "cycle": 5,
-      "ctx_len": 3291,
-      "pkt_len": 2747,
+      "ctx_len": 3219,
+      "pkt_len": 2675,
       "roadmap_len": 205,
       "summary_len": 1150
     },
     {
       "cycle": 6,
-      "ctx_len": 3313,
-      "pkt_len": 2769,
+      "ctx_len": 3241,
+      "pkt_len": 2697,
       "roadmap_len": 227,
       "summary_len": 1150
     },
     {
       "cycle": 7,
-      "ctx_len": 3335,
-      "pkt_len": 2791,
+      "ctx_len": 3263,
+      "pkt_len": 2719,
       "roadmap_len": 249,
       "summary_len": 1150
     },
     {
       "cycle": 8,
-      "ctx_len": 3357,
-      "pkt_len": 2813,
+      "ctx_len": 3285,
+      "pkt_len": 2741,
       "roadmap_len": 271,
       "summary_len": 1150
     },
     {
       "cycle": 9,
-      "ctx_len": 3379,
-      "pkt_len": 2835,
+      "ctx_len": 3307,
+      "pkt_len": 2763,
       "roadmap_len": 293,
       "summary_len": 1150
     },
     {
       "cycle": 10,
-      "ctx_len": 3553,
-      "pkt_len": 2909,
+      "ctx_len": 3481,
+      "pkt_len": 2837,
       "roadmap_len": 317,
       "summary_len": 1200
     },
     {
       "cycle": 11,
-      "ctx_len": 3577,
-      "pkt_len": 2933,
+      "ctx_len": 3505,
+      "pkt_len": 2861,
       "roadmap_len": 341,
       "summary_len": 1200
     },
     {
       "cycle": 12,
-      "ctx_len": 3601,
-      "pkt_len": 2957,
+      "ctx_len": 3529,
+      "pkt_len": 2885,
       "roadmap_len": 365,
       "summary_len": 1200
     },
     {
       "cycle": 13,
-      "ctx_len": 3625,
-      "pkt_len": 2981,
+      "ctx_len": 3553,
+      "pkt_len": 2909,
       "roadmap_len": 389,
       "summary_len": 1200
     },
     {
       "cycle": 14,
-      "ctx_len": 3649,
-      "pkt_len": 3005,
+      "ctx_len": 3577,
+      "pkt_len": 2933,
       "roadmap_len": 413,
       "summary_len": 1200
     },
     {
       "cycle": 15,
-      "ctx_len": 3673,
-      "pkt_len": 3029,
+      "ctx_len": 3601,
+      "pkt_len": 2957,
       "roadmap_len": 437,
       "summary_len": 1200
     },
     {
       "cycle": 16,
-      "ctx_len": 3697,
-      "pkt_len": 3053,
+      "ctx_len": 3625,
+      "pkt_len": 2981,
       "roadmap_len": 461,
       "summary_len": 1200
     },
     {
       "cycle": 17,
-      "ctx_len": 3721,
-      "pkt_len": 3077,
+      "ctx_len": 3649,
+      "pkt_len": 3005,
       "roadmap_len": 485,
       "summary_len": 1200
     },
     {
       "cycle": 18,
-      "ctx_len": 3745,
-      "pkt_len": 3101,
+      "ctx_len": 3673,
+      "pkt_len": 3029,
       "roadmap_len": 509,
       "summary_len": 1200
     },
     {
       "cycle": 19,
-      "ctx_len": 3769,
-      "pkt_len": 3125,
+      "ctx_len": 3697,
+      "pkt_len": 3053,
       "roadmap_len": 533,
       "summary_len": 1200
     }

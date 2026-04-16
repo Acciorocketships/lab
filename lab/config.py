@@ -40,13 +40,8 @@ class RunConfig:
     oauth_token_path: Path | None = None
     oauth_extra_authorize_params: dict[str, str] = field(default_factory=dict)
     openrouter_api_key: str | None = None
-    # Context limits are optional. ``None`` means "do not truncate in app code";
-    # the upstream model/provider is then responsible for enforcing its own limit.
-    orchestrator_input_max_chars: int | None = None
-    orchestrator_prev_summary_max_chars: int | None = None
-    orchestrator_last_worker_max_chars: int | None = None
-    orchestrator_tier_file_max_chars: int | None = None
-    orchestrator_branch_memory_max_chars: int | None = None
+    # Optional cap on the assembled worker/async-agent packet; ``None`` means no whole-packet
+    # trim. Tier A size is managed on disk by the pre-orchestrator memory compactor.
     worker_packet_max_chars: int | None = None
     # Graph-worker (run_events kind = worker) rows rendered into .lab/state/system.md ## Recent activity
     # (newest-first fetch, reversed to oldest-first in the file; orchestrator and async /agent omitted).

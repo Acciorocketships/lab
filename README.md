@@ -100,15 +100,15 @@ Shared rules for what each Tier A file means, who may edit it, and how `user_ins
 
 ### Orchestrator context
 
-Each cycle, `format_orchestrator_context()` in `lab/memory.py` builds the routing prompt: previous `context_summary`, last worker result summary, Tier A bodies (except the `context_summary.md` file entry, which is supplied separately as the “previous summary” block), and optional **branch memory**. The orchestrator returns structured JSON (`worker`, `task`, `reason`, `context_summary`, etc.); a fresh `**context_summary`** is written to disk when provided.
+Each cycle, **before** the routing LLM runs, `lab/workflows/research_graph.py` performs **pre-orchestrator Tier A management**: if any non-system Tier A file is larger than its saved line (default 40k characters, or `min(40_000, last_size)` from the prior cycle), the internal `memory_compactor` worker runs once to shrink files on disk. Then `format_orchestrator_context()` in `lab/memory.py` builds the routing prompt from that state (previous `context_summary`, last worker summary, full Tier A bodies except `context_summary.md`—which is represented by the previous-summary block rather than the raw file—plus optional **branch memory**). There is **no** mechanical middle-truncation of Tier A inside prompts. The orchestrator returns structured JSON (`worker`, `task`, `reason`, `context_summary`, etc.); a fresh `**context_summary`** is written to disk when provided.
 
 ### Worker packets
 
-`lab/packets.build_worker_packet()` assembles markdown for the CLI worker: **objective**, **rolling context summary** (from `context_summary.md`), conduct hints for long-running commands, **Tier A** sections (again skipping the raw `context_summary.md` file chunk—summary is already in its own section), optional **branch memory**, then optional role-specific sections from `lab/workflows/research_graph.py`. If `worker_packet_max_chars` is set on `RunConfig`, the packet is head/tail truncated with a marker.
+`lab/packets.build_worker_packet()` assembles markdown for the CLI worker: **objective**, **rolling context summary** (from `context_summary.md`), conduct hints for long-running commands, **Tier A** sections (verbatim from disk; again skipping the raw `context_summary.md` file chunk in the Tier A list), optional **branch memory**, then optional role-specific sections from `lab/workflows/research_graph.py`. If `worker_packet_max_chars` is set on `RunConfig`, the **whole** assembled packet is head/tail truncated with a marker.
 
 ### Context size and limits
 
-By default the app does **not** clip orchestrator input or worker packets in Python; the full assembled text is sent and the **model/provider** enforces its window (you get an error instead of silent truncation). To cap sizes, set optional fields on `RunConfig` such as `orchestrator_input_max_chars`, `orchestrator_prev_summary_max_chars`, `orchestrator_last_worker_max_chars`, `orchestrator_tier_file_max_chars`, `orchestrator_branch_memory_max_chars`, `worker_packet_max_chars`, and `system_recent_run_events_limit` (how many recent graph-worker events feed the **Recent activity** section in `system.md`).
+Optional `RunConfig.worker_packet_max_chars` caps the **assembled worker/async-agent packet** with a head/tail trim. `system_recent_run_events_limit` controls how many recent graph-worker events feed the **Recent activity** section in `system.md`. Tier A growth is handled by the **pre-orchestrator** `memory_compactor` pass (40k default trigger; per-file persisted lines in `pre_orchestrator_compact_state.json`) and optional whole-packet caps above—not by silently clipping individual Tier A files inside the routing or worker prompts.
 
 ## Layout
 

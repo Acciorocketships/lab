@@ -5,7 +5,13 @@ import signal
 from pathlib import Path
 
 from lab.config import RunConfig
-from lab.loop import SchedulerProcessHandle, spawn_agent_run, spawn_scheduler
+from lab.loop import (
+    SchedulerProcessHandle,
+    _deserialize_run_config,
+    _serialize_run_config,
+    spawn_agent_run,
+    spawn_scheduler,
+)
 
 
 def _cfg(tmp_path: Path) -> RunConfig:
@@ -108,6 +114,17 @@ def test_spawn_agent_run_writes_logs_under_logs_subdir(monkeypatch, tmp_path: Pa
     assert Path(stdout_fh.name) == cfg.researcher_root / "logs" / "agent_7.log"
     handle.terminate()
     handle.join(timeout=1)
+
+
+def test_deserialize_run_config_ignores_legacy_keys(tmp_path: Path) -> None:
+    """Persisted scheduler payloads may list removed RunConfig fields; strip unknown keys."""
+    cfg = _cfg(tmp_path)
+    data = json.loads(_serialize_run_config(cfg))
+    data["orchestrator_input_max_chars"] = 12_000
+    data["worker_packet_max_chars"] = 5000
+    restored = _deserialize_run_config(json.dumps(data))
+    assert restored.worker_packet_max_chars == 5000
+    assert restored.researcher_root == cfg.researcher_root
 
 
 def test_kill_group_can_skip_wait(monkeypatch) -> None:

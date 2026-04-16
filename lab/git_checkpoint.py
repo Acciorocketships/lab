@@ -328,6 +328,19 @@ def has_worktree_changes_since(project_dir: Path, treeish: str) -> bool:
     return untracked.returncode == 0 and bool(untracked.stdout.strip())
 
 
+def worktree_matches_checkpoint_tip(project_dir: Path) -> bool:
+    """True when the working tree (tracked + untracked) matches tip ``checkpoints``.
+
+    Used to skip ``read-tree`` / ``checkout-index`` / ``clean`` when exiting or
+    stopping with no in-flight cycle and no local edits since the last snapshot.
+    """
+    if not has_checkpoint(project_dir):
+        return False
+    return not has_worktree_changes_since(
+        project_dir, f"refs/heads/{CHECKPOINT_BRANCH}",
+    )
+
+
 def cherry_pick_no_commit(project_dir: Path, commit_sha: str) -> bool:
     """Apply *commit_sha* onto the current working tree without creating a commit."""
     result = subprocess.run(

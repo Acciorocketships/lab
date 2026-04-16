@@ -34,3 +34,6 @@ where = ["."]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "real_memory_compactor: calls real Cursor/Claude CLI; requires LAB_RUN_REAL_MEMORY_COMPACTOR=1",
+]

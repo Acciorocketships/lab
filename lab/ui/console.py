@@ -10,6 +10,7 @@ import sqlite3
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from rich.markup import escape as rich_escape
@@ -30,6 +31,7 @@ if TYPE_CHECKING:
 
 _FORCED_AGENT_KILL_WAIT_TIMEOUT = 0.2
 _FORCED_AGENT_DB_TIMEOUT = 0.2
+_FORCED_SCHEDULER_KILL_WAIT_TIMEOUT = 0.1
 
 @dataclass
 class _RedoSnapshot:
@@ -126,9 +128,10 @@ Screen {
     dock: bottom;
     layout: horizontal;
     width: 100%;
-    height: 3;
+    height: auto;
     max-height: 14;
     min-height: 3;
+    align: left top;
     margin: 1 0 0 0;
     padding: 0 1;
     border: round $accent;
@@ -147,7 +150,7 @@ Screen {
     width: 1fr;
     min-width: 0;
     max-width: 100%;
-    height: 1;
+    min-height: 1;
     border: none;
     background: transparent;
     color: $text;
@@ -194,6 +197,16 @@ Screen {
     min-width: 0;
 }
 """
+
+
+class ActivityScroll(VerticalScroll):
+    """Activity log scroller that notifies the app when the user nears the top."""
+
+    def watch_scroll_y(self, old_value: float, new_value: float) -> None:
+        super().watch_scroll_y(old_value, new_value)
+        handler = getattr(self.app, "_on_activity_scroll_y", None)
+        if handler is not None:
+            handler(new_value)
 
 
 class ResearchConsole(App[None]):
@@ -247,6 +260,10 @@ class ResearchConsole(App[None]):
         self._agent_processes: dict[int, SchedulerProcessHandle] = {}
         self._agent_sections: dict[int, _AgentSectionState] = {}
         self._last_agent_stream_id = 0
+        # Lazy history: prefix timeline items (oldest first) not yet mounted; anchor = insert-before target.
+        self._history_lazy_prefix: list[tuple[float, str, object]] | None = None
+        self._history_lazy_anchor: Static | None = None
+        self._history_lazy_loading = False
 
     def _cycle_header_cursor_model(self) -> str | None:
         """Cursor CLI ``--model`` value for cycle headers (only when workers use Cursor)."""
@@ -257,14 +274,16 @@ class ResearchConsole(App[None]):
 
     def compose(self) -> ComposeResult:
         yield Static("", id="header")
-        with VerticalScroll(id="activity-scroll"):
+        with ActivityScroll(id="activity-scroll"):
             yield Static("", id="stream-text")
         with Container(id="prompt-box"):
             yield Static("❯", id="prompt-indicator")
             yield PromptTextArea(
                 "",
                 id="prompt",
-                placeholder="Type here · Enter to send · Shift+Enter for new line",
+                placeholder=(
+                    "Type here · Enter to send · Shift+Enter or Ctrl+Enter for new line"
+                ),
                 compact=True,
                 show_line_numbers=False,
             )
@@ -272,10 +291,29 @@ class ResearchConsole(App[None]):
     def on_mount(self) -> None:
         self._cleanup_orphaned_cycles()
         self._refresh_header()
-        self.query_one("#stream-text", Static).display = False
-        self._rebuild_activity_from_db()
-        self.query_one("#prompt", PromptTextArea).focus()
+        stream = self.query_one("#stream-text", Static)
+        stream.display = False
+        scroll = self.query_one("#activity-scroll", ActivityScroll)
+        scroll.mount(
+            Static("  [dim]Loading session…[/]", classes="activity-line", id="session-loading"),
+            before=stream,
+        )
+        self.set_timer(0, self._complete_initial_activity_rebuild)
         self.set_interval(0.3, self._poll)
+
+    def _complete_initial_activity_rebuild(self) -> None:
+        """Run after first paint so the terminal shows a loading line instead of blocking on_mount.
+
+        ``_rebuild_activity_from_db(load_full_history=False)`` keeps older cycles on disk
+        until the user scrolls toward the top of the activity log.
+        """
+        try:
+            self._rebuild_activity_from_db(load_full_history=False)
+        finally:
+            try:
+                self.query_one("#prompt", PromptTextArea).focus()
+            except Exception:
+                pass
 
     # --- activity helpers -----------------------------------------------------
 
@@ -291,7 +329,6 @@ class ResearchConsole(App[None]):
             w = Static(markup, classes="activity-line")
             scroll.mount(w, before=stream)
             self._welcome_widgets.append(w)
-        self.call_after_refresh(lambda: scroll.scroll_end(animate=False))
 
     def _remove_welcome_intro(self) -> None:
         """Drop the initial welcome lines after the user sends any input."""
@@ -348,8 +385,27 @@ class ResearchConsole(App[None]):
             except Exception:
                 pass
 
-    def _rebuild_activity_from_db(self) -> None:
-        """Re-render completed cycles from DB so undo/redo immediately refresh the UI."""
+    # Number of newest timeline entries to mount before yielding to the event loop.
+    _REBUILD_FIRST_BATCH = 3
+
+    # Lazy history (``load_full_history=False`` on first paint): last N graph cycles,
+    # then load older chunks when the user scrolls toward the top.
+    _ACTIVITY_INITIAL_CYCLES = 5
+    _ACTIVITY_SCROLL_BATCH_CYCLES = 5
+    _ACTIVITY_SCROLL_TOP_THRESHOLD = 4.0
+
+    def _rebuild_activity_from_db(self, *, load_full_history: bool = True) -> None:
+        """Re-render completed cycles from DB so undo/redo immediately refresh the UI.
+
+        With ``load_full_history=True`` (undo/redo), the full timeline is rebuilt using
+        the existing timer-chained batches.  With ``load_full_history=False`` (initial
+        session paint), only the last ``_ACTIVITY_INITIAL_CYCLES`` worker cycles are
+        mounted; older entries load when the activity scroller nears the top.
+        """
+        self._cancel_pending_rebuild_chain()
+        self._history_lazy_prefix = None
+        self._history_lazy_anchor = None
+        self._history_lazy_loading = False
         self._clear_activity_log()
         self._current_cycle_widgets = []
         self._cycle_header_widget = None
@@ -363,6 +419,260 @@ class ResearchConsole(App[None]):
         self._last_orchestrator_task = ""
         self._agent_sections = {}
 
+        if not load_full_history:
+            self._rebuild_activity_lazy_initial()
+            return
+
+        timeline, by_cycle, stream_excerpt_by_cycle, active_agents = self._load_rebuild_data()
+
+        if timeline is None:
+            self._write_welcome_lines()
+            self._scroll_to_bottom()
+            return
+
+        # Mount active agents first (always shown, lightweight).
+        self._mount_active_agents(active_agents or [])
+
+        # Mount the newest few timeline entries synchronously so the first paint
+        # shows recent activity at the bottom of the scroll.  Mount in
+        # chronological order (oldest of batch first) so that each successive
+        # ``before=stream`` insert puts the newer item closest to stream, yielding
+        # correct chronological order with newest at the bottom.
+        reversed_tl = list(reversed(timeline))
+        first_batch = reversed_tl[: self._REBUILD_FIRST_BATCH]
+        remaining = reversed_tl[self._REBUILD_FIRST_BATCH :]
+
+        self._mount_before = None  # insert before stream (default)
+        for item in reversed(first_batch):  # chronological: oldest of batch first
+            self._mount_timeline_item(item, by_cycle, stream_excerpt_by_cycle)
+
+        self._sync_rebuild_ids_from_db()
+        self._scroll_to_bottom()
+
+        # Schedule remaining (older) items in batches via timers so Textual can
+        # paint between each batch.  They insert *above* the first-batch items
+        # by setting ``_mount_before`` to the topmost widget from the first batch.
+        if remaining:
+            first_batch_top = self._find_topmost_activity_widget()
+            self._schedule_rebuild_chain(
+                remaining, by_cycle, stream_excerpt_by_cycle,
+                anchor=first_batch_top,
+            )
+
+    @staticmethod
+    def _by_cycle_from_run_event_rows(rows: list[sqlite3.Row]) -> dict[int, dict[str, sqlite3.Row]]:
+        by_cycle: dict[int, dict[str, sqlite3.Row]] = {}
+        for row in rows:
+            bucket = by_cycle.setdefault(int(row["cycle"]), {})
+            bucket[str(row["kind"])] = row
+        return by_cycle
+
+    def _normalize_agent_runs(self, agent_rows: list[sqlite3.Row]) -> list[sqlite3.Row]:
+        normalized: list[sqlite3.Row] = []
+        for row in agent_rows:
+            if str(row["status"] or "") == "running":
+                pid = int(row["pid"]) if row["pid"] is not None else None
+                if not self._pid_is_alive(pid):
+                    fixed = self._finalize_stale_agent_run(
+                        int(row["id"]),
+                        "agent was left marked running, but no live process exists",
+                    )
+                    if fixed is not None:
+                        normalized.append(fixed)
+                        continue
+            normalized.append(row)
+        return normalized
+
+    @staticmethod
+    def _split_timeline_tail_last_n_cycles(
+        timeline: list[tuple[float, str, object]], n_cycles: int,
+    ) -> tuple[list[tuple[float, str, object]], list[tuple[float, str, object]]]:
+        """Oldest-first *prefix*, chronological *tail* with the last ``n_cycles`` worker cycles."""
+        if not timeline:
+            return [], []
+        if n_cycles <= 0:
+            return [], list(timeline)
+        collected_rev: list[tuple[float, str, object]] = []
+        seen = 0
+        for i in range(len(timeline) - 1, -1, -1):
+            item = timeline[i]
+            collected_rev.append(item)
+            if item[1] == "cycle":
+                seen += 1
+                if seen >= n_cycles:
+                    tail = list(reversed(collected_rev))
+                    prefix = timeline[:i]
+                    return prefix, tail
+        return [], list(reversed(collected_rev))
+
+    @staticmethod
+    def _oldest_prefix_chunk_n_cycles(
+        prefix: list[tuple[float, str, object]], n_cycles: int,
+    ) -> tuple[list[tuple[float, str, object]], list[tuple[float, str, object]]]:
+        """Take the oldest ``n_cycles`` worker cycles from *prefix* (oldest first), plus agents before that point."""
+        if not prefix or n_cycles <= 0:
+            return [], prefix
+        out: list[tuple[float, str, object]] = []
+        seen = 0
+        for i, item in enumerate(prefix):
+            out.append(item)
+            if item[1] == "cycle":
+                seen += 1
+                if seen >= n_cycles:
+                    return out, prefix[i + 1 :]
+        return out, []
+
+    def _run_events_full_rows_for_cycles(self, cycles: set[int]) -> list[sqlite3.Row]:
+        if not cycles:
+            return []
+        ordered = tuple(sorted(cycles))
+        placeholders = ",".join("?" * len(ordered))
+        sql = (
+            "SELECT cycle, ts, kind, worker, task, summary, payload_json FROM run_events "
+            f"WHERE cycle IN ({placeholders}) ORDER BY cycle ASC, id ASC"
+        )
+        try:
+            return list(self._conn.execute(sql, ordered))
+        except sqlite3.OperationalError:
+            return []
+
+    def _rebuild_activity_lazy_initial(self) -> None:
+        """Mount recent history only; leave older timeline rows in ``_history_lazy_prefix``."""
+        try:
+            index_rows = list(
+                self._conn.execute(
+                    "SELECT cycle, ts, kind FROM run_events WHERE kind IN ('orchestrator', 'worker') "
+                    "ORDER BY cycle ASC, id ASC"
+                )
+            )
+        except sqlite3.OperationalError:
+            index_rows = []
+        try:
+            raw_agents = db.list_agent_runs(self._conn)
+        except sqlite3.OperationalError:
+            raw_agents = []
+        agent_rows = self._normalize_agent_runs(raw_agents)
+
+        by_index = self._by_cycle_from_run_event_rows(index_rows)
+        cycle_sections: list[tuple[float, int]] = []
+        for cycle in sorted(by_index):
+            worker_row = by_index[cycle].get("worker")
+            if worker_row is None:
+                continue
+            orch_row = by_index[cycle].get("orchestrator")
+            sort_ts = float(orch_row["ts"]) if orch_row else float(worker_row["ts"])
+            cycle_sections.append((sort_ts, cycle))
+
+        completed_agents = [
+            row for row in agent_rows
+            if str(row["status"] or "") != "running" and row["finished_at"] is not None
+        ]
+        active_agents = [row for row in agent_rows if str(row["status"] or "") == "running"]
+
+        if not cycle_sections and not completed_agents and not active_agents:
+            self._write_welcome_lines()
+            self._scroll_to_bottom()
+            self._sync_rebuild_ids_from_db()
+            return
+
+        timeline: list[tuple[float, str, object]] = []
+        for sort_ts, cycle in cycle_sections:
+            timeline.append((sort_ts, "cycle", cycle))
+        for row in completed_agents:
+            timeline.append((float(row["finished_at"]), "agent", row))
+        timeline.sort(key=lambda item: (item[0], 0 if item[1] == "cycle" else 1))
+
+        prefix, tail = self._split_timeline_tail_last_n_cycles(timeline, self._ACTIVITY_INITIAL_CYCLES)
+
+        cycles_in_tail = {int(item[2]) for item in tail if item[1] == "cycle"}
+        heavy_rows = self._run_events_full_rows_for_cycles(cycles_in_tail)
+        by_cycle = self._by_cycle_from_run_event_rows(heavy_rows)
+        excerpts = self._bulk_fetch_last_stream_text_by_cycles(sorted(cycles_in_tail))
+
+        self._mount_active_agents(active_agents)
+        self._mount_before = None
+        for item in tail:
+            self._mount_timeline_item(item, by_cycle, excerpts)
+
+        self._sync_rebuild_ids_from_db()
+        self._scroll_to_bottom()
+
+        self._history_lazy_prefix = prefix if prefix else None
+        self._history_lazy_anchor = self._find_topmost_activity_widget() if prefix else None
+
+    def _on_activity_scroll_y(self, new_value: float) -> None:
+        if not self._history_lazy_prefix or self._history_lazy_loading:
+            return
+        try:
+            scroll = self.query_one("#activity-scroll", VerticalScroll)
+        except Exception:
+            return
+        if scroll.max_scroll_y <= 0:
+            return
+        if new_value > self._ACTIVITY_SCROLL_TOP_THRESHOLD:
+            return
+        self._history_lazy_loading = True
+        try:
+            self._load_older_history_scroll_chunk()
+        finally:
+            self._history_lazy_loading = False
+
+    def _load_older_history_scroll_chunk(self) -> None:
+        pref = self._history_lazy_prefix
+        if not pref:
+            return
+        chunk, rest = self._oldest_prefix_chunk_n_cycles(pref, self._ACTIVITY_SCROLL_BATCH_CYCLES)
+        if not chunk:
+            self._history_lazy_prefix = rest or None
+            return
+
+        cycles = {int(item[2]) for item in chunk if item[1] == "cycle"}
+        heavy_rows = self._run_events_full_rows_for_cycles(cycles)
+        by_cycle = self._by_cycle_from_run_event_rows(heavy_rows)
+        excerpts = self._bulk_fetch_last_stream_text_by_cycles(sorted(cycles))
+
+        try:
+            scroll = self.query_one("#activity-scroll", VerticalScroll)
+            old_max = scroll.max_scroll_y
+            old_y = scroll.scroll_y
+        except Exception:
+            old_max = 0.0
+            old_y = 0.0
+            scroll = None
+
+        self._mount_before = self._history_lazy_anchor
+        for item in chunk:
+            self._mount_timeline_item(item, by_cycle, excerpts)
+        self._mount_before = None
+
+        self._history_lazy_anchor = self._find_topmost_activity_widget()
+        self._history_lazy_prefix = rest if rest else None
+
+        if scroll is None:
+            return
+
+        def _restore_scroll_top() -> None:
+            try:
+                s = self.query_one("#activity-scroll", VerticalScroll)
+                delta = float(s.max_scroll_y) - float(old_max)
+                s.scroll_y = min(float(s.max_scroll_y), float(old_y) + delta)
+            except Exception:
+                pass
+
+        self.call_after_refresh(_restore_scroll_top)
+
+    def _load_rebuild_data(
+        self,
+    ) -> tuple[
+        list[tuple[float, str, object]] | None,
+        dict[int, dict[str, sqlite3.Row]],
+        dict[int, str],
+        list[sqlite3.Row],
+    ]:
+        """Query DB once and return (timeline, by_cycle, stream_excerpts, active_agents).
+
+        Returns ``(None, {}, {}, [])`` when there is nothing to show (welcome screen).
+        """
         try:
             rows = list(
                 self._conn.execute(
@@ -376,25 +686,9 @@ class ResearchConsole(App[None]):
             agent_rows = db.list_agent_runs(self._conn)
         except sqlite3.OperationalError:
             agent_rows = []
-        normalized_agent_rows: list[sqlite3.Row] = []
-        for row in agent_rows:
-            if str(row["status"] or "") == "running":
-                pid = int(row["pid"]) if row["pid"] is not None else None
-                if not self._pid_is_alive(pid):
-                    fixed = self._finalize_stale_agent_run(
-                        int(row["id"]),
-                        "agent was left marked running, but no live process exists",
-                    )
-                    if fixed is not None:
-                        normalized_agent_rows.append(fixed)
-                        continue
-            normalized_agent_rows.append(row)
-        agent_rows = normalized_agent_rows
+        agent_rows = self._normalize_agent_runs(agent_rows)
 
-        by_cycle: dict[int, dict[str, sqlite3.Row]] = {}
-        for row in rows:
-            bucket = by_cycle.setdefault(int(row["cycle"]), {})
-            bucket[str(row["kind"])] = row
+        by_cycle = self._by_cycle_from_run_event_rows(rows)
 
         cycle_sections: list[tuple[float, int]] = []
         for cycle in sorted(by_cycle):
@@ -411,8 +705,7 @@ class ResearchConsole(App[None]):
         active_agents = [row for row in agent_rows if str(row["status"] or "") == "running"]
 
         if not cycle_sections and not completed_agents and not active_agents:
-            self._write_welcome_lines()
-            return
+            return None, {}, {}, []
 
         timeline: list[tuple[float, str, object]] = []
         for sort_ts, cycle in cycle_sections:
@@ -421,58 +714,72 @@ class ResearchConsole(App[None]):
             timeline.append((float(row["finished_at"]), "agent", row))
         timeline.sort(key=lambda item: (item[0], 0 if item[1] == "cycle" else 1))
 
-        for _, kind, payload_item in timeline:
-            if kind == "agent":
-                self._create_agent_section(payload_item)  # type: ignore[arg-type]
-                continue
-            cycle = int(payload_item)
-            worker_row = by_cycle[cycle].get("worker")
-            if worker_row is None:
-                continue
-            orch_row = by_cycle[cycle].get("orchestrator")
-            payload: dict = {}
-            try:
-                payload = json.loads(worker_row["payload_json"]) if worker_row["payload_json"] else {}
-            except (json.JSONDecodeError, TypeError):
-                payload = {}
-            ok = payload.get("worker_ok", True)
-            start_ts = float(orch_row["ts"]) if orch_row else float(worker_row["ts"])
-            elapsed = max(0.0, float(worker_row["ts"]) - start_ts)
-            worker = worker_row["worker"]
-            task = (worker_row["task"] or "") or (orch_row["task"] if orch_row else "") or ""
-            header = self._mount_activity_widget(
-                events.format_cycle_header(
-                    cycle,
-                    worker,
-                    task,
-                    cursor_model=self._cycle_header_cursor_model(),
-                    elapsed_sec=elapsed,
-                    status="ok" if ok else "fail",
-                ),
-                classes="activity-line cycle-header",
+        cycle_numbers = [int(item[2]) for item in timeline if item[1] == "cycle"]
+        stream_excerpt_by_cycle = self._bulk_fetch_last_stream_text_by_cycles(cycle_numbers)
+
+        return timeline, by_cycle, stream_excerpt_by_cycle, active_agents
+
+    def _mount_timeline_item(
+        self,
+        item: tuple[float, str, object],
+        by_cycle: dict[int, dict[str, sqlite3.Row]],
+        stream_excerpt_by_cycle: dict[int, str],
+    ) -> None:
+        """Mount a single timeline entry (cycle or agent) into the activity scroll."""
+        _, kind, payload_item = item
+        if kind == "agent":
+            self._create_agent_section(payload_item)  # type: ignore[arg-type]
+            return
+        cycle = int(payload_item)
+        worker_row = by_cycle[cycle].get("worker")
+        if worker_row is None:
+            return
+        orch_row = by_cycle[cycle].get("orchestrator")
+        payload: dict = {}
+        try:
+            payload = json.loads(worker_row["payload_json"]) if worker_row["payload_json"] else {}
+        except (json.JSONDecodeError, TypeError):
+            payload = {}
+        ok = payload.get("worker_ok", True)
+        start_ts = float(orch_row["ts"]) if orch_row else float(worker_row["ts"])
+        elapsed = max(0.0, float(worker_row["ts"]) - start_ts)
+        worker = worker_row["worker"]
+        task = (worker_row["task"] or "") or (orch_row["task"] if orch_row else "") or ""
+        header = self._mount_activity_widget(
+            events.format_cycle_header(
+                cycle,
+                worker,
+                task,
+                cursor_model=self._cycle_header_cursor_model(),
+                elapsed_sec=elapsed,
+                status="ok" if ok else "fail",
+            ),
+            classes="activity-line cycle-header",
+        )
+        self._current_cycle_widgets.append(header)
+        task_w = self._write_task(task)
+        if task_w is not None:
+            self._current_cycle_widgets.append(task_w)
+        checklist = str(payload.get("immediate_plan_checklist", "") or "").strip()
+        checklist_w = self._write_checklist_box(checklist)
+        if checklist_w is not None:
+            self._current_cycle_widgets.append(checklist_w)
+
+        excerpt = events.extract_result_excerpt(stream_excerpt_by_cycle.get(cycle, ""))
+        if not excerpt:
+            excerpt = events.extract_result_excerpt(worker_row["summary"] or "")
+        if excerpt:
+            result_w = self._write_result_box(
+                excerpt,
+                title=f"[dim]{worker}[/] [dim]cycle {cycle}[/]",
             )
-            self._current_cycle_widgets.append(header)
-            task_w = self._write_task(task)
-            if task_w is not None:
-                self._current_cycle_widgets.append(task_w)
-            checklist = str(payload.get("immediate_plan_checklist", "") or "").strip()
-            checklist_w = self._write_checklist_box(checklist)
-            if checklist_w is not None:
-                self._current_cycle_widgets.append(checklist_w)
+            if result_w is not None:
+                self._current_cycle_widgets.append(result_w)
+        elif not ok:
+            self._write_activity("  [dim](failed — no excerpt)[/]")
 
-            excerpt = events.extract_result_excerpt(self._fetch_last_stream_text(cycle))
-            if not excerpt:
-                excerpt = events.extract_result_excerpt(worker_row["summary"] or "")
-            if excerpt:
-                result_w = self._write_result_box(
-                    excerpt,
-                    title=f"[dim]{worker}[/] [dim]cycle {cycle}[/]",
-                )
-                if result_w is not None:
-                    self._current_cycle_widgets.append(result_w)
-            elif not ok:
-                self._write_activity("  [dim](failed — no excerpt)[/]")
-
+    def _mount_active_agents(self, active_agents: list[sqlite3.Row]) -> None:
+        """Mount and replay stream for currently-running agent sections."""
         for row in sorted(active_agents, key=lambda item: (float(item["started_at"]), int(item["id"]))):
             agent = self._create_agent_section(row)
             try:
@@ -493,7 +800,13 @@ class ResearchConsole(App[None]):
             if latest_agent is not None:
                 self._scroll_widget_to_top(latest_agent.header_widget)
 
-        self._last_cycle = max(by_cycle) if by_cycle else 0
+    def _sync_rebuild_ids_from_db(self) -> None:
+        """After a rebuild, resync the high-water-mark IDs with the DB."""
+        try:
+            row = self._conn.execute("SELECT MAX(cycle) FROM run_events").fetchone()
+            self._last_cycle = int(row[0]) if row and row[0] is not None else 0
+        except sqlite3.OperationalError:
+            self._last_cycle = 0
         try:
             row = self._conn.execute("SELECT MAX(id) FROM run_events").fetchone()
             self._last_run_event_id = int(row[0]) if row and row[0] is not None else 0
@@ -509,7 +822,98 @@ class ResearchConsole(App[None]):
             self._last_agent_stream_id = int(row[0]) if row and row[0] is not None else 0
         except sqlite3.OperationalError:
             self._last_agent_stream_id = 0
-        self._scroll_to_bottom()
+
+    # --- chunked rebuild chain -----------------------------------------------
+
+    _REBUILD_BATCH_SIZE = 5
+
+    def _find_topmost_activity_widget(self) -> Static | None:
+        """Return the first non-stream child of ``#activity-scroll``, or *None*."""
+        try:
+            scroll = self.query_one("#activity-scroll", VerticalScroll)
+            stream = self.query_one("#stream-text", Static)
+            for child in scroll.children:
+                if child is not stream:
+                    return child  # type: ignore[return-value]
+        except Exception:
+            pass
+        return None
+
+    def _cancel_pending_rebuild_chain(self) -> None:
+        """Cancel any in-flight background rebuild timer chain."""
+        self._mount_before = None
+        timer = getattr(self, "_rebuild_chain_timer", None)
+        if timer is not None:
+            try:
+                timer.stop()
+            except Exception:
+                pass
+        self._rebuild_chain_timer = None
+        self._rebuild_chain_items = None
+
+    def _schedule_rebuild_chain(
+        self,
+        items: list[tuple[float, str, object]],
+        by_cycle: dict[int, dict[str, sqlite3.Row]],
+        stream_excerpt_by_cycle: dict[int, str],
+        *,
+        anchor: Static | None = None,
+    ) -> None:
+        """Start a timer chain that mounts *items* (newest→oldest) in batches.
+
+        *items* are still ordered newest-first.  Each batch is reversed internally
+        so that within a batch the oldest item is mounted first (``before=anchor``),
+        producing correct chronological order.
+
+        *anchor* is the widget that older items should be inserted before (i.e.
+        the topmost widget from the first batch).  When *None*, falls back to
+        ``#stream-text``.
+
+        Falls back to synchronous mounting when no asyncio event loop is running
+        (unit tests, or rebuilds triggered from non-async contexts like ``/undo``).
+        """
+        import asyncio
+
+        self._mount_before = anchor
+
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            for item in reversed(items):  # chronological: oldest first
+                self._mount_timeline_item(item, by_cycle, stream_excerpt_by_cycle)
+            self._mount_before = None
+            return
+
+        self._rebuild_chain_items = items
+        self._rebuild_chain_by_cycle = by_cycle
+        self._rebuild_chain_excerpts = stream_excerpt_by_cycle
+        self._rebuild_chain_offset = 0
+        self._rebuild_chain_timer = self.set_timer(0, self._rebuild_chain_tick)
+
+    def _rebuild_chain_tick(self) -> None:
+        """Mount one batch of older timeline items, then schedule the next tick.
+
+        Items arrive newest-first; each batch is reversed so the oldest item in
+        the batch mounts first (``before=anchor``), preserving chronological
+        order in the DOM.
+        """
+        items = getattr(self, "_rebuild_chain_items", None)
+        if items is None:
+            return
+        by_cycle = self._rebuild_chain_by_cycle
+        excerpts = self._rebuild_chain_excerpts
+        offset = self._rebuild_chain_offset
+        batch = items[offset : offset + self._REBUILD_BATCH_SIZE]
+        if not batch:
+            self._cancel_pending_rebuild_chain()
+            return
+        for item in reversed(batch):  # chronological within the batch
+            self._mount_timeline_item(item, by_cycle, excerpts)
+        self._rebuild_chain_offset = offset + len(batch)
+        if self._rebuild_chain_offset < len(items):
+            self._rebuild_chain_timer = self.set_timer(0, self._rebuild_chain_tick)
+        else:
+            self._cancel_pending_rebuild_chain()
 
     def _write_activity(self, markup: str, *, below_stream: bool = False) -> None:
         """Append a permanent line to the activity scroll area.
@@ -528,7 +932,6 @@ class ResearchConsole(App[None]):
         stream = self.query_one("#stream-text", Static)
         line = Static(markup, classes="activity-line")
         scroll.mount(line, before=stream)
-        self.call_after_refresh(lambda: scroll.scroll_end(animate=False))
 
     def _write_below_stream_box(self, markup: str, *, title: str = "") -> Static | None:
         """Append boxed slash-command output under the live stream panel."""
@@ -542,7 +945,6 @@ class ResearchConsole(App[None]):
             expand=True,
         )
         scroll.mount(widget, after=stream)
-        self.call_after_refresh(lambda: scroll.scroll_end(animate=False))
         return widget
 
     def _write_below_stream_renderable(
@@ -553,7 +955,6 @@ class ResearchConsole(App[None]):
         stream = self.query_one("#stream-text", Static)
         widget = Static(renderable, classes=classes, expand=True)
         scroll.mount(widget, after=stream)
-        self.call_after_refresh(lambda: scroll.scroll_end(animate=False))
         return widget
 
     def _dismiss_checkpoint_notice(self) -> None:
@@ -576,17 +977,26 @@ class ResearchConsole(App[None]):
         notice = Static(markup, classes="activity-line")
         self._checkpoint_notice_widget = notice
         scroll.mount(notice, after=stream)
-        self.call_after_refresh(lambda: scroll.scroll_end(animate=False))
+
+    # When set, ``_mount_activity_widget`` and friends insert *before* this
+    # widget instead of before ``#stream-text``.  Used by the chunked rebuild
+    # chain to prepend older history above the already-visible newest batch.
+    _mount_before: Static | None = None
+
+    def _mount_anchor(self) -> Static:
+        """Return the widget that new activity lines should be inserted before."""
+        if self._mount_before is not None:
+            return self._mount_before
+        return self.query_one("#stream-text", Static)
 
     def _write_task(self, task: str) -> Static | None:
         """Append a styled task-prompt block to the activity scroll area."""
         if not task.strip():
             return None
         scroll = self.query_one("#activity-scroll", VerticalScroll)
-        stream = self.query_one("#stream-text", Static)
+        anchor = self._mount_anchor()
         w = Static(task, classes="task-prompt")
-        scroll.mount(w, before=stream)
-        self.call_after_refresh(lambda: scroll.scroll_end(animate=False))
+        scroll.mount(w, before=anchor)
         return w
 
     def _mount_activity_widget(
@@ -594,10 +1004,9 @@ class ResearchConsole(App[None]):
     ) -> Static:
         """Append a line and return the widget so it can be updated later."""
         scroll = self.query_one("#activity-scroll", VerticalScroll)
-        stream = self.query_one("#stream-text", Static)
+        anchor = self._mount_anchor()
         w = Static(markup, classes=classes)
-        scroll.mount(w, before=stream)
-        self.call_after_refresh(lambda: scroll.scroll_end(animate=False))
+        scroll.mount(w, before=anchor)
         return w
 
     def _orchestrator_ts_for_cycle(self, cycle: int) -> float | None:
@@ -617,11 +1026,10 @@ class ResearchConsole(App[None]):
         if not text.strip():
             return None
         scroll = self.query_one("#activity-scroll", VerticalScroll)
-        stream = self.query_one("#stream-text", Static)
+        anchor = self._mount_anchor()
         rendered = events.wrap_result_renderable(events.render_markdown(text), title=title)
         w = Static(rendered, classes="result-box", expand=True)
-        scroll.mount(w, before=stream)
-        self.call_after_refresh(lambda: scroll.scroll_end(animate=False))
+        scroll.mount(w, before=anchor)
         return w
 
     def _write_checklist_box(self, text: str) -> Static | None:
@@ -629,11 +1037,10 @@ class ResearchConsole(App[None]):
         if not text.strip():
             return None
         scroll = self.query_one("#activity-scroll", VerticalScroll)
-        stream = self.query_one("#stream-text", Static)
+        anchor = self._mount_anchor()
         rendered = events.wrap_result_renderable(events.render_markdown(text))
         w = Static(rendered, classes="checklist-box", expand=True)
-        scroll.mount(w, before=stream)
-        self.call_after_refresh(lambda: scroll.scroll_end(animate=False))
+        scroll.mount(w, before=anchor)
         return w
 
     def _render_agent_stream_panel(self, agent: _AgentSectionState) -> None:
@@ -773,7 +1180,7 @@ class ResearchConsole(App[None]):
             except Exception:
                 pass
 
-    def _reposition_active_agent_sections(self, *, scroll: bool = False) -> None:
+    def _reposition_active_agent_sections(self) -> None:
         # Keep the current cycle's widgets together even after the worker has
         # finished, because the header widget is cleared on completion before the
         # final result box is appended.
@@ -785,8 +1192,6 @@ class ResearchConsole(App[None]):
         )
         for agent in running:
             self._move_widgets_before_stream(agent.widgets)
-        if scroll and (running or self._cycle_header_widget is not None):
-            self._scroll_to_bottom()
 
     def _has_active_agent_sections(self) -> bool:
         return any(agent.is_running for agent in self._agent_sections.values())
@@ -1010,6 +1415,71 @@ class ResearchConsole(App[None]):
         """Single-line animated status (Running… / Orchestrating…), not the message log."""
         self._render_cycle_stream_panel(markup)
 
+    @staticmethod
+    def _chunks_newest_first_to_stream_text(chunks: Sequence[str]) -> str:
+        """Decode stream-json chunks (newest first, at most 200) into assistant text."""
+        for raw in chunks:
+            s = (raw or "").strip()
+            if not s:
+                continue
+            try:
+                data = json.loads(s)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                continue
+            if isinstance(data, dict) and data.get("type") == "result":
+                result_text = data.get("result", "")
+                if isinstance(result_text, str) and result_text.strip():
+                    return result_text.strip()
+        for raw in chunks:
+            parsed = events.parse_stream_event(raw, full_text=True)
+            if parsed and parsed[0] == "text" and parsed[1].strip():
+                return parsed[1].strip()
+        return ""
+
+    def _bulk_fetch_last_stream_text_by_cycles(self, cycles: list[int]) -> dict[int, str]:
+        """One pass over ``worker_stream`` for all *cycles* (avoids N per-cycle queries on rebuild)."""
+        unique = sorted({int(c) for c in cycles})
+        if not unique:
+            return {}
+        out: dict[int, str] = {}
+        chunk_size = 400
+        for off in range(0, len(unique), chunk_size):
+            batch = unique[off : off + chunk_size]
+            ph = ",".join("?" * len(batch))
+            sql = (
+                "WITH ranked AS ("
+                " SELECT cycle, chunk,"
+                " ROW_NUMBER() OVER (PARTITION BY cycle ORDER BY id DESC) AS rn"
+                " FROM worker_stream WHERE cycle IN ("
+                + ph
+                + ") ) SELECT cycle, chunk FROM ranked WHERE rn <= 200 "
+                "ORDER BY cycle ASC, rn ASC"
+            )
+            try:
+                cur = self._conn.execute(sql, batch)
+            except sqlite3.OperationalError:
+                for c in batch:
+                    out[c] = self._fetch_last_stream_text(c)
+                continue
+            current: int | None = None
+            buf: list[str] = []
+            for row in cur:
+                c = int(row["cycle"])
+                ch = str(row["chunk"] or "")
+                if current is None:
+                    current = c
+                    buf = [ch]
+                    continue
+                if c == current:
+                    buf.append(ch)
+                else:
+                    out[current] = self._chunks_newest_first_to_stream_text(buf)
+                    current = c
+                    buf = [ch]
+            if current is not None:
+                out[current] = self._chunks_newest_first_to_stream_text(buf)
+        return out
+
     def _fetch_last_stream_text(self, cycle: int) -> str:
         """Retrieve the full text output from worker_stream for a completed cycle.
 
@@ -1018,35 +1488,22 @@ class ResearchConsole(App[None]):
         last individual text chunk when no result event is available.
         """
         try:
-            rows = list(self._conn.execute(
-                "SELECT chunk FROM worker_stream WHERE cycle = ? ORDER BY id DESC LIMIT 200",
-                (cycle,),
-            ))
+            rows = list(
+                self._conn.execute(
+                    "SELECT chunk FROM worker_stream WHERE cycle = ? ORDER BY id DESC LIMIT 200",
+                    (cycle,),
+                )
+            )
         except sqlite3.OperationalError:
             return ""
-
-        for row in rows:
-            raw = row["chunk"].strip()
-            if not raw:
-                continue
-            try:
-                data = json.loads(raw)
-            except (json.JSONDecodeError, TypeError, ValueError):
-                continue
-            if isinstance(data, dict) and data.get("type") == "result":
-                result_text = data.get("result", "")
-                if isinstance(result_text, str) and result_text.strip():
-                    return result_text.strip()
-
-        for row in rows:
-            parsed = events.parse_stream_event(row["chunk"], full_text=True)
-            if parsed and parsed[0] == "text" and parsed[1].strip():
-                return parsed[1].strip()
-        return ""
+        return self._chunks_newest_first_to_stream_text(
+            [str(r["chunk"] or "") for r in rows]
+        )
 
     def _scroll_to_bottom(self) -> None:
         scroll = self.query_one("#activity-scroll", VerticalScroll)
         self.call_after_refresh(lambda: scroll.scroll_end(animate=False))
+
 
     def _activity_viewport_at_bottom(self) -> bool:
         """True when the activity scroller is pinned to the end (same idea as Rich Log auto-scroll)."""
@@ -1647,14 +2104,14 @@ class ResearchConsole(App[None]):
 
         if instruction_text:
             db.enqueue_event(self._conn, "instruction", instruction_text)
-            preview = instruction_text if len(instruction_text) <= 200 else instruction_text[:200] + "…"
-            self._write_activity(f"  [green]❯[/] {rich_escape(preview)}", below_stream=True)
+            self._write_activity(
+                f"  [green]❯[/] {rich_escape(instruction_text)}", below_stream=True
+            )
 
         if not first.startswith("/"):
             db.enqueue_event(self._conn, "instruction", text)
             self._conn.commit()
-            preview = text if len(text) <= 200 else text[:200] + "…"
-            self._write_activity(f"  [green]❯[/] {rich_escape(preview)}", below_stream=True)
+            self._write_activity(f"  [green]❯[/] {rich_escape(text)}", below_stream=True)
             return
 
         parts = first.split(maxsplit=1)
@@ -1668,8 +2125,7 @@ class ResearchConsole(App[None]):
                 return
             db.enqueue_event(self._conn, "instruction", body)
             self._conn.commit()
-            preview = body if len(body) <= 200 else body[:200] + "…"
-            self._write_below_stream_box(f"  [green]❯[/] {rich_escape(preview)}")
+            self._write_below_stream_box(f"  [green]❯[/] {rich_escape(body)}")
             return
 
         if tail:
@@ -1891,7 +2347,7 @@ class ResearchConsole(App[None]):
         db.set_graceful_pause_pending(self._conn, False)
         self._kill_scheduler()
         self._kill_agent_processes()
-        self._revert_to_checkpoint()
+        self._revert_to_checkpoint(skip_git_if_worktree_matches_tip=True)
         db.set_control_mode(self._conn, "paused")
         self._conn.commit()
         self._clear_stream_status()
@@ -1919,17 +2375,7 @@ class ResearchConsole(App[None]):
 
     def _cmd_exit(self) -> None:
         self._write_activity("  [dim]Shutting down...[/]", below_stream=True)
-        db.set_graceful_pause_pending(self._conn, False)
-        self._kill_scheduler()
-        self._kill_agent_processes()
-        self._revert_to_checkpoint()
-        db.set_control_mode(self._conn, "paused")
-        self._conn.commit()
-        # Defer exit without Textual's one-shot Timer: Timer._tick skips callbacks
-        # when app._exit is already True, which can strand shutdown if a prior exit
-        # did not finish. InvokeLater / call_after_refresh is not subject to that guard.
-        if not self.call_after_refresh(self.exit):
-            self.exit()
+        self._shutdown_and_exit()
 
     def _cmd_plan(self) -> None:
         self._live_plan_state = None
@@ -2212,7 +2658,7 @@ class ResearchConsole(App[None]):
 
             if not self._restore_runtime_snapshot(snap):
                 return False
-            self._rebuild_activity_from_db()
+            self._rebuild_activity_from_db(load_full_history=True)
             self._refresh_header()
             self._clear_stream_status()
 
@@ -2236,10 +2682,14 @@ class ResearchConsole(App[None]):
                 git_checkpoint.delete_ref(self.cfg.project_dir, overlay_ref)
             self._drop_redo_snapshot(snap)
 
-    def _kill_scheduler(self) -> None:
+    def _kill_scheduler(
+        self,
+        *,
+        wait_timeout: float | None = _FORCED_SCHEDULER_KILL_WAIT_TIMEOUT,
+    ) -> None:
         """Immediately kill the scheduler and all child worker processes."""
         if self._scheduler and self._scheduler.is_alive():
-            self._scheduler.kill_group()
+            self._scheduler.kill_group(wait_timeout=wait_timeout)
         self._scheduler = None
         self._orchestrating = False
         self._stream_is_running_placeholder = False
@@ -2293,9 +2743,16 @@ class ResearchConsole(App[None]):
         *,
         undo_last_completed_worker: bool = False,
         emit_activity_message: bool = True,
+        skip_git_if_worktree_matches_tip: bool = False,
+        skip_ui_rebuild: bool = False,
     ) -> None:
         """Restore the working tree to the last completed-cycle checkpoint and
         roll back the DB to match, removing any UI traces of the interrupted cycle.
+
+        When *skip_git_if_worktree_matches_tip* is true (``/exit``, ``/stop``, quit),
+        skip ``read-tree`` / ``checkout-index`` / ``clean`` if there is no in-flight
+        cycle (orchestrator not ahead of worker) and the worktree already matches
+        the tip ``checkpoints`` commit — otherwise behaviour is unchanged.
 
         When *undo_last_completed_worker* is true and the latest cycle has
         already finished (orchestrator is not ahead of the last worker row),
@@ -2354,7 +2811,15 @@ class ResearchConsole(App[None]):
 
         if git_checkpoint.has_checkpoint(self.cfg.project_dir):
             cycle: int | None = None
-            if undo_last_completed_worker and not tip_ahead:
+            skip_git = (
+                skip_git_if_worktree_matches_tip
+                and not tip_ahead
+                and not undo_last_completed_worker
+                and git_checkpoint.worktree_matches_checkpoint_tip(self.cfg.project_dir)
+            )
+            if skip_git:
+                cycle = None
+            elif undo_last_completed_worker and not tip_ahead:
                 if target_cycle == 0:
                     if git_checkpoint.restore_pre_checkpoint_state(self.cfg.project_dir):
                         cycle = 0
@@ -2416,26 +2881,49 @@ class ResearchConsole(App[None]):
         except sqlite3.OperationalError:
             pass
 
-        try:
-            self._clear_stream_status()
-        except Exception:
-            pass
-        try:
-            self._rebuild_activity_from_db()
-            self._refresh_header()
-        except Exception:
-            pass
+        if not skip_ui_rebuild:
+            try:
+                self._clear_stream_status()
+            except Exception:
+                pass
+            try:
+                self._rebuild_activity_from_db(load_full_history=True)
+                self._refresh_header()
+            except Exception:
+                pass
 
-        if emit_activity_message and max_event_cycle_before > self._last_cycle:
-            self._write_checkpoint_notice(
-                f"  [yellow]Reverted to checkpoint (cycle {self._last_cycle}).[/]"
-            )
+            if emit_activity_message and max_event_cycle_before > self._last_cycle:
+                self._write_checkpoint_notice(
+                    f"  [yellow]Reverted to checkpoint (cycle {self._last_cycle}).[/]"
+                )
 
     def action_quit(self) -> None:
+        self._shutdown_and_exit()
+
+    def _shutdown_and_exit(self) -> None:
+        """Kill workers, revert only if needed (no UI rebuild), then exit."""
+        from lab import git_checkpoint
+
+        self._cancel_pending_rebuild_chain()
         db.set_graceful_pause_pending(self._conn, False)
         self._kill_scheduler()
         self._kill_agent_processes()
-        self._revert_to_checkpoint()
+
+        tip_ahead = False
+        try:
+            tip_ahead = db.orchestrator_ahead_of_worker(self._conn)
+        except Exception:
+            pass
+
+        needs_git_revert = tip_ahead or not git_checkpoint.worktree_matches_checkpoint_tip(
+            self.cfg.project_dir
+        )
+
+        if needs_git_revert:
+            self._revert_to_checkpoint(skip_ui_rebuild=True)
+        else:
+            self._cleanup_orphaned_cycles()
+
         db.set_control_mode(self._conn, "paused")
         self._conn.commit()
         self.exit()

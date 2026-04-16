@@ -1,6 +1,6 @@
 """Multiline prompt widget with auto-expanding height and Claude Code-like UX.
 
-Enter submits; Shift+Enter (or Ctrl+J) inserts a newline.  Arrow keys,
+Enter submits; Shift+Enter, Ctrl+Enter, or Ctrl+J inserts a newline. Arrow keys,
 backspace, delete, clipboard, and undo all work across lines via Textual's
 built-in TextArea bindings.
 """
@@ -21,14 +21,25 @@ class PromptSubmitted(Message):
 
 
 class PromptTextArea(TextArea):
-    """Enter submits; Shift+Enter / Ctrl+J inserts a newline.
+    """Enter submits; Shift+Enter, Ctrl+Enter, or Ctrl+J inserts a newline.
 
     The widget auto-expands vertically (up to *MAX_LINES*) as the user
-    types more lines, then shrinks back when text is cleared.
+    types (including soft-wrapped lines), then shrinks back when text is cleared.
     """
 
-    MAX_LINES = 10
-    NEWLINE_KEYS = frozenset({"shift+enter", "ctrl+j"})
+    # Keep in sync with #prompt-box max-height (leave room for border/padding).
+    MAX_LINES = 12
+    NEWLINE_KEYS = frozenset(
+        {
+            "shift+enter",
+            "shift+return",
+            "ctrl+j",
+            # Many terminals send the same bytes for Shift+Enter as for Enter; when
+            # the kitty keyboard protocol (or similar) is active, Ctrl+Enter is a
+            # reliable multiline fallback on macOS/Linux.
+            "ctrl+enter",
+        }
+    )
 
     async def _on_key(self, event: events.Key) -> None:
         key = event.key
@@ -49,12 +60,18 @@ class PromptTextArea(TextArea):
     def on_mount(self) -> None:
         self._adjust_height()
 
+    def on_resize(self, event: events.Resize) -> None:
+        self._adjust_height()
+
     def watch_text(self, value: str) -> None:
         self._adjust_height()
 
     def _adjust_height(self) -> None:
         """Resize self and the parent container to fit content."""
-        lines = max(1, self.document.line_count)
+        if self.soft_wrap and self.is_mounted and self.wrap_width > 0:
+            lines = max(1, self.wrapped_document.height)
+        else:
+            lines = max(1, self.document.line_count)
         desired = min(lines, self.MAX_LINES)
         self.styles.height = desired
         if self.parent is not None:

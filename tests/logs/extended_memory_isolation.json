@@ -1,7 +1,7 @@
 {
   "secret_len": 5024,
-  "ctx_len": 960,
-  "pkt_len": 1488,
+  "ctx_len": 916,
+  "pkt_len": 1444,
   "secret_in_ctx": false,
   "secret_in_pkt": false
 }

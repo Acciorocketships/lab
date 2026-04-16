@@ -83,8 +83,8 @@ def test_build_worker_packet_extended_not_inlined(tmp_path: Path) -> None:
     assert "memory/extended/log.md" in text
 
 
-def test_build_worker_packet_soft_clips_oversized_tier_a_files(tmp_path: Path) -> None:
-    """Huge Tier A files are clipped per-file even without a global packet budget."""
+def test_build_worker_packet_includes_full_tier_a_without_per_file_clip(tmp_path: Path) -> None:
+    """Large Tier A bodies are inlined verbatim when no whole-packet budget is set."""
     memory.ensure_memory_layout(tmp_path)
     roadmap_head = "ROADMAP_HEAD_MARKER"
     roadmap_tail = "ROADMAP_TAIL_MARKER"
@@ -107,5 +107,5 @@ def test_build_worker_packet_soft_clips_oversized_tier_a_files(tmp_path: Path) -
     assert roadmap_tail in text
     assert user_head in text
     assert user_tail in text
-    assert "oversized Tier A file" in text
-    assert len(text) < 80_000
+    assert "oversized Tier A file" not in text
+    assert len(text) > 120_000

@@ -16,16 +16,22 @@ When you run shell commands, builds, tests, servers, or training: **watch the ou
 meaningful progress for a long time, or a clear hang), **stop it** (terminate the process), note what you saw, and
 continue with a shorter or safer approach. Prefer timeouts or bounded runs where the tool supports them."""
 
-WORKER_TIER_A_SOFT_CLIP_THRESHOLD_CHARS = 60_000
-_SOFT_FILE_CHAR_LIMITS = {
-    "extended_memory_index.md": 14_000,
-    "roadmap.md": 18_000,
-    "lessons.md": 12_000,
-    "user_instructions.md": 12_000,
-}
-_DEFAULT_SOFT_FILE_CHAR_LIMIT = 16_000
-_TIER_FILE_TRUNCATION_NOTICE = "\n\n...[truncated from oversized Tier A file; open the file on disk for full context]...\n\n"
 _PACKET_TRUNCATION_NOTICE = "\n\n...[truncated for context budget]...\n\n"
+
+
+def _trim_middle(text: str, max_chars: int, *, notice: str) -> str:
+    """Trim from the middle so prompts keep both framing and recent state."""
+    if max_chars <= 0 or len(text) <= max_chars:
+        return text
+    notice_text = notice if len(notice) < max_chars else "\n...[truncated]...\n"
+    keep = max_chars - len(notice_text)
+    if keep <= 0:
+        return text[:max_chars]
+    head_chars = keep // 2
+    tail_chars = keep - head_chars
+    if tail_chars <= 0:
+        return text[:head_chars] + notice_text
+    return text[:head_chars] + notice_text + text[-tail_chars:]
 
 
 def build_worker_packet(
@@ -53,8 +59,7 @@ def build_worker_packet(
     for name in memory.TIER_A_FILES:
         if name == "context_summary.md":
             continue
-        chunk = _clip_tier_file(name, tier.get(name, ""))
-        parts.append(f"### {name}\n{chunk}\n")
+        parts.append(f"### {name}\n{tier.get(name, '')}\n")
     b = (current_branch or "").strip()
     if b:
         bm = memory_extra.read_branch_memory(researcher_root, b)
@@ -69,36 +74,7 @@ def build_worker_packet(
         return text
     if len(text) <= max_chars:
         return text
-    return _trim_packet(text, max_chars)
-
-
-def _trim_packet(text: str, max_chars: int) -> str:
-    """Keep head, truncate middle with notice."""
     return _trim_middle(text, max_chars, notice=_PACKET_TRUNCATION_NOTICE)
-
-
-def _clip_tier_file(name: str, text: str) -> str:
-    """Soft-clip unusually large Tier A files while preserving both ends."""
-    body = text or ""
-    if len(body) <= WORKER_TIER_A_SOFT_CLIP_THRESHOLD_CHARS:
-        return body
-    limit = _SOFT_FILE_CHAR_LIMITS.get(name, _DEFAULT_SOFT_FILE_CHAR_LIMIT)
-    return _trim_middle(body, limit, notice=_TIER_FILE_TRUNCATION_NOTICE)
-
-
-def _trim_middle(text: str, max_chars: int, *, notice: str) -> str:
-    """Trim from the middle so prompts keep both framing and recent state."""
-    if max_chars <= 0 or len(text) <= max_chars:
-        return text
-    notice_text = notice if len(notice) < max_chars else "\n...[truncated]...\n"
-    keep = max_chars - len(notice_text)
-    if keep <= 0:
-        return text[:max_chars]
-    head_chars = keep // 2
-    tail_chars = keep - head_chars
-    if tail_chars <= 0:
-        return text[:head_chars] + notice_text
-    return text[:head_chars] + notice_text + text[-tail_chars:]
 
 
 def _packet_dir(researcher_root: Path, cycle: int, worker: str) -> Path:

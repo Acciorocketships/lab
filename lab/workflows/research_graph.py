@@ -102,6 +102,14 @@ def choose_action(
         forced_worker = forced["worker"]
         forced_task = forced["task"]
 
+    _run_pre_orchestrator_tier_management(
+        researcher_root=researcher_root,
+        project_dir=project_dir,
+        db_path=db_path,
+        cfg=cfg,
+        state=state,
+    )
+
     prev = memory.read_context_summary(researcher_root)
     tier = memory.load_tier_a_bundle(researcher_root)
     git_branch = memory.current_git_branch(project_dir)
@@ -112,10 +120,6 @@ def choose_action(
         current_branch=branch_for_ctx,
         last_worker_output=str(state.get("last_action_summary", "") or ""),
         previous_context_summary=prev,
-        prev_summary_max_chars=cfg.orchestrator_prev_summary_max_chars,
-        last_worker_max_chars=cfg.orchestrator_last_worker_max_chars,
-        tier_file_max_chars=cfg.orchestrator_tier_file_max_chars,
-        branch_memory_max_chars=cfg.orchestrator_branch_memory_max_chars,
     )
     if forced_worker:
         dec = orchestrator.OrchestratorDecision(
@@ -243,59 +247,73 @@ def _tier_size_snapshot(researcher_root: Path) -> dict[str, int]:
     return memory.tier_a_file_sizes(researcher_root)
 
 
-def _auto_compactor_effective_thresholds(
-    researcher_root: Path,
-    current_sizes: dict[str, int],
-) -> dict[str, int]:
-    """Per-file thresholds: base soft-clip threshold, optionally raised by prior compaction."""
-    base = packets.WORKER_TIER_A_SOFT_CLIP_THRESHOLD_CHARS
-    thresholds = {name: base for name in current_sizes}
-    state = memory.read_auto_compactor_state(researcher_root)
-    if not isinstance(state, dict):
-        return thresholds
-    file_thresholds = state.get("file_thresholds")
-    if not isinstance(file_thresholds, dict):
-        return thresholds
-    for name, value in file_thresholds.items():
-        if name not in thresholds:
-            continue
+# Default line when no per-file row is stored yet (chars).
+PRE_ORCHESTRATOR_COMPACT_THRESHOLD_CHARS = 40_000
+
+
+def _read_pre_orchestrator_thresholds(researcher_root: Path) -> dict[str, int]:
+    """Persisted per-file lines from the last pre-orchestrator pass."""
+    raw = memory.read_pre_orchestrator_compact_state(researcher_root)
+    if not isinstance(raw, dict):
+        return {}
+    ft = raw.get("file_thresholds")
+    if not isinstance(ft, dict):
+        return {}
+    out: dict[str, int] = {}
+    for name, value in ft.items():
         try:
-            thresholds[name] = max(base, int(value))
+            out[str(name)] = int(value)
         except (TypeError, ValueError):
             continue
-    return thresholds
+    return out
 
 
-def _oversized_tier_files_for_auto_compactor(researcher_root: Path) -> tuple[dict[str, int], dict[str, int]]:
-    """Return current sizes and files exceeding their current effective compaction thresholds."""
+def _run_pre_orchestrator_tier_management(
+    *,
+    researcher_root: Path,
+    project_dir: Path,
+    db_path: Path | None,
+    cfg: RunConfig,
+    state: ResearchState,
+) -> None:
+    """Every graph cycle before routing: compact Tier A on disk when over saved lines, then refresh thresholds.
+
+    Each tracked Tier A file gets ``threshold = min(40_000, current_size)`` persisted for the next cycle's
+    ``size > threshold`` check (missing key uses ``PRE_ORCHESTRATOR_COMPACT_THRESHOLD_CHARS``).
+    """
     sizes = _tier_size_snapshot(researcher_root)
-    thresholds = _auto_compactor_effective_thresholds(researcher_root, sizes)
+    persisted = _read_pre_orchestrator_thresholds(researcher_root)
     oversized = {
         name: size
         for name, size in sizes.items()
-        if size > thresholds.get(name, packets.WORKER_TIER_A_SOFT_CLIP_THRESHOLD_CHARS)
+        if size > persisted.get(name, PRE_ORCHESTRATOR_COMPACT_THRESHOLD_CHARS)
     }
-    return sizes, oversized
-
-
-def _record_auto_compactor_outcome(
-    researcher_root: Path,
-    result: dict[str, Any],
-) -> None:
-    """Persist per-file retry thresholds after a compactor run."""
-    del result
-    _, post_oversized = _oversized_tier_files_for_auto_compactor(researcher_root)
-    if not post_oversized:
-        memory.clear_auto_compactor_state(researcher_root)
-        return
-    memory.write_auto_compactor_state(
+    next_cycle = int(state.get("cycle_count", 0)) + 1
+    if oversized:
+        details = ", ".join(f"{name}={size}" for name, size in sorted(oversized.items()))
+        try:
+            _run_internal_memory_compactor(
+                cyc=next_cycle,
+                state=state,
+                cfg=cfg,
+                researcher_root=researcher_root,
+                project_dir=project_dir,
+                db_path=db_path,
+                reason=(
+                    "pre-orchestrator Tier A compaction: file(s) exceed saved threshold or "
+                    f"{PRE_ORCHESTRATOR_COMPACT_THRESHOLD_CHARS} char default — {details}"
+                ),
+            )
+        except Exception:
+            logging.exception("pre-orchestrator memory compactor failed")
+    sizes_after = _tier_size_snapshot(researcher_root)
+    new_thresholds = {
+        name: min(PRE_ORCHESTRATOR_COMPACT_THRESHOLD_CHARS, size)
+        for name, size in sizes_after.items()
+    }
+    memory.write_pre_orchestrator_compact_state(
         researcher_root,
-        {
-            "file_thresholds": {
-                name: max(packets.WORKER_TIER_A_SOFT_CLIP_THRESHOLD_CHARS, size)
-                for name, size in post_oversized.items()
-            },
-        },
+        {"file_thresholds": new_thresholds},
     )
 
 
@@ -411,27 +429,6 @@ def execute_worker(
         }
     mod = _WORKER_MODULES.get(worker)
     worker_kwargs: dict[str, str] = state.get("worker_kwargs") or {}
-    _, oversized_tier_files = _oversized_tier_files_for_auto_compactor(researcher_root)
-    auto_compacted = False
-    if oversized_tier_files:
-        details = ", ".join(
-            f"{name}={size}"
-            for name, size in sorted(oversized_tier_files.items())
-        )
-        compactor_result = _run_internal_memory_compactor(
-            cyc=cyc,
-            state=state,
-            cfg=cfg,
-            researcher_root=researcher_root,
-            project_dir=project_dir,
-            db_path=db_path,
-            reason=(
-                "these Tier A files exceeded the soft-clip threshold "
-                f"({packets.WORKER_TIER_A_SOFT_CLIP_THRESHOLD_CHARS} chars): {details}"
-            ),
-        )
-        _record_auto_compactor_outcome(researcher_root, compactor_result)
-        auto_compacted = True
     extra = _worker_extra_sections(str(worker), mod, worker_kwargs)
     packet_kwargs = {
         "worker": worker,
@@ -479,20 +476,13 @@ def execute_worker(
         isinstance(parsed, dict)
         and parsed.get("error") == "empty_output"
     ):
-        if not auto_compacted:
-            _, oversized_tier_files = _oversized_tier_files_for_auto_compactor(researcher_root)
-            if oversized_tier_files:
-                compactor_result = _run_internal_memory_compactor(
-                    cyc=cyc,
-                    state=state,
-                    cfg=cfg,
-                    researcher_root=researcher_root,
-                    project_dir=project_dir,
-                    db_path=db_path,
-                    reason="the previous worker run returned empty_output",
-                )
-                _record_auto_compactor_outcome(researcher_root, compactor_result)
-                auto_compacted = True
+        _run_pre_orchestrator_tier_management(
+            researcher_root=researcher_root,
+            project_dir=project_dir,
+            db_path=db_path,
+            cfg=cfg,
+            state=state,
+        )
         pkt = _build_packet(retry_max_chars)
         packets.write_packet_file(researcher_root, cyc, worker, pkt)
         res = agents_base.run_worker(

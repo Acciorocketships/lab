@@ -141,6 +141,16 @@ class ScriptedWorker:
         **kw: Any,
     ) -> dict[str, Any]:
         self.packets_received.append(pkt)
+        if "# Worker: memory_compactor" in pkt:
+            sd = memory.state_dir(self.researcher_root)
+            for name in memory.TIER_A_FILES:
+                if name in ("system.md", "context_summary.md"):
+                    continue
+                p = sd / name
+                txt = helpers.read_text(p, default="")
+                if len(txt) > 39_000:
+                    helpers.write_text(p, txt[:4000].rstrip() + "\n")
+            return {"ok": True, "parsed": {"result": "test harness: Tier A shrink"}}
         result = [self._planner, self._implementer, self._experimenter][self.call_count]()
         self.call_count += 1
         return result
@@ -246,11 +256,14 @@ def test_toy_fibonacci_full_loop(tmp_path: Path) -> None:
     assert "fibonacci" in ctx4.lower(), "Cycle-4 context must mention fibonacci.py"
 
     # ---- Worker packets carry rolling summary ----
-    pkt2 = worker.packets_received[1]  # implementer
+    def _pkt_for(w: str) -> str:
+        return next(p for p in worker.packets_received if f"# Worker: {w}" in p)
+
+    pkt2 = _pkt_for("implementer")
     assert "## Rolling context summary" in pkt2, "Implementer packet needs rolling summary section"
     assert "planning" in pkt2.lower(), "Implementer packet should carry planning summary"
 
-    pkt3 = worker.packets_received[2]  # experimenter
+    pkt3 = _pkt_for("experimenter")
     assert "## Rolling context summary" in pkt3
     assert "implementation" in pkt3.lower(), "Experimenter packet should carry implementation info"
 
@@ -312,14 +325,19 @@ def test_toy_fibonacci_full_loop(tmp_path: Path) -> None:
     ))
     conn.close()
 
-    assert len(rows) == 8, f"Expected 8 run_events (4 orch + 4 worker), got {len(rows)}"
-
     orch_rows = [r for r in rows if r["kind"] == "orchestrator"]
     worker_rows = [r for r in rows if r["kind"] == "worker"]
+    assert len(orch_rows) == 4, f"Expected 4 orchestrator rows, got {len(orch_rows)}"
     assert [r["worker"] for r in orch_rows] == ["planner", "implementer", "experimenter", "done"]
-    assert [r["worker"] for r in worker_rows] == ["planner", "implementer", "experimenter", "done"]
     assert [r["cycle"] for r in orch_rows] == [1, 2, 3, 4]
-    assert [r["cycle"] for r in worker_rows] == [1, 2, 3, 4]
+    by_w = [r["worker"] for r in worker_rows]
+    assert {"planner", "implementer", "experimenter", "done"}.issubset(set(by_w))
+    assert all(w in ("planner", "implementer", "experimenter", "done", "memory_compactor") for w in by_w)
+    assert by_w.count("planner") == 1
+    assert by_w.count("implementer") == 1
+    assert by_w.count("experimenter") == 1
+    assert by_w.count("done") == 1
+    assert len(rows) == len(orch_rows) + len(worker_rows)
 
 
 # ---------------------------------------------------------------------------
@@ -375,6 +393,16 @@ def test_user_instruction_override_through_real_graph(tmp_path: Path) -> None:
 
     def fake_worker(pkt, *, backend, project_cwd, cursor_agent_model, on_chunk=None, **kw):
         worker_packets.append(pkt)
+        if "# Worker: memory_compactor" in pkt:
+            sd = memory.state_dir(researcher_root)
+            for name in memory.TIER_A_FILES:
+                if name in ("system.md", "context_summary.md"):
+                    continue
+                p = sd / name
+                txt = helpers.read_text(p, default="")
+                if len(txt) > 39_000:
+                    helpers.write_text(p, txt[:4000].rstrip() + "\n")
+            return {"ok": True, "parsed": {"result": "test harness: Tier A shrink"}}
         idx = worker_call[0]
         worker_call[0] += 1
         if idx == 0:
@@ -426,7 +454,8 @@ def test_user_instruction_override_through_real_graph(tmp_path: Path) -> None:
         assert "memoized" in orch.contexts_received[0].lower()
 
         # The planner packet included the instruction
-        assert "memoized" in worker_packets[0].lower()
+        planner_pkt = next(p for p in worker_packets if "# Worker: planner" in p)
+        assert "memoized" in planner_pkt.lower()
 
         # DB run_event records the overridden worker (planner, not implementer)
         conn = db.connect_db(db_path)
@@ -451,5 +480,9 @@ def test_user_instruction_override_through_real_graph(tmp_path: Path) -> None:
     conn = db.connect_db(db_path)
     all_events = list(conn.execute("SELECT kind, worker, cycle FROM run_events ORDER BY id"))
     conn.close()
-    assert len(all_events) == 4  # 2 orchestrator + 2 worker
-    assert [r["worker"] for r in all_events if r["kind"] == "orchestrator"] == ["planner", "researcher"]
+    orch_rows = [r for r in all_events if r["kind"] == "orchestrator"]
+    worker_rows = [r for r in all_events if r["kind"] == "worker"]
+    assert [r["worker"] for r in orch_rows] == ["planner", "researcher"]
+    assert {r["worker"] for r in worker_rows} <= {"planner", "researcher", "memory_compactor"}
+    assert sum(1 for r in worker_rows if r["worker"] == "planner") == 1
+    assert sum(1 for r in worker_rows if r["worker"] == "researcher") == 1

@@ -8,14 +8,15 @@ This is an internal maintenance worker. You are **not** planning the next phase,
 
 ## Goal
 
-Rewrite verbose Tier A files into concise, high-signal versions that still preserve:
-- current project goals and constraints
-- active roadmap state and completed milestone history
-- the current immediate plan
-- the latest important status/blockers
-- durable lessons that are still broadly useful
+Rewrite verbose Tier A files into concise, high-signal versions. **Spend your length budget on what matters most:**
+
+- **Most important:** current goals, hard constraints, user-facing commitments, canonical structures (checklists, phase gates), anything that would change how the next worker acts.
+- **Most recent:** the active roadmap phase, the latest status and blockers, the current immediate plan, the newest lessons that still apply, and the latest entries in `user_instructions.md` under **## New** / **## In progress**. Keep **more** verbatim or near-verbatim detail here when tradeoffs appear.
+- **Older or repetitive material:** summarize much more aggressively. Collapse long completed phase narratives into short bullets plus pointers to `.lab/memory/extended/` or `reports/` (or equivalent) rather than duplicating them. Remove stale rationale, duplicate history, and low-signal filler.
+
+Still preserve across the whole set:
 - pointers to long-form material in `.lab/memory/extended/`
-- actual user-supplied instructions
+- actual user-supplied instructions (not agent housekeeping dressed as user text)
 
 ## Files you may edit
 
@@ -45,16 +46,17 @@ Do **not** edit:
   - `user_instructions.md` should preserve the `## New`, `## In progress`, and `## Completed` headings.
 - Prefer short summaries plus pointers to extended files over long prose.
 - Remove repetition, stale rationale, duplicated history, and low-signal narrative filler.
-- Keep completed history in `roadmap.md`, but compress each completed item to the minimum needed for future orientation.
+- Keep completed history in `roadmap.md`, but compress each completed item to the minimum needed for future orientation—**except** for the **current** phase and anything still blocking progress, where you should keep richer context.
 - Keep `extended_memory_index.md` as a compact index, not a second roadmap.
-- In `lessons.md`, keep only reusable durable lessons; remove one-off clutter and near-duplicates.
-- In `status.md`, keep only the current focus, meaningful blockers, and the latest important result.
+- In `lessons.md`, keep only reusable durable lessons; remove one-off clutter and near-duplicates—**but** keep fuller detail for lessons that clearly still govern current work.
+- In `status.md`, keep the current focus, meaningful blockers, and the latest important results with enough detail that the next worker is not blind.
 - In `user_instructions.md`, keep only real user-provided instructions. Remove planner/worker bookkeeping, internal task logs, and agent-authored completion notes that are not themselves user instructions.
+- **`skills_index.md`:** keep it **minimal**. It is an index of skill entrypoints, not prose. **Do not** add filler, boilerplate, or "placeholder" lines whose only purpose is to make the file feel populated or self-explanatory. If it is already short or nearly empty after trimming duplicates, **leave it short** (or restore the prior minimal seed from context). Never grow this file just to occupy space.
 
 ## Workflow
 
 1. Inspect the current Tier A files on disk.
-2. Identify the biggest or noisiest files.
+2. Identify the biggest or noisiest files; prioritize cutting material that is old, duplicated, or low-signal before touching high-importance or high-recency content.
 3. Rewrite them concisely while preserving important information.
 4. Prefer moving detail behind existing pointers rather than deleting genuinely important information.
 5. Return a short summary of which files were compacted and any important information that was intentionally preserved.

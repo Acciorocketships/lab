@@ -351,7 +351,7 @@ def test_cmd_undo_twice_while_paused_rebuilds_visible_cycles(tmp_path: Path) -> 
 
     console._mount_activity_widget = fake_mount  # type: ignore[method-assign]
     console._write_task = lambda task: None  # type: ignore[method-assign]
-    console._write_result_box = lambda text: None  # type: ignore[method-assign]
+    console._write_result_box = lambda text, title="": None  # type: ignore[method-assign]
     console._scroll_to_bottom = lambda: None  # type: ignore[method-assign]
     console._clear_activity_log = lambda: None  # type: ignore[method-assign]
 
@@ -685,6 +685,36 @@ def test_kill_agent_processes_uses_fast_shutdown_path(tmp_path: Path, monkeypatc
     assert str(row["status"]) == "failed"
     assert proc.wait_timeouts == [0.2]
     assert refresh_calls == [0.2]
+
+    console._conn.close()
+
+
+def test_kill_scheduler_uses_fast_shutdown_path(tmp_path: Path) -> None:
+    db_path = tmp_path / "runtime.db"
+    cfg = _cfg(tmp_path)
+    console = ResearchConsole(db_path, cfg)
+
+    class FakeScheduler:
+        def __init__(self) -> None:
+            self.wait_timeouts: list[float | None] = []
+
+        def is_alive(self) -> bool:
+            return True
+
+        def kill_group(self, *, wait_timeout: float | None = 5.0) -> None:
+            self.wait_timeouts.append(wait_timeout)
+
+    scheduler = FakeScheduler()
+    console._scheduler = scheduler  # type: ignore[assignment]
+    console._orchestrating = True
+    console._stream_is_running_placeholder = True
+
+    console._kill_scheduler()
+
+    assert scheduler.wait_timeouts == [0.1]
+    assert console._scheduler is None
+    assert console._orchestrating is False
+    assert console._stream_is_running_placeholder is False
 
     console._conn.close()
 

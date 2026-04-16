@@ -144,11 +144,7 @@ def decide_orchestrator(
     base_url = llm.resolve_llm_base_url(cfg)
     if not api_key:
         raise OrchestratorCredentialsError(missing_orchestrator_credentials_hint(cfg))
-    user_content = (
-        context_md
-        if cfg.orchestrator_input_max_chars is None
-        else context_md[: cfg.orchestrator_input_max_chars]
-    )
+    user_content = context_md
     messages = [
         {"role": "system", "content": _ORCH_JSON_SYSTEM},
         {"role": "user", "content": user_content},

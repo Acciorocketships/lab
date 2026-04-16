@@ -201,9 +201,9 @@ def worker_diff_baseline_path(researcher_root: Path) -> Path:
     return researcher_root / "worker_diff_baseline.json"
 
 
-def auto_compactor_state_path(researcher_root: Path) -> Path:
-    """Runtime guard state for suppressing ineffective auto-compactor loops."""
-    return researcher_root / "auto_compactor_state.json"
+def pre_orchestrator_compact_state_path(researcher_root: Path) -> Path:
+    """Per-file compaction lines for the pre-orchestrator Tier A pass (see research_graph)."""
+    return researcher_root / "pre_orchestrator_compact_state.json"
 
 
 def write_worker_diff_baseline(researcher_root: Path, payload: dict[str, Any]) -> None:
@@ -234,9 +234,9 @@ def clear_worker_diff_baseline(researcher_root: Path) -> None:
         pass
 
 
-def read_auto_compactor_state(researcher_root: Path) -> dict[str, Any] | None:
-    """Load persisted auto-compactor guard state, or None if missing/invalid."""
-    p = auto_compactor_state_path(researcher_root)
+def read_pre_orchestrator_compact_state(researcher_root: Path) -> dict[str, Any] | None:
+    """Load persisted pre-orchestrator per-file thresholds, or None if missing/invalid."""
+    p = pre_orchestrator_compact_state_path(researcher_root)
     if not p.is_file():
         return None
     try:
@@ -246,16 +246,16 @@ def read_auto_compactor_state(researcher_root: Path) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
-def write_auto_compactor_state(researcher_root: Path, payload: dict[str, Any]) -> None:
-    """Persist auto-compactor guard state."""
-    p = auto_compactor_state_path(researcher_root)
+def write_pre_orchestrator_compact_state(researcher_root: Path, payload: dict[str, Any]) -> None:
+    """Persist pre-orchestrator per-file thresholds (``file_thresholds`` map)."""
+    p = pre_orchestrator_compact_state_path(researcher_root)
     helpers.ensure_dir(p.parent)
     p.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
-def clear_auto_compactor_state(researcher_root: Path) -> None:
-    """Remove persisted auto-compactor guard state."""
-    p = auto_compactor_state_path(researcher_root)
+def clear_pre_orchestrator_compact_state(researcher_root: Path) -> None:
+    """Remove persisted pre-orchestrator threshold state."""
+    p = pre_orchestrator_compact_state_path(researcher_root)
     try:
         p.unlink(missing_ok=True)
     except OSError:
@@ -462,7 +462,12 @@ def reset_runtime_artifacts(
             helpers.write_text(p, _default_tier_a_content(name))
     _ensure_episodes_readme(researcher_root)
     clear_worker_diff_baseline(researcher_root)
-    clear_auto_compactor_state(researcher_root)
+    clear_pre_orchestrator_compact_state(researcher_root)
+    # Legacy filename from the old execute_worker auto-compactor guard.
+    try:
+        (researcher_root / "auto_compactor_state.json").unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def extended_dir(researcher_root: Path) -> Path:
@@ -797,24 +802,6 @@ def write_context_summary(researcher_root: Path, body: str) -> None:
     helpers.write_text(p, body)
 
 
-def _clip_block(text: str, max_chars: int | None) -> str:
-    """Return full text when ``max_chars`` is None, otherwise clip with notice."""
-    if max_chars is None:
-        return text + "\n"
-    if len(text) <= max_chars:
-        return text + "\n"
-    return text[:max_chars] + "\n...[truncated]\n"
-
-
-def _clip_tier_value(text: str, max_chars: int | None) -> str:
-    """Tier A file body clip helper; ``None`` means no clipping."""
-    if max_chars is None:
-        return text
-    if len(text) <= max_chars:
-        return text
-    return text[:max_chars] + "\n...[truncated]\n"
-
-
 def format_orchestrator_context(
     researcher_root: Path,
     *,
@@ -822,14 +809,11 @@ def format_orchestrator_context(
     current_branch: str,
     last_worker_output: str = "",
     previous_context_summary: str = "",
-    prev_summary_max_chars: int | None = None,
-    last_worker_max_chars: int | None = None,
-    tier_file_max_chars: int | None = None,
-    branch_memory_max_chars: int | None = None,
 ) -> str:
     """Tier A, rolling context, last worker output, branch memory.
 
-    Limits are optional. ``None`` means no clipping in app code.
+    Tier A bodies are included verbatim (no mechanical trimming). Oversized Tier A is
+    handled on disk by the pre-orchestrator memory compactor (see ``research_graph``).
     """
     from lab import memory_extra as mx
 
@@ -837,20 +821,20 @@ def format_orchestrator_context(
     prev = (previous_context_summary or "").strip()
     if prev:
         parts.append("## Previous context summary (merge and replace with updated context_summary in JSON)\n")
-        parts.append(_clip_block(prev, prev_summary_max_chars))
+        parts.append(prev + "\n")
     out = (last_worker_output or "").strip()
     if out:
         parts.append("## Last worker output (incorporate into context_summary)\n")
-        parts.append(_clip_block(out, last_worker_max_chars))
+        parts.append(out + "\n")
     for k, v in tier.items():
         if k == "context_summary.md":
             continue
-        parts.append(f"{k}:\n{_clip_tier_value(v, tier_file_max_chars)}\n")
+        parts.append(f"{k}:\n{v}\n")
     b = (current_branch or "").strip()
     if b:
         bm = mx.read_branch_memory(researcher_root, b)
         if bm.strip():
-            parts.append(f"branch_memory[{b}]:\n{_clip_tier_value(bm, branch_memory_max_chars)}\n")
+            parts.append(f"branch_memory[{b}]:\n{bm}\n")
     return "\n".join(parts)
 
 

@@ -7,7 +7,7 @@ import os
 import signal
 import subprocess
 import sys
-from dataclasses import asdict
+from dataclasses import asdict, fields
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -107,6 +107,8 @@ def _deserialize_run_config(payload: str) -> RunConfig:
     for key in ("researcher_root", "project_dir", "oauth_token_path"):
         if data.get(key):
             data[key] = Path(data[key])
+    allowed = {f.name for f in fields(RunConfig)}
+    data = {k: v for k, v in data.items() if k in allowed}
     return RunConfig(**data)
 
 

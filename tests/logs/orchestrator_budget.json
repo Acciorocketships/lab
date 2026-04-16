@@ -1,16 +1,5 @@
 {
-  "total_ctx_len": 60521,
-  "max_expected": 62000,
-  "section_sizes": {
-    "extended_memory_index.md": 4019,
-    "research_idea.md": 4019,
-    "preferences.md": 4019,
-    "system.md": 4019,
-    "roadmap.md": 4019,
-    "immediate_plan.md": 4019,
-    "status.md": 4019,
-    "skills_index.md": 4019,
-    "lessons.md": 4019,
-    "user_instructions.md": 4018
-  }
+  "ctx_len": 50818,
+  "pkt_len": 51339,
+  "roadmap_len": 50000
 }

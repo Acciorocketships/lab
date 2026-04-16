@@ -1,5 +1,5 @@
 {
-  "pkt_len": 24040,
+  "pkt_len": 24000,
   "budget": 24000,
   "header_present": true,
   "objective_present": true

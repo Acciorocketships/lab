@@ -76,11 +76,6 @@ def test_from_configs_builds_run_config(tmp_path: Path) -> None:
     assert run_cfg.default_worker_backend == "cursor"
     assert run_cfg.cursor_agent_model == "auto"
     assert run_cfg.researcher_root == project_dir / ".lab"
-    assert run_cfg.orchestrator_input_max_chars is None
-    assert run_cfg.orchestrator_prev_summary_max_chars is None
-    assert run_cfg.orchestrator_last_worker_max_chars is None
-    assert run_cfg.orchestrator_tier_file_max_chars is None
-    assert run_cfg.orchestrator_branch_memory_max_chars is None
     assert run_cfg.worker_packet_max_chars is None
 
 
