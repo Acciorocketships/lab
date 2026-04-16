@@ -291,7 +291,88 @@ def test_choose_action_pre_orchestrator_runs_memory_compactor_when_tier_file_lar
     st = memory.read_pre_orchestrator_compact_state(tmp_path)
     assert st is not None
     th = st.get("file_thresholds", {})
-    assert th.get("roadmap.md") == min(40_000, len("compacted\n"))
+    assert th.get("roadmap.md") == max(
+        research_graph.PRE_ORCHESTRATOR_COMPACT_THRESHOLD_CHARS,
+        len("compacted\n"),
+    )
+
+
+def test_choose_action_pre_orchestrator_persists_post_compact_size_when_above_floor(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """If compaction still leaves a file above the default floor, the saved line is that size (not the floor)."""
+    cfg = RunConfig(
+        researcher_root=tmp_path,
+        project_dir=tmp_path / "p",
+        orchestrator_backend="openai",
+        openai_api_key=None,
+        openai_base_url=None,
+        openai_model="gpt-4o-mini",
+        default_worker_backend="cursor",
+        cursor_agent_model="composer-2",
+    )
+    memory.ensure_memory_layout(tmp_path)
+    cfg.project_dir.mkdir()
+    (memory.state_dir(tmp_path) / "roadmap.md").write_text("H" * 75_000, encoding="utf-8")
+
+    db_path = tmp_path / "db.sqlite"
+    conn = db.connect_db(db_path)
+    db.get_system_state(conn)
+    conn.commit()
+    conn.close()
+
+    post_compact = "x" * 25_123
+
+    monkeypatch.setattr(
+        research_graph.orchestrator,
+        "decide_orchestrator",
+        lambda *_a, **_k: OrchestratorDecision(
+            worker="planner",
+            task="next",
+            reason="test",
+            roadmap_step="",
+            context_summary="",
+            worker_kwargs={},
+        ),
+    )
+
+    def _fake_run_worker(pkt: str, **_kw: object) -> dict[str, object]:
+        if "# Worker: memory_compactor" in pkt:
+            (memory.state_dir(tmp_path) / "roadmap.md").write_text(post_compact, encoding="utf-8")
+            return {"ok": True, "parsed": {"result": "still big"}}
+        raise AssertionError(f"unexpected worker packet: {pkt[:120]!r}")
+
+    monkeypatch.setattr(research_graph.agents_base, "run_worker", _fake_run_worker)
+
+    state: ResearchState = {
+        "current_goal": "Plan the next phase",
+        "current_branch": "",
+        "current_worker": "planner",
+        "cycle_count": 0,
+        "control_mode": "active",
+        "pending_instructions": [],
+        "last_action_summary": "",
+        "roadmap_step": "",
+        "orchestrator_task": "Plan the next phase",
+        "orchestrator_reason": "",
+        "acceptance_satisfied": False,
+        "shutdown_requested": False,
+        "worker_kwargs": {},
+    }
+
+    research_graph.choose_action(
+        state,
+        cfg=cfg,
+        researcher_root=tmp_path,
+        project_dir=cfg.project_dir,
+        db_path=db_path,
+    )
+
+    st = memory.read_pre_orchestrator_compact_state(tmp_path)
+    assert st is not None
+    th = st.get("file_thresholds", {})
+    assert th.get("roadmap.md") == len(post_compact)
+    assert len(post_compact) > research_graph.PRE_ORCHESTRATOR_COMPACT_THRESHOLD_CHARS
 
 
 def test_choose_action_pre_orchestrator_skips_compactor_under_saved_line(tmp_path: Path, monkeypatch) -> None:

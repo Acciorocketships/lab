@@ -248,7 +248,7 @@ def _tier_size_snapshot(researcher_root: Path) -> dict[str, int]:
 
 
 # Default line when no per-file row is stored yet (chars).
-PRE_ORCHESTRATOR_COMPACT_THRESHOLD_CHARS = 40_000
+PRE_ORCHESTRATOR_COMPACT_THRESHOLD_CHARS = 20_000
 
 
 def _read_pre_orchestrator_thresholds(researcher_root: Path) -> dict[str, int]:
@@ -278,8 +278,11 @@ def _run_pre_orchestrator_tier_management(
 ) -> None:
     """Every graph cycle before routing: compact Tier A on disk when over saved lines, then refresh thresholds.
 
-    Each tracked Tier A file gets ``threshold = min(40_000, current_size)`` persisted for the next cycle's
-    ``size > threshold`` check (missing key uses ``PRE_ORCHESTRATOR_COMPACT_THRESHOLD_CHARS``).
+    After this pass, each tracked Tier A file persists ``threshold = max(default, current_size)`` where
+    ``default`` is ``PRE_ORCHESTRATOR_COMPACT_THRESHOLD_CHARS``. The next cycle compacts when
+    ``size > threshold`` (missing per-file key uses ``default`` alone). So: re-run once a file grows past
+    **20k** again after a successful shrink; if compaction still leaves a file above **20k**, the saved line
+    is that larger size and compaction runs again only after the file grows past **that** post-compact size.
     """
     sizes = _tier_size_snapshot(researcher_root)
     persisted = _read_pre_orchestrator_thresholds(researcher_root)
@@ -308,7 +311,7 @@ def _run_pre_orchestrator_tier_management(
             logging.exception("pre-orchestrator memory compactor failed")
     sizes_after = _tier_size_snapshot(researcher_root)
     new_thresholds = {
-        name: min(PRE_ORCHESTRATOR_COMPACT_THRESHOLD_CHARS, size)
+        name: max(PRE_ORCHESTRATOR_COMPACT_THRESHOLD_CHARS, size)
         for name, size in sizes_after.items()
     }
     memory.write_pre_orchestrator_compact_state(

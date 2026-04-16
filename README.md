@@ -100,7 +100,7 @@ Shared rules for what each Tier A file means, who may edit it, and how `user_ins
 
 ### Orchestrator context
 
-Each cycle, **before** the routing LLM runs, `lab/workflows/research_graph.py` performs **pre-orchestrator Tier A management**: if any non-system Tier A file is larger than its saved line (default 40k characters, or `min(40_000, last_size)` from the prior cycle), the internal `memory_compactor` worker runs once to shrink files on disk. Then `format_orchestrator_context()` in `lab/memory.py` builds the routing prompt from that state (previous `context_summary`, last worker summary, full Tier A bodies except `context_summary.md`—which is represented by the previous-summary block rather than the raw file—plus optional **branch memory**). There is **no** mechanical middle-truncation of Tier A inside prompts. The orchestrator returns structured JSON (`worker`, `task`, `reason`, `context_summary`, etc.); a fresh `**context_summary`** is written to disk when provided.
+Each cycle, **before** the routing LLM runs, `lab/workflows/research_graph.py` performs **pre-orchestrator Tier A management**: if any non-system Tier A file is larger than its saved line (default **20k** characters, or `max(20_000, last_size_after_compact)` from the prior cycle per file), the internal `memory_compactor` worker runs once to shrink files on disk. Then `format_orchestrator_context()` in `lab/memory.py` builds the routing prompt from that state (previous `context_summary`, last worker summary, full Tier A bodies except `context_summary.md`—which is represented by the previous-summary block rather than the raw file—plus optional **branch memory**). There is **no** mechanical middle-truncation of Tier A inside prompts. The orchestrator returns structured JSON (`worker`, `task`, `reason`, `context_summary`, etc.); a fresh `**context_summary`** is written to disk when provided.
 
 ### Worker packets
 
@@ -108,7 +108,7 @@ Each cycle, **before** the routing LLM runs, `lab/workflows/research_graph.py` p
 
 ### Context size and limits
 
-Optional `RunConfig.worker_packet_max_chars` caps the **assembled worker/async-agent packet** with a head/tail trim. `system_recent_run_events_limit` controls how many recent graph-worker events feed the **Recent activity** section in `system.md`. Tier A growth is handled by the **pre-orchestrator** `memory_compactor` pass (40k default trigger; per-file persisted lines in `pre_orchestrator_compact_state.json`) and optional whole-packet caps above—not by silently clipping individual Tier A files inside the routing or worker prompts.
+Optional `RunConfig.worker_packet_max_chars` caps the **assembled worker/async-agent packet** with a head/tail trim. `system_recent_run_events_limit` controls how many recent graph-worker events feed the **Recent activity** section in `system.md`. Tier A growth is handled by the **pre-orchestrator** `memory_compactor` pass (20k default trigger; per-file persisted lines in `pre_orchestrator_compact_state.json`) and optional whole-packet caps above—not by silently clipping individual Tier A files inside the routing or worker prompts.
 
 ## Layout
 

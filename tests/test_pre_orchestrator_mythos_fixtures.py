@@ -1,7 +1,7 @@
 """Pre-orchestrator compaction using Tier A snapshots from the mythosunwritten project.
 
 Fixtures live under ``tests/fixtures/mythosunwritten_tier_a/`` (copied from that repo's
-``.lab/state/*.md``). At capture time ``roadmap.md`` was >40k chars so the pre-orchestrator
+``.lab/state/*.md``). At capture time ``roadmap.md`` was >20k chars so the pre-orchestrator
 pass must schedule ``memory_compactor`` before the routing LLM runs.
 
 **Real CLI integration** (optional): set ``LAB_RUN_REAL_MEMORY_COMPACTOR=1`` and ensure
@@ -244,7 +244,7 @@ def _install_mythos_tier_a(researcher_root: Path) -> None:
 
 
 def test_mythos_fixtures_roadmap_exceeds_pre_orchestrator_default() -> None:
-    """Sanity: bundled mythos snapshot still has at least one Tier A file over 40k."""
+    """Sanity: bundled mythos snapshot still has at least one Tier A file over the default threshold."""
     roadmap = (FIXTURE_TIER_A_DIR / "roadmap.md").read_text(encoding="utf-8")
     assert len(roadmap) > research_graph.PRE_ORCHESTRATOR_COMPACT_THRESHOLD_CHARS
 
@@ -337,7 +337,7 @@ def test_pre_orchestrator_invokes_memory_compactor_with_mythos_tier_a(
     ft = st.get("file_thresholds")
     assert isinstance(ft, dict)
     assert "roadmap.md" in ft
-    assert ft["roadmap.md"] == min(
+    assert ft["roadmap.md"] == max(
         research_graph.PRE_ORCHESTRATOR_COMPACT_THRESHOLD_CHARS,
         len((memory.state_dir(tmp_path) / "roadmap.md").read_text(encoding="utf-8")),
     )
