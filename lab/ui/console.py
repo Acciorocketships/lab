@@ -17,6 +17,7 @@ from rich.markup import escape as rich_escape
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, VerticalScroll
+from textual.css.query import NoMatches
 from textual.widgets import Static, TextArea
 
 from lab import db, helpers, memory
@@ -338,9 +339,7 @@ class ResearchConsole(App[None]):
             yield PromptTextArea(
                 "",
                 id="prompt",
-                placeholder=(
-                    "Type here · Enter to send · Shift+Enter or Ctrl+Enter for new line"
-                ),
+                placeholder=("Type here · Enter to send · Tab for new line"),
                 compact=True,
                 show_line_numbers=False,
             )
@@ -348,7 +347,6 @@ class ResearchConsole(App[None]):
     def on_mount(self) -> None:
         self._cleanup_orphaned_cycles()
         self._sync_rebuild_ids_from_db()
-        self._seed_memory_compactor_active()
         self._refresh_header()
         stream = self.query_one("#stream-text", Static)
         stream.display = False
@@ -361,6 +359,8 @@ class ResearchConsole(App[None]):
         self.set_interval(_FAST_POLL_INTERVAL_SEC, self._poll_fast)
         self.set_interval(_ANIMATION_POLL_INTERVAL_SEC, self._poll_animation)
         self.set_interval(_SLOW_POLL_INTERVAL_SEC, self._poll_slow)
+        # Expensive NOT EXISTS seed (~seconds on large DBs): must not block first paint.
+        self.call_after_refresh(self._deferred_seed_memory_compactor_active)
 
     def _complete_initial_activity_rebuild(self) -> None:
         """Run after first paint so the terminal shows a loading line instead of blocking on_mount.
@@ -1756,16 +1756,17 @@ class ResearchConsole(App[None]):
 
         Uses a reactive in-memory flag maintained by ``_poll_stream`` (set True on
         memory_compactor chunks) and ``_poll_run_events`` (set False on memory_compactor
-        worker events). The flag is seeded once from the DB on mount because running
-        the equivalent ``NOT EXISTS`` query every animation tick can take multiple
-        seconds on a large DB and blocks the Textual event loop.
+        worker events). The flag is seeded once from the DB after the first refresh
+        (see ``_deferred_seed_memory_compactor_active``) because running the equivalent
+        ``NOT EXISTS`` query every animation tick can take multiple seconds on a large
+        DB and blocks the Textual event loop.
         """
         if not self._memory_compactor_active_seeded:
             self._seed_memory_compactor_active()
         return self._memory_compactor_active
 
     def _seed_memory_compactor_active(self) -> None:
-        """One-time DB read to initialize ``_memory_compactor_active`` at session start."""
+        """One-time DB read to initialize ``_memory_compactor_active`` (may run deferred)."""
         self._memory_compactor_active_seeded = True
         try:
             row = self._conn.execute(
@@ -1785,6 +1786,10 @@ class ResearchConsole(App[None]):
             self._memory_compactor_active = False
             return
         self._memory_compactor_active = row is not None
+
+    def _deferred_seed_memory_compactor_active(self) -> None:
+        """Run ``_seed_memory_compactor_active`` after first refresh so startup stays responsive."""
+        self._seed_memory_compactor_active()
 
     def _invalidate_memory_compactor_placeholder_cache(self) -> None:
         """No-op retained for compatibility; the flag is updated reactively now."""
@@ -2703,7 +2708,7 @@ class ResearchConsole(App[None]):
             "  [bold]/redo[/]         Restore the last undone checkpoint and replay local edits on top\n"
             "  [bold]/help[/]         This message\n"
             "\n  Plain text is queued as an instruction.\n"
-            "  [dim]Enter[/] sends · [dim]Shift+Enter[/] for newline · navigate lines with arrows\n"
+            "  [dim]Enter[/] sends · [dim]Tab[/] starts a new line in the prompt · arrows move the caret\n"
         )
 
     def _cmd_agent(self, body: str) -> None:
