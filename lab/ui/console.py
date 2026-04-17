@@ -35,7 +35,6 @@ _FORCED_SCHEDULER_KILL_WAIT_TIMEOUT = 0.1
 _FAST_POLL_INTERVAL_SEC = 0.1
 _ANIMATION_POLL_INTERVAL_SEC = 0.2
 _SLOW_POLL_INTERVAL_SEC = 0.75
-_MEMORY_COMPACTOR_PLACEHOLDER_CACHE_SEC = 0.5
 
 
 @dataclass
@@ -299,8 +298,12 @@ class ResearchConsole(App[None]):
         self._stream_is_running_placeholder = False
         self._running_worker_tick = 0
         self._scheduler_start_pending = False
-        self._memory_compactor_placeholder_cached = False
-        self._memory_compactor_placeholder_checked_at = 0.0
+        # Active while a memory_compactor stream has chunks but no matching
+        # completion event yet. Tracked reactively from _poll_stream / _poll_run_events
+        # because the equivalent SQL NOT EXISTS query grew to multi-second latency
+        # on the main event loop, stalling the animation and keyboard input.
+        self._memory_compactor_active = False
+        self._memory_compactor_active_seeded = False
         self._welcome_widgets: list[Static] = []
         self._redo_stack: list[_RedoSnapshot] = []
         self._checkpoint_notice_widget: Static | None = None
@@ -345,6 +348,7 @@ class ResearchConsole(App[None]):
     def on_mount(self) -> None:
         self._cleanup_orphaned_cycles()
         self._sync_rebuild_ids_from_db()
+        self._seed_memory_compactor_active()
         self._refresh_header()
         stream = self.query_one("#stream-text", Static)
         stream.display = False
@@ -1748,10 +1752,21 @@ class ResearchConsole(App[None]):
         self._refresh_live_diff()
 
     def _memory_compactor_stream_before_worker_event(self) -> bool:
-        """True while Tier A compaction is in flight: stream chunks exist but no worker row yet."""
-        now = time.time()
-        if now - self._memory_compactor_placeholder_checked_at < _MEMORY_COMPACTOR_PLACEHOLDER_CACHE_SEC:
-            return self._memory_compactor_placeholder_cached
+        """True while Tier A compaction is in flight: stream chunks exist but no worker row yet.
+
+        Uses a reactive in-memory flag maintained by ``_poll_stream`` (set True on
+        memory_compactor chunks) and ``_poll_run_events`` (set False on memory_compactor
+        worker events). The flag is seeded once from the DB on mount because running
+        the equivalent ``NOT EXISTS`` query every animation tick can take multiple
+        seconds on a large DB and blocks the Textual event loop.
+        """
+        if not self._memory_compactor_active_seeded:
+            self._seed_memory_compactor_active()
+        return self._memory_compactor_active
+
+    def _seed_memory_compactor_active(self) -> None:
+        """One-time DB read to initialize ``_memory_compactor_active`` at session start."""
+        self._memory_compactor_active_seeded = True
         try:
             row = self._conn.execute(
                 """
@@ -1767,14 +1782,13 @@ class ResearchConsole(App[None]):
                 """
             ).fetchone()
         except sqlite3.OperationalError:
-            return False
-        self._memory_compactor_placeholder_cached = row is not None
-        self._memory_compactor_placeholder_checked_at = now
-        return self._memory_compactor_placeholder_cached
+            self._memory_compactor_active = False
+            return
+        self._memory_compactor_active = row is not None
 
     def _invalidate_memory_compactor_placeholder_cache(self) -> None:
-        self._memory_compactor_placeholder_checked_at = 0.0
-        self._memory_compactor_placeholder_cached = False
+        """No-op retained for compatibility; the flag is updated reactively now."""
+        return
 
     def _poll_animated_stream_status(self) -> None:
         """Animate Orchestrating… / Compressing Memory… or Running {worker}… until stream replaces the panel."""
@@ -1975,8 +1989,8 @@ class ResearchConsole(App[None]):
             worker = row["worker"]
             task = row["task"] or ""
 
-            if worker == "memory_compactor":
-                self._invalidate_memory_compactor_placeholder_cache()
+            if worker == "memory_compactor" and kind == "worker":
+                self._memory_compactor_active = False
 
             if kind == "orchestrator":
                 self._orchestrating = False
@@ -2210,7 +2224,8 @@ class ResearchConsole(App[None]):
         for row in rows:
             self._last_stream_id = row["id"]
             if row["worker"] == "memory_compactor":
-                self._invalidate_memory_compactor_placeholder_cache()
+                self._memory_compactor_active = True
+                self._memory_compactor_active_seeded = True
                 continue
             parsed = events.parse_stream_event(row["chunk"], full_text=True)
             if parsed is None:
