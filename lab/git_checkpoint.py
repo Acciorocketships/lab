@@ -21,6 +21,30 @@ CHECKPOINT_BRANCH = "checkpoints"
 _EXCLUDE_PATHSPEC = ":(exclude).lab"
 
 
+def _git_add_paths(
+    project_dir: Path, env: dict[str, str], paths: list[str]
+) -> None:
+    """Stage *paths* via ``git add -A``.
+
+    Long path lists are piped through ``--pathspec-from-file`` with NUL
+    terminators so the argv never exceeds the OS ``ARG_MAX`` limit, which
+    previously crashed the scheduler with ``OSError: [Errno 7] Argument list
+    too long: 'git'`` on large working trees.
+    """
+    if not paths:
+        subprocess.run(
+            ["git", "add", "-A", "--", "."],
+            cwd=project_dir, env=env, check=True, capture_output=True,
+        )
+        return
+    stdin_bytes = ("\x00".join(paths) + "\x00").encode("utf-8")
+    subprocess.run(
+        ["git", "add", "-A", "--pathspec-from-file=-", "--pathspec-file-nul"],
+        cwd=project_dir, env=env, check=True, capture_output=True,
+        input=stdin_bytes,
+    )
+
+
 def is_git_repo(project_dir: Path) -> bool:
     return (project_dir / ".git").is_dir()
 
@@ -35,10 +59,8 @@ def ensure_git_repo(project_dir: Path) -> None:
     )
     _ensure_lab_excluded(project_dir)
     env = _checkpoint_env()
-    subprocess.run(
-        ["git", "add", "-A"],
-        cwd=project_dir, env=env, check=True, capture_output=True,
-    )
+    # Empty initial commit only: staging the full tree with `git add -A` here
+    # made `lab init` minutes-long (or worse) in large/no-.gitignore directories.
     subprocess.run(
         ["git", "commit", "-m", "Initial commit (created by lab)", "--allow-empty"],
         cwd=project_dir, env=env, check=True, capture_output=True,
@@ -106,12 +128,7 @@ def create_checkpoint(project_dir: Path, cycle: int, worker: str) -> str | None:
     paths = _snapshot_paths(project_dir)
 
     try:
-        add_cmd = ["git", "add", "-A", "--"]
-        if paths:
-            add_cmd.extend(paths)
-        else:
-            add_cmd.append(".")
-        subprocess.run(add_cmd, cwd=project_dir, env=env, check=True, capture_output=True)
+        _git_add_paths(project_dir, env, paths)
 
         tree_sha = subprocess.run(
             ["git", "write-tree"],
@@ -267,12 +284,7 @@ def snapshot_ref(
     paths = _snapshot_paths(project_dir)
 
     try:
-        add_cmd = ["git", "add", "-A", "--"]
-        if paths:
-            add_cmd.extend(paths)
-        else:
-            add_cmd.append(".")
-        subprocess.run(add_cmd, cwd=project_dir, env=env, check=True, capture_output=True)
+        _git_add_paths(project_dir, env, paths)
         tree_sha = subprocess.run(
             ["git", "write-tree"],
             cwd=project_dir, env=env, check=True, capture_output=True, text=True,

@@ -45,12 +45,19 @@ def _build_cmd(
     if not exe:
         return None
     cmd: list[str] = [exe, "-p", "--output-format", output_format, "--max-turns", str(max_turns)]
+    # Claude requires --verbose when combining --print with --output-format=stream-json.
+    if output_format == "stream-json":
+        cmd.append("--verbose")
     if system_append:
         cmd.extend(["--append-system-prompt", system_append])
     if allowed_tools:
         cmd.extend(["--allowedTools", allowed_tools])
     if resume_session:
         cmd.extend(["--resume", resume_session])
+    # `--allowedTools` / `--disallowedTools` are variadic (<tools...>) and will
+    # greedily consume the positional prompt as additional tool names. Use `--`
+    # to terminate option parsing so the final argv is always treated as the prompt.
+    cmd.append("--")
     cmd.append(prompt)
     return cmd
 

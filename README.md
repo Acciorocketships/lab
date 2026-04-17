@@ -30,7 +30,7 @@ In the console, use `/start` to run the background supervisor, `/pause` to finis
 | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `lab`       | Open the interactive console. Requires `lab setup` and `lab init` in the project directory (or cwd).                                                                                                                                                 |
 | `lab setup` | Interactive wizard: model provider, model name, credentials (OAuth or API key), default worker backend. Writes `~/.lab/config.toml`.                                                                                                                 |
-| `lab init`  | Initialize the current directory as a lab project. Creates `.lab/` (config, memory layout, seed Tier A files). Prompts for a single **research brief** (goals, approach, and what “done” means). If `.lab/` already exists, asks before overwriting. |
+| `lab init`  | Initialize the current directory as a lab project. Creates `.lab/` (config, memory layout, seed Tier A files). Seeds an empty **research brief**; starting `lab` runs `/edit idea` automatically when the saved brief is still empty. If `.lab/` already exists, asks before overwriting. |
 
 
 ## Console commands

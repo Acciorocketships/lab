@@ -14,7 +14,6 @@ from lab.global_config import (
 from lab.runner import (
     LabConfigError,
     init_project_at,
-    read_multiline_terminal,
     run_auth_test,
     run_interactive_global_setup,
     run_lab_console,
@@ -73,30 +72,21 @@ def init() -> None:
     else:
         overwrite = False
 
-    click.echo("")
-    click.echo(
-        "Research brief — goal, approach, and what “done” looks like (all in one place)."
-    )
-    brief = read_multiline_terminal(click).strip()
-    if not brief:
-        click.echo("Error: research brief is required.", err=True)
-        raise SystemExit(1)
-
     gcfg = load_global_config()
     preferences = gcfg.code_style
 
     try:
-        root = init_project_at(project_dir, research_idea=brief, preferences=preferences, overwrite=overwrite)
+        init_project_at(
+            project_dir,
+            research_idea="",
+            preferences=preferences,
+            overwrite=overwrite,
+        )
     except LabConfigError as e:
         click.echo(f"Error: {e}", err=True)
         raise SystemExit(1)
 
-    click.echo(f"\nProject initialized at {root}")
     click.echo("Run `lab` to start the console.")
-    click.echo(
-        f"Preferences are in {root / 'state' / 'preferences.md'} "
-        "(seeded from global [preferences] code_style; edit directly as needed)."
-    )
 
 
 if __name__ == "__main__":

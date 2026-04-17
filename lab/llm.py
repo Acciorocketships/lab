@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import string
 import time
-from typing import Any, TypeVar
+from typing import TypeVar
 
 from openai import OpenAI
 from pydantic import BaseModel, ValidationError
@@ -25,6 +24,16 @@ _JSON_STRING_ESCAPE_CHARS = set('"\\/bfnrt')
 _HEX_DIGITS = set(string.hexdigits)
 
 
+def _agent_debug_log(*_args: object, **_kwargs: object) -> None:
+    """No-op compatibility shim.
+
+    Debug-mode instrumentation used this name during development; a partially
+    reverted or cached ``lab.llm`` module can still reference it. Keeping the
+    symbol defined avoids ``NameError`` without changing runtime behavior.
+    """
+    return None
+
+
 def _client(base_url: str | None, api_key: str | None) -> OpenAI:
     """Build OpenAI client; api_key may be env OPENAI_API_KEY."""
     key = api_key or os.environ.get("OPENAI_API_KEY") or ""
@@ -37,6 +46,13 @@ def _use_openai_parse_api(base_url: str | None) -> bool:
     if not base_url:
         return True
     return "openrouter.ai" not in base_url.lower()
+
+
+def _openrouter_completion_kwargs(base_url: str | None) -> dict[str, int]:
+    """OpenRouter reserves against max output; omitting max_tokens can default very high (e.g. 65535) and return 402 when credits cannot cover that reservation."""
+    if base_url and "openrouter.ai" in base_url.lower():
+        return {"max_tokens": 8192}
+    return {}
 
 
 def resolve_llm_api_key(cfg: RunConfig) -> str | None:
@@ -189,6 +205,7 @@ def generate(
                     model=model,
                     messages=messages,  # type: ignore[arg-type]
                     response_format=response_format,
+                    **_openrouter_completion_kwargs(base_url),
                 )
                 msg = completion.choices[0].message
                 parsed = msg.parsed
@@ -202,6 +219,7 @@ def generate(
                 model=model,
                 messages=messages,  # type: ignore[arg-type]
                 response_format={"type": "json_object"},
+                **_openrouter_completion_kwargs(base_url),
             )
             text = raw.choices[0].message.content or "{}"
             try:
@@ -230,5 +248,6 @@ def generate(
     completion = client.chat.completions.create(
         model=model,
         messages=messages,  # type: ignore[arg-type]
+        **_openrouter_completion_kwargs(base_url),
     )
     return completion.choices[0].message.content or ""

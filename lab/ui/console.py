@@ -375,6 +375,8 @@ class ResearchConsole(App[None]):
                 self.query_one("#prompt", PromptTextArea).focus()
             except Exception:
                 pass
+        if self._research_idea_body_is_empty():
+            self._cmd_edit("idea")
 
     # --- activity helpers -----------------------------------------------------
 
@@ -736,9 +738,11 @@ class ResearchConsole(App[None]):
 
         self._mount_before = self._history_lazy_anchor
         widgets_before = len(self._current_cycle_widgets)
-        for item in chunk:
-            self._mount_timeline_item(item, by_cycle, excerpts)
-        self._mount_before = None
+        try:
+            for item in chunk:
+                self._mount_timeline_item(item, by_cycle, excerpts)
+        finally:
+            self._mount_before = None
 
         new_anchor = (
             self._current_cycle_widgets[widgets_before]
@@ -1013,8 +1017,12 @@ class ResearchConsole(App[None]):
         if not batch:
             self._cancel_pending_rebuild_chain()
             return
-        for item in reversed(batch):  # chronological within the batch
-            self._mount_timeline_item(item, by_cycle, excerpts)
+        try:
+            for item in reversed(batch):  # chronological within the batch
+                self._mount_timeline_item(item, by_cycle, excerpts)
+        except Exception:
+            self._cancel_pending_rebuild_chain()
+            raise
         self._rebuild_chain_offset = offset + len(batch)
         if self._rebuild_chain_offset < len(items):
             self._rebuild_chain_timer = self.set_timer(0, self._rebuild_chain_tick)
@@ -1093,8 +1101,11 @@ class ResearchConsole(App[None]):
 
     def _mount_anchor(self) -> Static:
         """Return the widget that new activity lines should be inserted before."""
-        if self._mount_before is not None:
-            return self._mount_before
+        anchor = self._mount_before
+        if anchor is not None and getattr(anchor, "parent", None) is not None:
+            return anchor
+        if anchor is not None:
+            self._mount_before = None
         return self.query_one("#stream-text", Static)
 
     def _write_task(self, task: str) -> Static | None:
@@ -2627,6 +2638,13 @@ class ResearchConsole(App[None]):
             return
         self._live_plan_state = _LivePlanState(widget=widget, last_text=checklist)
 
+    def _research_idea_body_is_empty(self) -> bool:
+        """True when ``research_idea.md`` has no body under the Tier A heading."""
+        pending = self._pending_edit_spec("idea")
+        if pending is None:
+            return True
+        return not self._read_pending_edit_body(pending).strip()
+
     def _pending_edit_spec(
         self,
         target: str,
@@ -3064,6 +3082,10 @@ class ResearchConsole(App[None]):
         from lab import git_checkpoint
 
         researcher_root = project_researcher_root(self.cfg.project_dir)
+
+        # Async rebuild / lazy history may still reference cycle widgets as mount
+        # anchors; clear those before removing any nodes from the tree.
+        self._cancel_pending_rebuild_chain()
 
         # Remove in-progress cycle widgets unconditionally -- the scheduler is
         # dead at this point so the cycle cannot complete.

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 from pathlib import Path
+from unittest.mock import MagicMock
 
 from rich import box
 from rich.console import Console
@@ -252,6 +253,48 @@ def test_submit_prompt_text_instruction_then_start_separately_resumes_immediatel
     assert db.get_system_state(conn)["control_mode"] == "active"
     assert console._orchestrating is True
 
+    console._conn.close()
+
+
+def test_complete_initial_activity_rebuild_opens_edit_when_brief_empty(tmp_path: Path) -> None:
+    db_path = tmp_path / "runtime.db"
+    cfg = _cfg(tmp_path)
+    cfg.project_dir.mkdir(parents=True)
+    cfg.researcher_root.mkdir(parents=True, exist_ok=True)
+    console = ResearchConsole(db_path, cfg)
+    prompt = _FakePrompt()
+    writes: list[str] = []
+    console.query_one = _console_query_with_prompt_stub(writes, prompt)  # type: ignore[method-assign]
+    mock_edit = MagicMock()
+    console._cmd_edit = mock_edit  # type: ignore[method-assign]
+
+    console._complete_initial_activity_rebuild()
+
+    mock_edit.assert_called_once_with("idea")
+    console._conn.close()
+
+
+def test_complete_initial_activity_rebuild_skips_edit_when_brief_has_body(tmp_path: Path) -> None:
+    db_path = tmp_path / "runtime.db"
+    cfg = _cfg(tmp_path)
+    cfg.project_dir.mkdir(parents=True)
+    cfg.researcher_root.mkdir(parents=True, exist_ok=True)
+    state_dir = memory.state_dir(cfg.researcher_root)
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / "research_idea.md").write_text(
+        "# Research brief\n\nInvestigate widget performance.\n",
+        encoding="utf-8",
+    )
+    console = ResearchConsole(db_path, cfg)
+    prompt = _FakePrompt()
+    writes: list[str] = []
+    console.query_one = _console_query_with_prompt_stub(writes, prompt)  # type: ignore[method-assign]
+    mock_edit = MagicMock()
+    console._cmd_edit = mock_edit  # type: ignore[method-assign]
+
+    console._complete_initial_activity_rebuild()
+
+    mock_edit.assert_not_called()
     console._conn.close()
 
 
