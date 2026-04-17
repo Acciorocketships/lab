@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -467,6 +468,46 @@ def test_cmd_edit_invalid_usage_shows_helpful_message(tmp_path: Path) -> None:
     assert any("Usage:" in message and "/edit [idea|prefs]" in message for message in writes)
     assert console._pending_prompt_edit is None
 
+    console._conn.close()
+
+
+def test_cmd_report_no_directory(tmp_path: Path) -> None:
+    db_path = tmp_path / "runtime.db"
+    cfg = _cfg(tmp_path)
+    cfg.project_dir.mkdir(parents=True, exist_ok=True)
+    console = ResearchConsole(db_path, cfg)
+    prompt = _FakePrompt()
+    writes: list[str] = []
+    console.query_one = _console_query_with_prompt_stub(writes, prompt)  # type: ignore[method-assign]
+
+    console._submit_prompt_text("/report")
+
+    assert any("No reports found." in message for message in writes)
+    console._conn.close()
+
+
+def test_cmd_report_picks_newest_markdown(tmp_path: Path) -> None:
+    db_path = tmp_path / "runtime.db"
+    cfg = _cfg(tmp_path)
+    reports = cfg.project_dir / "reports"
+    reports.mkdir(parents=True, exist_ok=True)
+    older = reports / "older.md"
+    newer = reports / "newer.md"
+    older.write_text("# Older report\n", encoding="utf-8")
+    newer.write_text("# Newer report\n", encoding="utf-8")
+    os.utime(older, (100, 100))
+    os.utime(newer, (200, 200))
+
+    console = ResearchConsole(db_path, cfg)
+    prompt = _FakePrompt()
+    writes: list[str] = []
+    console.query_one = _console_query_with_prompt_stub(writes, prompt)  # type: ignore[method-assign]
+
+    console._submit_prompt_text("/report")
+
+    joined = "\n".join(writes)
+    assert "Newer report" in joined
+    assert "Older report" not in joined
     console._conn.close()
 
 

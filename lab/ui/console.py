@@ -2380,6 +2380,10 @@ class ResearchConsole(App[None]):
             self._cmd_plan()
             return
 
+        if cmd == "report":
+            self._cmd_report()
+            return
+
         if cmd == "edit":
             self._cmd_edit(rest)
             return
@@ -2638,6 +2642,36 @@ class ResearchConsole(App[None]):
             return
         self._live_plan_state = _LivePlanState(widget=widget, last_text=checklist)
 
+    def _cmd_report(self) -> None:
+        """Show the newest ``*.md`` under ``project_dir/reports`` (by mtime)."""
+        reports_dir = self.cfg.project_dir / "reports"
+        try:
+            if not reports_dir.is_dir():
+                self._write_below_stream_box("  No reports found.")
+                return
+            candidates = [
+                p
+                for p in reports_dir.iterdir()
+                if p.is_file() and p.suffix.lower() == ".md"
+            ]
+            if not candidates:
+                self._write_below_stream_box("  No reports found.")
+                return
+            latest = max(candidates, key=lambda p: p.stat().st_mtime)
+            text = helpers.read_text(latest, default="")
+        except OSError:
+            self._write_below_stream_box("  No reports found.")
+            return
+        if not text.strip():
+            self._write_below_stream_box("  No reports found.")
+            return
+        self._write_below_stream_renderable(
+            events.wrap_result_renderable(
+                events.render_markdown(text),
+                title=f"[dim]report[/] [dim]{rich_escape(latest.name)}[/]",
+            ),
+        )
+
     def _research_idea_body_is_empty(self) -> bool:
         """True when ``research_idea.md`` has no body under the Tier A heading."""
         pending = self._pending_edit_spec("idea")
@@ -2720,6 +2754,7 @@ class ResearchConsole(App[None]):
             "  [bold]/exit[/]         Stop agent and quit\n"
             "  [bold]/edit[/]         /edit idea to edit the research idea; /edit prefs to edit the preferences.\n"
             "  [bold]/plan[/]         Show the live roadmap checklist\n"
+            "  [bold]/report[/]       Show the most recent Markdown file in [bold]reports/[/] (by modification time)\n"
             "  [bold]/diff[/]         Line-by-line diff on current cycle. [bold]/diff n[/] = diff in cycle n; [bold]/diff n m[/] = diff in cycle range (inclusive)\n"
             "  [bold]/reset[/]        Clear DB and runtime memory; keep research_idea.md + preferences.md; project code unchanged\n"
             "  [bold]/undo[/]         Revert since last worker; restarts orchestrator only if agent was running\n"
