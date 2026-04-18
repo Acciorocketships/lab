@@ -2761,15 +2761,12 @@ class ResearchConsole(App[None]):
         self._pending_prompt_edit = pending
         self._load_prompt_text(self._read_pending_edit_body(pending))
         if pending.target == "idea":
-            label = "research idea"
+            msg = "  [yellow]Editing research idea.[/]"
         elif pending.target == "prefs":
-            label = "preferences"
+            msg = "  [yellow]Editing preferences.[/]"
         else:
-            label = "user instructions (## New + queued)"
-        self._write_below_stream_box(
-            f"  [yellow]Editing {label}.[/] The next non-command submission updates the "
-            f"[bold]instruction queue[/] and clears [bold]{pending.path.name}[/] under [bold]## New[/]."
-        )
+            msg = "  [yellow]Editing user instructions.[/]"
+        self._write_below_stream_box(msg)
 
     def _cmd_help(self) -> None:
         self._write_below_stream_box(

@@ -19,6 +19,7 @@ from lab.agents import (
     experimenter,
     implementer,
     memory_compactor,
+    optimiser,
     planner,
     query,
     reporter as reporter_mod,
@@ -27,6 +28,7 @@ from lab.agents import (
     shared_prompt,
     skill_writer,
 )
+from lab import optimisation
 from lab.config import RunConfig
 from lab.state import ResearchState
 
@@ -38,6 +40,7 @@ _WORKER_MODULES: dict[str, Any] = {
     "implementer": implementer,
     "debugger": debugger,
     "experimenter": experimenter,
+    "optimiser": optimiser,
     "critic": critic_mod,
     "reviewer": reviewer,
     "reporter": reporter_mod,
@@ -122,6 +125,9 @@ def choose_action(
         last_worker_output=str(state.get("last_action_summary", "") or ""),
         previous_context_summary=prev,
     )
+    optimisation_ctx = optimisation.optimisation_context_for_orchestrator(researcher_root)
+    if optimisation_ctx:
+        ctx = ctx.rstrip() + "\n\n" + optimisation_ctx.strip() + "\n"
     if forced_worker:
         dec = orchestrator.OrchestratorDecision(
             worker=forced_worker,
@@ -159,6 +165,41 @@ def choose_action(
                 ),
             }
         )
+    optimisation_status = optimisation.saturation_status(
+        optimisation.load_optimisation_history(researcher_root)
+    )
+    if not forced_worker and optimisation_status.active:
+        if dec.worker == "done" and not optimisation_status.saturated:
+            dec = dec.model_copy(
+                update={
+                    "worker": "optimiser",
+                    "task": (
+                        "Continue the optimisation loop with one more benchmarked iteration. "
+                        "Use the optimisation history to pick the next change and update the "
+                        "saturation signal afterwards."
+                    ),
+                    "reason": (
+                        "Optimisation history says the loop is still active and unsaturated: "
+                        f"{optimisation_status.reason}"
+                    ),
+                }
+            )
+        elif dec.worker == "optimiser" and optimisation_status.saturated:
+            dec = dec.model_copy(
+                update={
+                    "worker": "critic",
+                    "task": (
+                        "Review the latest optimisation history and decide whether performance "
+                        "has saturated, whether the current result is good enough, and what "
+                        "non-optimiser follow-up should happen next."
+                    ),
+                    "reason": (
+                        "The optimisation ledger indicates saturation, so do not run another "
+                        f"optimiser iteration blindly. {optimisation_status.reason}"
+                    ),
+                    "worker_kwargs": {"persona": "data_scientist"},
+                }
+            )
     new_cs = (dec.context_summary or "").strip()
     if new_cs:
         memory.write_context_summary(researcher_root, dec.context_summary)

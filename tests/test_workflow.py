@@ -8,6 +8,7 @@ import pytest
 
 from lab import db, memory
 from lab.config import RunConfig
+from lab.optimisation import OptimisationHistory, OptimisationIteration, write_optimisation_history
 from lab.orchestrator import OrchestratorCredentialsError, OrchestratorDecision
 from lab.state import ResearchState
 from lab.workflows import research_graph
@@ -143,6 +144,58 @@ def test_execute_worker_query_uses_query_prompt(tmp_path: Path, monkeypatch) -> 
     assert "# Worker: query" in packet
     assert "You are the Query agent." in packet
     assert "Search the local codebase and researcher files" in packet
+
+
+def test_execute_worker_optimiser_uses_optimiser_prompt(tmp_path: Path, monkeypatch) -> None:
+    """Routing to optimiser should build a packet with the optimiser worker prompt."""
+    cfg = RunConfig(
+        researcher_root=tmp_path,
+        project_dir=tmp_path / "p",
+        orchestrator_backend="openai",
+        openai_api_key=None,
+        openai_base_url=None,
+        openai_model="gpt-4o-mini",
+        default_worker_backend="cursor",
+        cursor_agent_model="composer-2",
+    )
+    memory.ensure_memory_layout(tmp_path)
+    cfg.project_dir.mkdir()
+
+    captured: dict[str, str] = {}
+
+    def _fake_run_worker(pkt: str, **kwargs: object) -> dict[str, object]:
+        captured["packet"] = pkt
+        return {"ok": True, "parsed": {"result": "Benchmarked candidate and rejected it"}}
+
+    monkeypatch.setattr(research_graph.agents_base, "run_worker", _fake_run_worker)
+
+    state: ResearchState = {
+        "current_goal": "Improve reward",
+        "current_branch": "main",
+        "current_worker": "optimiser",
+        "cycle_count": 0,
+        "control_mode": "active",
+        "pending_instructions": [],
+        "last_action_summary": "",
+        "roadmap_step": "",
+        "orchestrator_task": "Run one optimisation iteration",
+        "orchestrator_reason": "Baseline exists and the next goal is better performance",
+        "acceptance_satisfied": False,
+        "shutdown_requested": False,
+        "worker_kwargs": {},
+    }
+
+    out = research_graph.execute_worker(
+        state,
+        cfg=cfg,
+        researcher_root=tmp_path,
+        project_dir=cfg.project_dir,
+    )
+
+    assert out["worker_ok"] is True
+    assert "# Worker: optimiser" in captured["packet"]
+    assert "You are the Optimiser." in captured["packet"]
+    assert "one iteration of the performance-improvement loop" in captured["packet"]
 
 
 def test_execute_worker_retries_after_empty_output_with_smaller_packet(tmp_path: Path, monkeypatch) -> None:
@@ -295,6 +348,159 @@ def test_choose_action_pre_orchestrator_runs_memory_compactor_when_tier_file_lar
         research_graph.PRE_ORCHESTRATOR_COMPACT_THRESHOLD_CHARS,
         len("compacted\n"),
     )
+
+
+def test_choose_action_redirects_done_to_optimiser_when_loop_active(tmp_path: Path, monkeypatch) -> None:
+    """The orchestrator should not stop while optimisation memory still says the loop is active."""
+    cfg = RunConfig(
+        researcher_root=tmp_path,
+        project_dir=tmp_path / "p",
+        orchestrator_backend="openai",
+        openai_api_key=None,
+        openai_base_url=None,
+        openai_model="gpt-4o-mini",
+        default_worker_backend="cursor",
+        cursor_agent_model="composer-2",
+    )
+    memory.ensure_memory_layout(tmp_path)
+    cfg.project_dir.mkdir()
+
+    write_optimisation_history(
+        tmp_path,
+        OptimisationHistory(
+            objective="maximize reward",
+            optimisation_active=True,
+            iterations=[
+                OptimisationIteration(iteration=1, status="merged", relative_gain=0.10, improved=True),
+                OptimisationIteration(iteration=2, status="merged", relative_gain=0.04, improved=True),
+            ],
+        ),
+    )
+
+    db_path = tmp_path / "db.sqlite"
+    conn = db.connect_db(db_path)
+    db.get_system_state(conn)
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(
+        research_graph.orchestrator,
+        "decide_orchestrator",
+        lambda *_a, **_k: OrchestratorDecision(
+            worker="done",
+            task="finished",
+            reason="looks complete",
+            roadmap_step="",
+            context_summary="ctx",
+            worker_kwargs={},
+        ),
+    )
+
+    state: ResearchState = {
+        "current_goal": "Improve reward",
+        "current_branch": "main",
+        "current_worker": "critic",
+        "cycle_count": 0,
+        "control_mode": "active",
+        "pending_instructions": [],
+        "last_action_summary": "critic said there may still be headroom",
+        "roadmap_step": "",
+        "orchestrator_task": "",
+        "orchestrator_reason": "",
+        "acceptance_satisfied": False,
+        "shutdown_requested": False,
+        "worker_kwargs": {},
+    }
+
+    out = research_graph.choose_action(
+        state,
+        cfg=cfg,
+        researcher_root=tmp_path,
+        project_dir=cfg.project_dir,
+        db_path=db_path,
+    )
+
+    assert out["current_worker"] == "optimiser"
+    assert "unsaturated" in out["last_action_summary"]
+
+
+def test_choose_action_redirects_saturated_optimiser_to_critic(tmp_path: Path, monkeypatch) -> None:
+    """Once optimisation history saturates, do not keep routing blindly back to optimiser."""
+    cfg = RunConfig(
+        researcher_root=tmp_path,
+        project_dir=tmp_path / "p",
+        orchestrator_backend="openai",
+        openai_api_key=None,
+        openai_base_url=None,
+        openai_model="gpt-4o-mini",
+        default_worker_backend="cursor",
+        cursor_agent_model="composer-2",
+    )
+    memory.ensure_memory_layout(tmp_path)
+    cfg.project_dir.mkdir()
+
+    write_optimisation_history(
+        tmp_path,
+        OptimisationHistory(
+            objective="maximize reward",
+            optimisation_active=True,
+            best_iteration=3,
+            best_value=42.0,
+            iterations=[
+                OptimisationIteration(iteration=1, status="merged", relative_gain=0.05, improved=True),
+                OptimisationIteration(iteration=2, status="merged", relative_gain=0.009, improved=True),
+                OptimisationIteration(iteration=3, status="rejected", relative_gain=0.0, improved=False),
+                OptimisationIteration(iteration=4, status="merged", relative_gain=0.004, improved=True),
+            ],
+        ),
+    )
+
+    db_path = tmp_path / "db.sqlite"
+    conn = db.connect_db(db_path)
+    db.get_system_state(conn)
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(
+        research_graph.orchestrator,
+        "decide_orchestrator",
+        lambda *_a, **_k: OrchestratorDecision(
+            worker="optimiser",
+            task="Continue optimising",
+            reason="keep going",
+            roadmap_step="",
+            context_summary="ctx",
+            worker_kwargs={},
+        ),
+    )
+
+    state: ResearchState = {
+        "current_goal": "Improve reward",
+        "current_branch": "main",
+        "current_worker": "optimiser",
+        "cycle_count": 0,
+        "control_mode": "active",
+        "pending_instructions": [],
+        "last_action_summary": "Last iteration barely moved the metric",
+        "roadmap_step": "",
+        "orchestrator_task": "",
+        "orchestrator_reason": "",
+        "acceptance_satisfied": False,
+        "shutdown_requested": False,
+        "worker_kwargs": {},
+    }
+
+    out = research_graph.choose_action(
+        state,
+        cfg=cfg,
+        researcher_root=tmp_path,
+        project_dir=cfg.project_dir,
+        db_path=db_path,
+    )
+
+    assert out["current_worker"] == "critic"
+    assert out["worker_kwargs"] == {"persona": "data_scientist"}
+    assert "saturation" in out["last_action_summary"]
 
 
 def test_choose_action_pre_orchestrator_persists_post_compact_size_when_above_floor(

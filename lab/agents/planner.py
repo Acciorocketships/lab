@@ -28,6 +28,7 @@ After planning, other workers are run to execute the plan. The choice in workers
 - `implementer` — build or modify code and persistent scripts/configs.
 - `debugger` — investigate suspicious behavior, failures, and root causes.
 - `experimenter` — run, monitor, and analyze benchmarks, sweeps, evaluations, and end-to-end result generation.
+- `optimiser` — run one full optimisation iteration on an already-working baseline: benchmark, branch, speculative change, re-benchmark, judge, merge-or-reject, and update optimisation history.
 - `reviewer` — review the code itself for correctness, internal logic, implementation quality, tests, refactoring opportunities, and memory hygiene.
 - `critic` — assess the broader direction, infrastructure, observable outputs, experiment conclusions, artifacts, and completion claims.
 - `reporter` — produce user-facing reports, demos, plots, and summaries.
@@ -36,6 +37,7 @@ After planning, other workers are run to execute the plan. The choice in workers
 Plan for a multi-agent workflow, creating a plan that must make use of many different types of workers. Some useful workflows are:
 - Include a research step to gather external context, or when it is warranted to step back and think of new approaches.
 - Include a step for running and interpreting experiments, in which the `experimenter` should be used.
+- When a simple baseline already works and the goal shifts to improving reward, loss, throughput, latency, or judged output quality, include an `optimiser` loop rather than scattering the work across separate implementation and experiment tasks.
 - After non-trivial code changes, usually leave room for both `reviewer` and `critic`: reviewer for code and logic, critic for broader system judgment and output quality.
 - After major milestones, experiment results, or user-facing artifacts, give `critic` slightly more weight and consider `reporter`.
 - When trying to fix an issue, include a `debugger` step.

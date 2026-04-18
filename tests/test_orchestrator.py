@@ -37,6 +37,12 @@ def test_query_worker_is_valid_route() -> None:
     assert dec.worker == "query"
 
 
+def test_optimiser_worker_is_valid_route() -> None:
+    """The orchestrator schema accepts the optimisation-loop worker."""
+    dec = OrchestratorDecision(worker="optimiser", task="Run one optimisation iteration")
+    assert dec.worker == "optimiser"
+
+
 def test_orchestrator_prompt_splits_reviewer_and_critic_responsibilities() -> None:
     """Routing prompt should keep reviewer and critic distinct, with slight weight to critic."""
     assert (
@@ -71,7 +77,11 @@ def test_orchestrator_and_experimenter_prompts_assign_long_runs_to_experimenter(
         "launching, monitoring, analyzing, and interpreting results belong to `experimenter`"
         in _ORCH_JSON_SYSTEM
     )
+    assert "prefer `optimiser`" in _ORCH_JSON_SYSTEM
+    assert "owns one full optimisation iteration" in _ORCH_JSON_SYSTEM
+    assert "keep routing back to `optimiser`" in _ORCH_JSON_SYSTEM
     assert "experimenter" in _ORCH_JSON_SYSTEM
+    assert "recommend the `optimiser` worker" in experimenter.SYSTEM_PROMPT
     assert "Do not assume a human or another agent will do it" in experimenter.SYSTEM_PROMPT
     assert "Check back periodically" in experimenter.SYSTEM_PROMPT
 

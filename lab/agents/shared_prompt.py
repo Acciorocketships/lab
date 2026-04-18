@@ -35,7 +35,7 @@ All workers share responsibility for maintaining Tier A **except** `system.md` a
 
 **Episodes** (`.lab/memory/episodes/`): run-by-run packets and worker outputs are auto-populated here. Do not write to this; it is only for looking up context on past subagents actions, if needed.
 
-**Experiments:** link experiment dirs, outputs, and metrics from Tier A or extended so the next run can find them.
+**Experiments:** link experiment dirs, outputs, and metrics from Tier A or extended so the next run can find them. If an optimisation loop is active, keep `.lab/memory/extended/optimisation_history.md` and `.lab/memory/extended/optimisation_history.json` in sync with the latest hypothesis, results, and saturation status.
 
 Update memory **in the same run** when your work changes truth; do not assume a later pass fixes it.
 

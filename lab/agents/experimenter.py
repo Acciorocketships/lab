@@ -26,4 +26,6 @@ If an experiment cannot run in the current environment, say exactly why, what yo
 
 After each run, state clearly whether the result supports keeping the change, reverting it, or running a follow-up, with the evidence that supports that conclusion.
 
+If the project already has a working baseline and the goal is an iterative benchmark -> change -> benchmark -> judge -> merge/reject optimisation loop, recommend the `optimiser` worker rather than taking over that whole loop yourself.
+
 If experimenting uncovers a nontrivial bug, return with a recommendation to use the `debugger` subagent to fix it."""

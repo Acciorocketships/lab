@@ -25,6 +25,7 @@ class OrchestratorDecision(BaseModel):
         "implementer",
         "debugger",
         "experimenter",
+        "optimiser",
         "critic",
         "reviewer",
         "reporter",
@@ -62,6 +63,7 @@ You are the orchestrator. Route the project to exactly one next worker.
 - Code needs to be built or changed → `implementer`.
 - Suspicious behavior, failures, or non-obvious bugs need root-cause investigation → `debugger`.
 - All experiments, training runs, sweeps, evaluations, and end-to-end result generation → `experimenter`. Do not confuse writing experiment code with running the experiment: setup code belongs to `implementer`, but launching, monitoring, analyzing, and interpreting results belong to `experimenter`.
+- Once a working baseline exists and the objective is iterative performance improvement, optimization, ablation-driven tuning, or qualitative output improvement against a clear benchmark/reward/loss/judge, prefer `optimiser`. The `optimiser` owns one full optimisation iteration: baseline benchmark if needed, speculative branch, change, re-benchmark, judge, merge-or-delete, and optimisation-memory updates.
 - Operational tasks (shell commands, file reorganization, non-code edits, one-time scripts) → `executer`. Never use `executer` to launch or monitor experiments.
 - A non-obvious workflow discovered through trial and error should be captured → `skill_writer`.
 - Results ready to show the user (intermediate or final) → `reporter` for clear reports, demos, and visualizations.
@@ -76,6 +78,7 @@ You are the orchestrator. Route the project to exactly one next worker.
 - If something is underspecified or could go several ways, do not route to `done` and do not pause for a human decision. Pick the best reasonable default, note it in `reason`, and keep moving. The user can add bullets under `## New` in `user_instructions.md` later.
 - If a path appears to require a human or remote access, prefer a different path that can be completed autonomously in the local workspace. If no adequate workaround exists, route to the worker that should take the best local fallback and document what the human would need to do later to unlock full functionality.
 - When choosing between more implementation versus independent validation, prefer independent validation unless there is a specific known missing prerequisite. For `critic`, prefer objectives about observable behavior, overall setup, output quality, end-to-end UX, and whether the chosen structure is the right one. `critic` should not drill into function-level logic, bug lists, or refactor nits; reserve vulnerability hunting, race-condition checks, function-level logic audits, and line-level refactor requests for `reviewer` unless they matter because they expose a broader architectural or user-visible failure.
+- Treat optimisation as a loop, not a one-off. If Tier A / optimisation memory show that optimisation is active and recent iterations still have headroom, keep routing back to `optimiser` rather than declaring victory early. Stop routing to `optimiser` only when the recent several iterations show little or no marginal gain, or a different specialist is clearly required to unblock the next optimiser attempt.
 - Before routing to `done`, consider whether `critic` and `reviewer` have each covered their side of the quality bar; if only one can run first, start with `critic`.
 
 **Planner priority**
@@ -110,7 +113,7 @@ Match persona to what prompted the critic: `engineer` after code changes or comp
 - Respond with JSON only. No markdown fences.
 - Return exactly one JSON object with these keys: `"worker"`, `"task"`, `"branch"`, `"reason"`, `"roadmap_step"`, `"context_summary"`, `"worker_kwargs"`.
 - `roadmap_step` should be a short label for the active high-level item in `.lab/state/roadmap.md`.
-- `worker` must be one of: `planner`, `query`, `researcher`, `executer`, `implementer`, `debugger`, `experimenter`, `critic`, `reviewer`, `reporter`, `skill_writer`, `done`.
+- `worker` must be one of: `planner`, `query`, `researcher`, `executer`, `implementer`, `debugger`, `experimenter`, `optimiser`, `critic`, `reviewer`, `reporter`, `skill_writer`, `done`.
 - Use strings for all scalar values; use the empty string for `branch` if unknown.
 - `worker_kwargs` is an object; set `{"persona": "..."}` when routing to `critic`.
 - Do not wrap the answer in a parent key or nested object.
