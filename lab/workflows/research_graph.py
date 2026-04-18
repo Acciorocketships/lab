@@ -698,6 +698,18 @@ _EMPTY_OUTPUT_RETRY_PACKET_MAX_CHARS = 120_000
 _AUTO_COMPACTOR_PACKET_MAX_CHARS = 90_000
 
 
+def _crash_worker_for_run_event(*, tb: str, pre: dict[str, Any], state_after: ResearchState) -> str:
+    """Label synthetic crash rows: orchestrator vs subagent, using pre-rollback DB + traceback."""
+    post_cc = int(state_after.get("cycle_count", 0) or 0)
+    pre_cc = int(pre.get("cycle_count", 0) or 0)
+    pre_cw = (pre.get("current_worker") or "").strip()
+    if "n_choose" in tb or "decide_orchestrator" in tb:
+        return "orchestrator"
+    if pre_cc > post_cc:
+        return pre_cw or "routing"
+    return pre_cw or "routing"
+
+
 def _root_cause(exc: BaseException) -> BaseException:
     """Walk __cause__ / __context__ chain to find the original exception."""
     root = exc
@@ -726,8 +738,17 @@ def _record_cycle_error(
         if exc is not None:
             root = _root_cause(exc)
             short = f"{type(root).__qualname__}: {root}"
+            root_block = f"{type(root).__qualname__}: {root}"
+            if len(root_block) > 4500:
+                root_block = root_block[:4497] + "..."
+            tail = tb[-10_000:] if len(tb) > 10_000 else tb
+            # Put root cause at the end so UI ``extract_error_excerpt`` (scans from bottom) prefers it.
+            err_blob = tail + "\n\n--- root cause ---\n" + root_block
+            if len(err_blob) > 20_000:
+                err_blob = err_blob[-20_000:]
         else:
             short = tb.splitlines()[-1] if tb.strip() else "unknown error"
+            err_blob = tb[-10_000:] if len(tb) > 10_000 else tb
         conn = _conn(db_path)
         try:
             conn.execute("BEGIN IMMEDIATE")
@@ -740,8 +761,8 @@ def _record_cycle_error(
                 worker=worker,
                 roadmap_step=str(state.get("roadmap_step", "")),
                 task=str(state.get("orchestrator_task", "")),
-                summary=f"cycle crashed: {short[:200]}",
-                payload={"worker_ok": False, "error": tb[-2000:]},
+                summary=f"cycle crashed: {short[:500]}",
+                payload={"worker_ok": False, "error": err_blob},
                 packet_path=None,
             )
             conn.commit()
@@ -812,16 +833,36 @@ def run_loop(
             consecutive_errors += 1
             tb = traceback.format_exc()
             _log.error("Cycle %d failed:\n%s", state.get("cycle_count", 0) + 1, tb)
+            conn_snap = _conn(db_path)
+            try:
+                pre = dict(db.get_system_state(conn_snap))
+            finally:
+                conn_snap.close()
+            # Revert DB/git *before* recording the crash row. ``rollback_to_cycle`` deletes
+            # ``run_events`` with ``cycle > checkpoint``; recording first would insert a row
+            # that is immediately removed, so the Textual console never sees it.
+            _revert_to_last_checkpoint(project_dir, db_path)
+            state_after = _state_from_db(db_path)
+            crash_worker = _crash_worker_for_run_event(tb=tb, pre=pre, state_after=state_after)
+            # Do NOT inherit ``task`` / ``roadmap_step`` from the pre-revert system_state for
+            # routing-time failures: the orchestrator never committed a task for this cycle,
+            # so attaching the previous cycle's task to the synthetic crash row is misleading
+            # (and gets rendered as a "task prompt" under the failed header on rebuild).
+            state_err: ResearchState = {
+                **state_after,
+                "current_worker": crash_worker,
+                "orchestrator_task": "",
+                "roadmap_step": "",
+            }
             _record_cycle_error(
                 db_path,
-                state,
+                state_err,
                 tb,
                 exc,
                 researcher_root=researcher_root,
                 project_dir=project_dir,
                 cfg=cfg,
             )
-            _revert_to_last_checkpoint(project_dir, db_path)
             if consecutive_errors >= _MAX_CONSECUTIVE_ERRORS:
                 _log.error(
                     "Hit %d consecutive cycle errors — pausing scheduler.",

@@ -1092,12 +1092,21 @@ def extract_result_excerpt(summary: str) -> str:
 
 def extract_error_excerpt(summary: str, error_text: str = "") -> str:
     """Return a short, user-facing error line from a traceback or crash summary."""
-    for raw in reversed(error_text.splitlines()):
-        line = raw.strip()
-        if not line or line.startswith("During task with name"):
+    lines = [raw.strip() for raw in error_text.splitlines() if raw.strip()]
+    for line in reversed(lines):
+        if line.startswith("During task with name"):
             continue
-        return line
+        if line.startswith("--- ") and line.endswith(" ---"):
+            continue
+        if "Error code:" in line or "APIStatusError" in line or "RateLimitError" in line:
+            return line[:2000]
+    for line in reversed(lines):
+        if line.startswith("During task with name"):
+            continue
+        if line.startswith("--- ") and line.endswith(" ---"):
+            continue
+        return line[:2000]
     cleaned = summary.strip()
     if cleaned.lower().startswith("cycle crashed:"):
         cleaned = cleaned.split(":", 1)[1].strip()
-    return cleaned
+    return cleaned[:2000]

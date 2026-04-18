@@ -855,6 +855,12 @@ class ResearchConsole(App[None]):
         elapsed = max(0.0, float(worker_row["ts"]) - start_ts)
         worker = worker_row["worker"]
         task = (worker_row["task"] or "") or (orch_row["task"] if orch_row else "") or ""
+        # Orchestrator/routing failures don't have a worker task — the orchestrator chooses
+        # tasks for subagents, it doesn't execute one itself. Suppress any stale task value
+        # so synthetic crash rows don't render a misleading task prompt under the header.
+        is_routing_failure = (not ok) and (worker in ("orchestrator", "routing"))
+        if is_routing_failure:
+            task = ""
         header = self._mount_activity_widget(
             events.format_cycle_header(
                 cycle,
@@ -1846,6 +1852,35 @@ class ResearchConsole(App[None]):
             dots = "." * ((self._running_worker_tick % 3) + 1)
             self._set_stream_placeholder(f"[dim]Running {self._last_worker}{dots}[/]")
 
+    def _snapshot_latest_cycle_crash_message(self) -> str:
+        """Read the newest cycle-crash worker row before ``_revert_to_checkpoint`` deletes it."""
+        try:
+            row = self._conn.execute(
+                "SELECT summary, payload_json FROM run_events WHERE kind = 'worker' "
+                "AND summary LIKE 'cycle crashed:%' ORDER BY id DESC LIMIT 1",
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return ""
+        if not row:
+            return ""
+        payload: dict[str, object] = {}
+        raw = row["payload_json"]
+        if raw:
+            try:
+                payload = json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                pass
+        err = events.extract_error_excerpt(
+            str(row["summary"] or ""),
+            str(payload.get("error", "") or ""),
+        ).strip()
+        if err:
+            return err
+        summ = str(row["summary"] or "").strip()
+        if summ.lower().startswith("cycle crashed:"):
+            summ = summ.split(":", 1)[1].strip()
+        return summ[:2000]
+
     def _check_scheduler_health(self) -> None:
         """Detect a crashed scheduler subprocess and auto-restart when possible."""
         if self._scheduler is None:
@@ -1862,7 +1897,13 @@ class ResearchConsole(App[None]):
             )
         except sqlite3.OperationalError:
             should_auto_restart = False
+        crash_msg = self._snapshot_latest_cycle_crash_message()
         self._revert_to_checkpoint()
+        if crash_msg:
+            self._write_activity(
+                f"\n  [red]Scheduler error:[/] {rich_escape(crash_msg)}",
+                below_stream=True,
+            )
         if not should_auto_restart:
             return
         if self._auto_restarts >= self._MAX_AUTO_RESTARTS:
@@ -2087,6 +2128,9 @@ class ResearchConsole(App[None]):
                 if cycle != self._last_cycle or start_ts <= 0:
                     start_ts = self._orchestrator_ts_for_cycle(cycle) or 0.0
                 end_ts = float(row["ts"])
+                # No orchestrator row yet for this cycle (e.g. routing LLM failed first): avoid bogus elapsed.
+                if start_ts <= 0:
+                    start_ts = end_ts
                 elapsed = max(0.0, end_ts - start_ts) if start_ts else 0.0
                 payload: dict = {}
                 try:
@@ -2118,18 +2162,47 @@ class ResearchConsole(App[None]):
                 self._file_changes_widget = None
                 self._update_checklist_widget(checklist, force=True)
                 self._checklist_widget = None
-                if self._cycle_header_widget is not None and cycle == self._last_cycle:
-                    self._cycle_header_widget.update(
-                        events.format_cycle_header(
-                            cycle,
-                            worker,
-                            task or self._last_orchestrator_task,
-                            cursor_model=self._cycle_header_cursor_model(),
-                            elapsed_sec=elapsed,
-                            status="ok" if ok else "fail",
+                if self._cycle_header_widget is not None:
+                    if cycle == self._last_cycle:
+                        self._cycle_header_widget.update(
+                            events.format_cycle_header(
+                                cycle,
+                                worker,
+                                task or self._last_orchestrator_task,
+                                cursor_model=self._cycle_header_cursor_model(),
+                                elapsed_sec=elapsed,
+                                status="ok" if ok else "fail",
+                            )
                         )
-                    )
-                    self._cycle_header_widget = None
+                        # Keep the header widget on failure so a later synthetic crash for the
+                        # same cycle (scheduler retry) can update this line instead of leaving a
+                        # stale first attempt visible.
+                        if ok:
+                            self._cycle_header_widget = None
+                    elif not ok:
+                        # LLM/orchestrator failed before an ``orchestrator`` run_event existed for
+                        # this cycle: only a synthetic crash ``worker`` row arrives. Close the
+                        # stale running header and mark the failed cycle, else the stream clears
+                        # to blank with no visible failure.
+                        ps = self._worker_start_ts
+                        pe = max(0.0, time.time() - ps) if ps else 0.0
+                        self._cycle_header_widget.update(
+                            events.format_cycle_header(
+                                cycle,
+                                worker or "routing",
+                                task or self._last_orchestrator_task,
+                                cursor_model=self._cycle_header_cursor_model(),
+                                elapsed_sec=pe,
+                                status="fail",
+                            )
+                        )
+                        self._last_cycle = cycle
+                        self._last_worker = worker or "routing"
+                same_cycle_repeat = (
+                    not ok
+                    and cycle == self._last_cycle
+                    and self._cycle_header_widget is None
+                )
                 self._worker_start_ts = 0.0
                 if excerpt:
                     result_w = self._write_result_box(
@@ -2138,11 +2211,44 @@ class ResearchConsole(App[None]):
                     )
                     if result_w is not None:
                         self._current_cycle_widgets.append(result_w)
-                elif not ok:
-                    if error_excerpt:
-                        self._write_activity(f"  [red]Error:[/] {rich_escape(error_excerpt)}")
+                # Always surface failure details when ``worker_ok`` is false, even if a
+                # partial stream excerpt exists (previously ``elif`` hid the error line).
+                if not ok:
+                    err_line = (error_excerpt or "").strip()
+                    if not err_line:
+                        summ = (row["summary"] or "").strip()
+                        if summ.lower().startswith("cycle crashed:"):
+                            summ = summ.split(":", 1)[1].strip()
+                        err_line = summ[:2000] if summ else ""
+                    if err_line:
+                        if same_cycle_repeat:
+                            # Rebuild already mounted this cycle block; a plain activity-line
+                            # appended below the grey error box laid out with zero height in
+                            # this path. Use the proven ``_write_result_box`` pattern (same
+                            # renderer rebuild uses for the visible grey box).
+                            import datetime as _dt
+                            ts_short = _dt.datetime.fromtimestamp(
+                                float(row["ts"])
+                            ).strftime("%H:%M:%S")
+                            retry_w = self._write_result_box(
+                                err_line,
+                                title=f"[dim]{worker or 'orchestrator'}[/] [dim]cycle {cycle}[/] [dim]retry {ts_short}[/]",
+                            )
+                            if retry_w is not None:
+                                self._current_cycle_widgets.append(retry_w)
+                        else:
+                            self._write_activity(
+                                f"  [red]Error:[/] {rich_escape(err_line)}"
+                            )
                     else:
-                        self._write_activity("  [dim](failed — no excerpt)[/]")
+                        self._write_activity("  [dim](failed — no error details in run_event)[/]")
+                    if same_cycle_repeat:
+                        # Scroll to the newly-appended line so the retry is visible even when
+                        # the viewport was pinned to the top of a rebuild item.
+                        try:
+                            self._scroll_to_bottom()
+                        except Exception:
+                            pass
                 self._last_stream_text = ""
                 try:
                     sid_row = self._conn.execute(

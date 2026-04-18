@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import string
+import sys
 import time
-from typing import TypeVar
+from typing import Any, TypeVar
 
-from openai import OpenAI
+from openai import APIStatusError, OpenAI
 from pydantic import BaseModel, ValidationError
 
 from lab.config import RunConfig
@@ -23,15 +25,44 @@ _RETRY_BACKOFF_SEC = 1.0
 _JSON_STRING_ESCAPE_CHARS = set('"\\/bfnrt')
 _HEX_DIGITS = set(string.hexdigits)
 
+_WEB_ERR_BODY_MAX = 6000
 
-def _agent_debug_log(*_args: object, **_kwargs: object) -> None:
-    """No-op compatibility shim.
 
-    Debug-mode instrumentation used this name during development; a partially
-    reverted or cached ``lab.llm`` module can still reference it. Keeping the
-    symbol defined avoids ``NameError`` without changing runtime behavior.
-    """
-    return None
+def _format_llm_failure_for_terminal(exc: BaseException) -> str:
+    """Human-readable, provider-agnostic summary for stderr (no secrets)."""
+    lines: list[str] = [f"{type(exc).__name__}: {exc}"]
+    sc = getattr(exc, "status_code", None)
+    if isinstance(sc, int):
+        lines.append(f"HTTP status: {sc}")
+    resp = getattr(exc, "response", None)
+    if resp is not None:
+        rsc = getattr(resp, "status_code", None)
+        if isinstance(rsc, int) and rsc != sc:
+            lines.append(f"Response HTTP status: {rsc}")
+    body = getattr(exc, "body", None)
+    if body is not None:
+        b = body if isinstance(body, str) else repr(body)
+        b = b.strip()
+        if b:
+            if len(b) > _WEB_ERR_BODY_MAX:
+                b = b[:_WEB_ERR_BODY_MAX] + "… [truncated]"
+            lines.append(f"Response body: {b}")
+    cause = exc.__cause__
+    if cause is not None:
+        lines.append(f"Caused by: {type(cause).__name__}: {cause}")
+    if isinstance(sc, int) and sc == 402 and "openrouter.ai" in str(exc).lower():
+        lines.append(
+            "Hint: OpenRouter 402 can reflect per-key limits or credit reservation; "
+            "balances shown on the website may update more slowly than the API quota."
+        )
+    return "\n".join(lines)
+
+
+def _print_llm_failure_to_terminal(exc: BaseException) -> None:
+    """Emit failure details to stderr (foreground CLI: terminal; scheduler child: log file via loop redirect)."""
+    text = _format_llm_failure_for_terminal(exc)
+    print("\n[lab] LLM request failed:\n" + text + "\n", file=sys.stderr, flush=True)
+    _log.error("LLM request failed:\n%s", text)
 
 
 def _client(base_url: str | None, api_key: str | None) -> OpenAI:
@@ -48,11 +79,80 @@ def _use_openai_parse_api(base_url: str | None) -> bool:
     return "openrouter.ai" not in base_url.lower()
 
 
+_OPENROUTER_DEFAULT_MAX_TOKENS = 4096
+_OPENROUTER_402_MARGIN = 128
+_OPENROUTER_BUDGET_RETRIES = 6
+
+
+def _openrouter_max_tokens_setting() -> int:
+    """Upper bound for completion tokens on OpenRouter (provider reserves against this)."""
+    raw = (os.environ.get("OPENROUTER_MAX_TOKENS") or "").strip()
+    if raw.isdigit():
+        return max(256, min(int(raw), 128_000))
+    return _OPENROUTER_DEFAULT_MAX_TOKENS
+
+
 def _openrouter_completion_kwargs(base_url: str | None) -> dict[str, int]:
     """OpenRouter reserves against max output; omitting max_tokens can default very high (e.g. 65535) and return 402 when credits cannot cover that reservation."""
     if base_url and "openrouter.ai" in base_url.lower():
-        return {"max_tokens": 8192}
+        return {"max_tokens": _openrouter_max_tokens_setting()}
     return {}
+
+
+def _openrouter_affordable_max_from_402(exc: BaseException) -> int | None:
+    """Parse OpenRouter 402 for completion reservation ``can only afford N`` (not prompt-length limits)."""
+    if not isinstance(exc, APIStatusError) or getattr(exc, "status_code", None) != 402:
+        return None
+    s = str(exc)
+    if re.search(r"prompt\s+tokens?\s+", s, re.I):
+        return None
+    m = re.search(r"can only afford (\d+)", s)
+    if not m:
+        return None
+    return max(256, int(m.group(1)) - _OPENROUTER_402_MARGIN)
+
+
+def _is_openrouter_base_url(base_url: str | None) -> bool:
+    return bool(base_url and "openrouter.ai" in base_url.lower())
+
+
+def _chat_completions_create_resilient(
+    client: OpenAI,
+    base_url: str | None,
+    *,
+    model: str,
+    messages: list[dict[str, str]],
+    **kwargs: Any,
+) -> Any:
+    """``chat.completions.create`` with OpenRouter 402 → lower ``max_tokens`` and retry."""
+    or_kw: dict[str, int] = dict(_openrouter_completion_kwargs(base_url))
+    merged: dict[str, Any] = {**kwargs, **or_kw}
+    last_exc: APIStatusError | None = None
+    for attempt in range(_OPENROUTER_BUDGET_RETRIES):
+        try:
+            return client.chat.completions.create(
+                model=model,
+                messages=messages,  # type: ignore[arg-type]
+                **merged,
+            )
+        except APIStatusError as exc:
+            last_exc = exc
+            cap = _openrouter_affordable_max_from_402(exc)
+            if not _is_openrouter_base_url(base_url) or cap is None or "max_tokens" not in merged:
+                raise exc
+            cur = int(merged["max_tokens"])
+            if cap >= cur:
+                raise exc
+            merged["max_tokens"] = cap
+            _log.warning(
+                "OpenRouter 402 (credits vs max_tokens); retrying with max_tokens=%s (attempt %d/%d)",
+                cap,
+                attempt + 1,
+                _OPENROUTER_BUDGET_RETRIES,
+            )
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError("OpenRouter budget retries exhausted")  # pragma: no cover
 
 
 def resolve_llm_api_key(cfg: RunConfig) -> str | None:
@@ -198,56 +298,62 @@ def generate(
 ) -> T | str:
     """Call chat completions; if response_format set, parse JSON into model."""
     client = _client(base_url, api_key)
-    if response_format is not None:
-        if _use_openai_parse_api(base_url):
-            try:
-                completion = client.beta.chat.completions.parse(
-                    model=model,
-                    messages=messages,  # type: ignore[arg-type]
-                    response_format=response_format,
-                    **_openrouter_completion_kwargs(base_url),
-                )
-                msg = completion.choices[0].message
-                parsed = msg.parsed
-                if parsed is not None:
-                    return parsed
-            except Exception:
-                pass
-        last_err: Exception | None = None
-        for attempt in range(_JSON_RETRIES):
-            raw = client.chat.completions.create(
-                model=model,
-                messages=messages,  # type: ignore[arg-type]
-                response_format={"type": "json_object"},
-                **_openrouter_completion_kwargs(base_url),
-            )
-            text = raw.choices[0].message.content or "{}"
-            try:
-                return response_format.model_validate_json(text)
-            except (ValidationError, ValueError) as exc:
-                repaired = _repair_invalid_json_string_escapes(text)
-                if repaired != text:
-                    try:
-                        parsed = response_format.model_validate_json(repaired)
-                        _log.warning(
-                            "LLM returned JSON with invalid string escapes; repaired and accepted on attempt %d/%d",
-                            attempt + 1,
-                            _JSON_RETRIES,
-                        )
+    try:
+        if response_format is not None:
+            if _use_openai_parse_api(base_url):
+                try:
+                    completion = client.beta.chat.completions.parse(
+                        model=model,
+                        messages=messages,  # type: ignore[arg-type]
+                        response_format=response_format,
+                        **_openrouter_completion_kwargs(base_url),
+                    )
+                    msg = completion.choices[0].message
+                    parsed = msg.parsed
+                    if parsed is not None:
                         return parsed
-                    except (ValidationError, ValueError):
-                        pass
-                last_err = exc
-                _log.warning(
-                    "LLM returned invalid JSON (attempt %d/%d, %d chars): %s",
-                    attempt + 1, _JSON_RETRIES, len(text), exc,
+                except Exception:
+                    pass
+            last_err: Exception | None = None
+            for attempt in range(_JSON_RETRIES):
+                raw = _chat_completions_create_resilient(
+                    client,
+                    base_url,
+                    model=model,
+                    messages=messages,
+                    response_format={"type": "json_object"},
                 )
-                if attempt < _JSON_RETRIES - 1:
-                    time.sleep(_RETRY_BACKOFF_SEC * (attempt + 1))
-        raise last_err  # type: ignore[misc]
-    completion = client.chat.completions.create(
-        model=model,
-        messages=messages,  # type: ignore[arg-type]
-        **_openrouter_completion_kwargs(base_url),
-    )
-    return completion.choices[0].message.content or ""
+                text = raw.choices[0].message.content or "{}"
+                try:
+                    return response_format.model_validate_json(text)
+                except (ValidationError, ValueError) as exc:
+                    repaired = _repair_invalid_json_string_escapes(text)
+                    if repaired != text:
+                        try:
+                            parsed = response_format.model_validate_json(repaired)
+                            _log.warning(
+                                "LLM returned JSON with invalid string escapes; repaired and accepted on attempt %d/%d",
+                                attempt + 1,
+                                _JSON_RETRIES,
+                            )
+                            return parsed
+                        except (ValidationError, ValueError):
+                            pass
+                    last_err = exc
+                    _log.warning(
+                        "LLM returned invalid JSON (attempt %d/%d, %d chars): %s",
+                        attempt + 1, _JSON_RETRIES, len(text), exc,
+                    )
+                    if attempt < _JSON_RETRIES - 1:
+                        time.sleep(_RETRY_BACKOFF_SEC * (attempt + 1))
+            raise last_err  # type: ignore[misc]
+        completion = _chat_completions_create_resilient(
+            client,
+            base_url,
+            model=model,
+            messages=messages,
+        )
+        return completion.choices[0].message.content or ""
+    except Exception as exc:
+        _print_llm_failure_to_terminal(exc)
+        raise
