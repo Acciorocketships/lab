@@ -1859,6 +1859,99 @@ def test_check_scheduler_health_no_spurious_checkpoint_notice_on_clean_exit(tmp_
     console._conn.close()
 
 
+def test_check_scheduler_health_ignores_stale_historical_crash(tmp_path: Path, monkeypatch) -> None:
+    """A clean latest worker completion should suppress older crash excerpts on scheduler exit."""
+    db_path = tmp_path / "runtime.db"
+    cfg = _cfg(tmp_path)
+    console = ResearchConsole(db_path, cfg)
+
+    writes: list[str] = []
+    console.query_one = _console_query_stub(writes)  # type: ignore[method-assign]
+    monkeypatch.setattr(console, "_revert_to_checkpoint", lambda *args, **kwargs: None)
+
+    conn = console._conn
+    db.get_system_state(conn)
+    db.set_control_mode(conn, "paused")
+    db.append_run_event(
+        conn,
+        cycle=1,
+        kind="worker",
+        worker="planner",
+        roadmap_step="",
+        task="",
+        summary="cycle crashed: openai.APIStatusError",
+        payload={
+            "worker_ok": False,
+            "error": "openai.APIStatusError: Error code: 402",
+        },
+    )
+    db.append_run_event(
+        conn,
+        cycle=2,
+        kind="worker",
+        worker="planner",
+        roadmap_step="",
+        task="",
+        summary="done",
+        payload={"worker_ok": True},
+    )
+    conn.commit()
+
+    class DeadScheduler:
+        def is_alive(self) -> bool:
+            return False
+
+    console._scheduler = DeadScheduler()
+
+    console._check_scheduler_health()
+
+    assert not any("Scheduler error:" in m for m in writes)
+
+    console._conn.close()
+
+
+def test_check_scheduler_health_surfaces_latest_cycle_crash(tmp_path: Path, monkeypatch) -> None:
+    """When the newest run event is a cycle crash, the console should still show it."""
+    db_path = tmp_path / "runtime.db"
+    cfg = _cfg(tmp_path)
+    console = ResearchConsole(db_path, cfg)
+
+    writes: list[str] = []
+    console.query_one = _console_query_stub(writes)  # type: ignore[method-assign]
+    monkeypatch.setattr(console, "_revert_to_checkpoint", lambda *args, **kwargs: None)
+
+    conn = console._conn
+    db.get_system_state(conn)
+    db.set_control_mode(conn, "paused")
+    db.append_run_event(
+        conn,
+        cycle=1,
+        kind="worker",
+        worker="planner",
+        roadmap_step="",
+        task="",
+        summary="cycle crashed: openai.APIStatusError",
+        payload={
+            "worker_ok": False,
+            "error": "Traceback...\nopenai.APIStatusError: Error code: 402",
+        },
+    )
+    conn.commit()
+
+    class DeadScheduler:
+        def is_alive(self) -> bool:
+            return False
+
+    console._scheduler = DeadScheduler()
+
+    console._check_scheduler_health()
+
+    assert any("Scheduler error:" in m for m in writes)
+    assert any("Error code: 402" in m for m in writes)
+
+    console._conn.close()
+
+
 def test_poll_animated_stream_status_clears_stale_placeholder_when_paused(tmp_path: Path) -> None:
     db_path = tmp_path / "runtime.db"
     cfg = _cfg(tmp_path)

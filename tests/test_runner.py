@@ -9,6 +9,7 @@ from lab.global_config import GlobalConfig
 from lab import db, memory
 from lab.runner import (
     LabConfigError,
+    _prompt_choice_radiolist,
     bootstrap_bench_project,
     ensure_console_ready,
     init_project_at,
@@ -136,3 +137,54 @@ def test_reset_project_preserving_research_idea(tmp_path: Path, monkeypatch) -> 
     assert (rr / "logs").is_dir()
     assert not any((rr / "logs").glob("*.log"))
     assert not (rr / "legacy.log").exists()
+
+
+def test_prompt_choice_radiolist_accepts_selection_via_arrow_keys(monkeypatch) -> None:
+    pytest.importorskip("prompt_toolkit")
+    from prompt_toolkit.application import create_app_session
+    from prompt_toolkit.input.defaults import create_pipe_input
+    from prompt_toolkit.output import DummyOutput
+
+    class _TTY:
+        def isatty(self) -> bool:
+            return True
+
+    monkeypatch.setattr("lab.runner.sys.stdin", _TTY())
+    monkeypatch.setattr("lab.runner.sys.stdout", _TTY())
+
+    with create_pipe_input() as pipe_input:
+        with create_app_session(input=pipe_input, output=DummyOutput()):
+            pipe_input.send_text("\x1b[B\x1b[C\r")
+            result = _prompt_choice_radiolist(
+                "Model provider",
+                "Choose the backend that should power planning and routing.",
+                [("openai", "OpenAI"), ("openrouter", "OpenRouter")],
+                default="openai",
+            )
+
+    assert result == "openrouter"
+
+
+def test_prompt_choice_radiolist_can_reach_cancel_via_arrow_keys(monkeypatch) -> None:
+    pytest.importorskip("prompt_toolkit")
+    from prompt_toolkit.application import create_app_session
+    from prompt_toolkit.input.defaults import create_pipe_input
+    from prompt_toolkit.output import DummyOutput
+
+    class _TTY:
+        def isatty(self) -> bool:
+            return True
+
+    monkeypatch.setattr("lab.runner.sys.stdin", _TTY())
+    monkeypatch.setattr("lab.runner.sys.stdout", _TTY())
+
+    with create_pipe_input() as pipe_input:
+        with create_app_session(input=pipe_input, output=DummyOutput()):
+            pipe_input.send_text("\x1b[D\r")
+            with pytest.raises(KeyboardInterrupt):
+                _prompt_choice_radiolist(
+                    "Default worker backend",
+                    "Choose which coding agent lab should launch by default.",
+                    [("cursor", "Cursor agent CLI"), ("claude", "Claude Code")],
+                    default="cursor",
+                )

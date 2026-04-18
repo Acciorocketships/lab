@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import json
+import os
+import sys
+import tomllib
 from pathlib import Path
 
 from lab import db, memory
@@ -25,6 +29,182 @@ class LabConfigError(RuntimeError):
 
 
 DEFAULT_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
+
+
+def _global_oauth_looks_logged_in() -> bool:
+    """True if ``~/.lab/oauth_tokens.json`` exists and appears to hold OAuth material."""
+    if not GLOBAL_OAUTH_PATH.is_file():
+        return False
+    try:
+        data = json.loads(GLOBAL_OAUTH_PATH.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    return bool(
+        data.get("access_token")
+        or data.get("oauth_access_token")
+        or data.get("refresh_token")
+        or data.get("id_token")
+    )
+
+
+def _prompt_choice_radiolist(
+    title: str,
+    text: str,
+    choices: list[tuple[str, str]],
+    *,
+    default: str,
+) -> str:
+    """Pick one of *choices* as ``(value, label)`` using arrow keys + Enter when possible."""
+    values = [v for v, _ in choices]
+    if default not in values:
+        default = values[0]
+    if sys.stdin.isatty() and sys.stdout.isatty():
+        try:
+            from prompt_toolkit.application import Application, get_app
+            from prompt_toolkit.filters import has_focus
+            from prompt_toolkit.key_binding import KeyBindings, merge_key_bindings
+            from prompt_toolkit.key_binding.bindings.focus import focus_next, focus_previous
+            from prompt_toolkit.key_binding.defaults import load_key_bindings
+            from prompt_toolkit.layout import Layout
+            from prompt_toolkit.layout.containers import HSplit
+            from prompt_toolkit.styles import Style, merge_styles
+            from prompt_toolkit.styles.defaults import default_ui_style
+            from prompt_toolkit.widgets import Button, Dialog, Label, RadioList
+        except ImportError:
+            Application = None  # type: ignore[misc, assignment]
+        else:
+            class SetupRadioList(RadioList[str]):
+                open_character = "["
+                close_character = "]"
+                container_style = "class:setup-radio-list"
+                default_style = "class:setup-radio"
+                selected_style = "class:setup-radio-selected"
+                checked_style = "class:setup-radio-checked"
+                show_scrollbar = False
+
+            def ok_handler() -> None:
+                get_app().exit(result=radio_list.current_value)
+
+            def cancel_handler() -> None:
+                get_app().exit(result=None)
+
+            radio_list = SetupRadioList(
+                values=[(v, lab) for v, lab in choices],
+                default=default,
+            )
+            ok_button = Button(
+                text="OK",
+                handler=ok_handler,
+                width=10,
+                left_symbol="[",
+                right_symbol="]",
+            )
+            cancel_button = Button(
+                text="CANCEL",
+                handler=cancel_handler,
+                width=14,
+                left_symbol="[",
+                right_symbol="]",
+            )
+
+            intro = [
+                ("class:setup-badge", " LAB SETUP "),
+                ("", "\n"),
+                ("class:setup-section", f"{title.upper()}\n"),
+                ("class:setup-copy", f"{text.strip()}\n"),
+                (
+                    "class:setup-hint",
+                    "ARROWS choose options  LEFT/RIGHT reach actions  ENTER confirms",
+                ),
+            ]
+            dialog = Dialog(
+                title="LAB SETUP",
+                body=HSplit(
+                    [
+                        Label(text=intro, dont_extend_height=True),
+                        radio_list,
+                    ],
+                    padding=1,
+                ),
+                buttons=[ok_button, cancel_button],
+                with_background=True,
+                width=74,
+            )
+
+            style = merge_styles(
+                [
+                    default_ui_style(),
+                    Style.from_dict(
+                        {
+                            "dialog": "bg:#0b0e11",
+                            "dialog.body": "bg:#11161b #e5eaef",
+                            "dialog shadow": "bg:#06080a",
+                            "dialog.body shadow": "bg:#0a0d10",
+                            "frame.border": "#33404c",
+                            "dialog frame.label": "bold #c8dcff",
+                            "setup-badge": "bg:#202b36 #a9bed6 bold",
+                            "setup-section": "bold #f5f7fa",
+                            "setup-copy": "#9fb0bf",
+                            "setup-hint": "#738596",
+                            "setup-radio-list": "bg:#11161b",
+                            "setup-radio": "#d6dee6",
+                            "setup-radio-selected": "bg:#1c2630 #f5f7fa",
+                            "setup-radio-checked": "bold #8fb9ff",
+                            "button": "bg:#151b21 #98a9b8",
+                            "button.focused": "bg:#b7d3ff #091019 bold",
+                            "button.arrow": "bold",
+                            "frame.border shadow": "#06080a",
+                        }
+                    ),
+                ]
+            )
+
+            bindings = KeyBindings()
+            bindings.add("tab")(focus_next)
+            bindings.add("s-tab")(focus_previous)
+
+            @bindings.add("right", filter=has_focus(radio_list))
+            def _focus_ok(event) -> None:
+                radio_list._handle_enter()
+                event.app.layout.focus(ok_button)
+
+            @bindings.add("left", filter=has_focus(radio_list))
+            def _focus_cancel(event) -> None:
+                radio_list._handle_enter()
+                event.app.layout.focus(cancel_button)
+
+            @bindings.add("left", filter=has_focus(ok_button))
+            @bindings.add("up", filter=has_focus(ok_button))
+            def _focus_list_from_ok(event) -> None:
+                event.app.layout.focus(radio_list)
+
+            @bindings.add("up", filter=has_focus(cancel_button))
+            def _focus_list_from_cancel(event) -> None:
+                event.app.layout.focus(radio_list)
+
+            @bindings.add("escape")
+            def _cancel_dialog(event) -> None:
+                cancel_handler()
+
+            result = Application(
+                layout=Layout(dialog),
+                key_bindings=merge_key_bindings([load_key_bindings(), bindings]),
+                mouse_support=True,
+                style=style,
+                full_screen=True,
+            ).run()
+            if result is None:
+                raise KeyboardInterrupt
+            return str(result)
+    import click
+
+    return click.prompt(
+        text or title,
+        type=click.Choice(values, case_sensitive=False),
+        default=default,
+    )
 
 
 def read_multiline_terminal(click_mod: object | None = None) -> str:
@@ -282,10 +462,23 @@ def run_interactive_global_setup() -> Path:
 
     click.echo("lab setup\n")
 
-    provider = click.prompt(
+    previous: GlobalConfig | None = None
+    if global_config_exists():
+        try:
+            previous = load_global_config()
+        except (OSError, ValueError, KeyError, TypeError, tomllib.TOMLDecodeError):
+            previous = None
+
+    default_provider = (previous.provider if previous else "openrouter") or "openrouter"
+    provider = _prompt_choice_radiolist(
         "Model provider",
-        type=click.Choice(["openai", "openrouter", "local"], case_sensitive=False),
-        default="openrouter",
+        "Choose the backend that should power planning and routing.",
+        [
+            ("openai", "OpenAI"),
+            ("openrouter", "OpenRouter"),
+            ("local", "Local (OpenAI-compatible, e.g. Ollama)"),
+        ],
+        default=default_provider,
     )
 
     defaults: dict[str, str] = {
@@ -293,35 +486,97 @@ def run_interactive_global_setup() -> Path:
         "openrouter": "google/gemini-2.5-flash-lite",
         "local": "llama3",
     }
-    model_name = click.prompt("Model name", default=defaults.get(provider, ""))
+    model_default = defaults.get(provider, "")
+    if previous and previous.provider == provider and (previous.model_name or "").strip():
+        model_default = previous.model_name
+    model_name = click.prompt("Model name", default=model_default)
     base_url = ""
     if provider == "local":
-        base_url = click.prompt("Base URL", default="http://127.0.0.1:11434/v1")
+        bu_default = (
+            previous.base_url
+            if previous and previous.provider == "local" and (previous.base_url or "").strip()
+            else "http://127.0.0.1:11434/v1"
+        )
+        base_url = click.prompt("Base URL", default=bu_default)
 
     api_key = ""
-    oauth_client_id = DEFAULT_OAUTH_CLIENT_ID
+    oauth_client_id = (
+        (previous.oauth_client_id or "").strip() or DEFAULT_OAUTH_CLIENT_ID
+        if previous
+        else DEFAULT_OAUTH_CLIENT_ID
+    )
 
     if provider == "openai":
-        use_oauth = click.confirm("Authenticate via OAuth (browser)?", default=True)
-        if use_oauth:
-            run_oauth_browser_for_global(oauth_client_id)
+        if _global_oauth_looks_logged_in():
+            click.echo("Using existing OAuth tokens from ~/.lab/oauth_tokens.json.")
         else:
-            api_key = click.prompt("OpenAI API key", hide_input=True, default="")
+            auth_how = _prompt_choice_radiolist(
+                "OpenAI authentication",
+                "Choose how lab should authenticate with OpenAI.",
+                [
+                    ("oauth", "OAuth (sign in with browser)"),
+                    ("api_key", "API key (paste manually)"),
+                ],
+                default="oauth",
+            )
+            if auth_how == "oauth":
+                run_oauth_browser_for_global(oauth_client_id)
+            else:
+                prev_ai = (
+                    (previous.api_key or "").strip()
+                    if previous and previous.provider == "openai"
+                    else ""
+                )
+                if prev_ai:
+                    api_key = prev_ai
+                    click.echo("Keeping OpenAI API key from ~/.lab/config.toml.")
+                else:
+                    api_key = click.prompt("OpenAI API key", hide_input=True, default="")
     elif provider == "openrouter":
-        api_key = click.prompt("OpenRouter API key", hide_input=True, default="")
+        prev_or = (
+            (previous.api_key or "").strip()
+            if previous and previous.provider == "openrouter"
+            else ""
+        )
+        env_or = (os.environ.get("OPENROUTER_API_KEY") or "").strip()
+        if prev_or:
+            api_key = prev_or
+            click.echo("Keeping OpenRouter API key from ~/.lab/config.toml.")
+        elif env_or:
+            api_key = ""
+            click.echo(
+                "Using OPENROUTER_API_KEY from the environment (not written to config.toml)."
+            )
+        else:
+            api_key = click.prompt("OpenRouter API key", hide_input=True, default="")
     elif provider == "local":
-        api_key = click.prompt("API key (blank for Ollama default)", default="ollama")
+        loc_default = (
+            previous.api_key
+            if previous and previous.provider == "local" and (previous.api_key or "").strip()
+            else "ollama"
+        )
+        api_key = click.prompt("API key (blank for Ollama default)", default=loc_default)
 
-    worker_backend = click.prompt(
+    wb_default = (previous.worker_backend if previous else "cursor") or "cursor"
+    worker_backend = _prompt_choice_radiolist(
         "Default worker backend",
-        type=click.Choice(["cursor", "claude"], case_sensitive=False),
-        default="cursor",
+        "Choose which coding agent lab should launch by default.",
+        [
+            ("cursor", "Cursor agent CLI"),
+            ("claude", "Claude Code"),
+        ],
+        default=wb_default,
     )
     cursor_agent_model = "auto"
     if worker_backend == "cursor":
+        cm_default = (
+            previous.cursor_agent_model
+            if previous and (previous.cursor_agent_model or "").strip()
+            else "auto"
+        )
         cursor_agent_model = click.prompt(
             "Cursor agent CLI model (--model)",
-            default="auto",
+            default=cm_default,
         )
 
     click.echo("")
@@ -330,6 +585,7 @@ def run_interactive_global_setup() -> Path:
         "they are copied into new projects when you run `lab init`."
     )
 
+    code_style_preserve = (previous.code_style if previous else "") or ""
     gcfg = GlobalConfig(
         provider=provider,
         model_name=model_name,
@@ -338,7 +594,7 @@ def run_interactive_global_setup() -> Path:
         oauth_client_id=oauth_client_id,
         worker_backend=worker_backend,
         cursor_agent_model=cursor_agent_model,
-        code_style="",
+        code_style=code_style_preserve,
     )
     return save_global_config(gcfg)
 

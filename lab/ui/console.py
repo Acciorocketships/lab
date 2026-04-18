@@ -1853,15 +1853,19 @@ class ResearchConsole(App[None]):
             self._set_stream_placeholder(f"[dim]Running {self._last_worker}{dots}[/]")
 
     def _snapshot_latest_cycle_crash_message(self) -> str:
-        """Read the newest cycle-crash worker row before ``_revert_to_checkpoint`` deletes it."""
+        """Read the newest run event and return a crash excerpt only for a just-recorded cycle crash."""
         try:
             row = self._conn.execute(
-                "SELECT summary, payload_json FROM run_events WHERE kind = 'worker' "
-                "AND summary LIKE 'cycle crashed:%' ORDER BY id DESC LIMIT 1",
+                "SELECT kind, summary, payload_json FROM run_events ORDER BY id DESC LIMIT 1",
             ).fetchone()
         except sqlite3.OperationalError:
             return ""
         if not row:
+            return ""
+        if str(row["kind"] or "") != "worker":
+            return ""
+        summary = str(row["summary"] or "").strip()
+        if not summary.lower().startswith("cycle crashed:"):
             return ""
         payload: dict[str, object] = {}
         raw = row["payload_json"]
@@ -1871,14 +1875,12 @@ class ResearchConsole(App[None]):
             except (json.JSONDecodeError, TypeError):
                 pass
         err = events.extract_error_excerpt(
-            str(row["summary"] or ""),
+            summary,
             str(payload.get("error", "") or ""),
         ).strip()
         if err:
             return err
-        summ = str(row["summary"] or "").strip()
-        if summ.lower().startswith("cycle crashed:"):
-            summ = summ.split(":", 1)[1].strip()
+        summ = summary.split(":", 1)[1].strip()
         return summ[:2000]
 
     def _check_scheduler_health(self) -> None:
