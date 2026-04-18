@@ -2300,7 +2300,12 @@ class ResearchConsole(App[None]):
             self._clear_below_stream_feedback()
             self._write_pending_edit_body(pending_edit, raw.strip())
             self._pending_prompt_edit = None
-            label = "research idea" if pending_edit.target == "idea" else "preferences"
+            if pending_edit.target == "idea":
+                label = "research idea"
+            elif pending_edit.target == "prefs":
+                label = "preferences"
+            else:
+                label = "user instructions"
             self._write_below_stream_box(f"  [green]Updated {label}.[/]")
             return
 
@@ -2697,9 +2702,20 @@ class ResearchConsole(App[None]):
                 path=state_root / "preferences.md",
                 heading="# Preferences",
             )
+        if normalized in {"instructions", "instruction"}:
+            return _PendingPromptEditState(
+                target="instructions",
+                path=state_root / "user_instructions.md",
+                heading="",
+            )
         return None
 
     def _read_pending_edit_body(self, pending: _PendingPromptEditState) -> str:
+        if pending.target == "instructions":
+            return memory.compose_instruction_edit_buffer(
+                self.cfg.researcher_root,
+                db.pending_instruction_payloads(self._conn),
+            )
         content = helpers.read_text(pending.path, default=f"{pending.heading}\n\n")
         lines = content.splitlines()
         if lines and lines[0].strip() == pending.heading:
@@ -2711,6 +2727,11 @@ class ResearchConsole(App[None]):
         pending: _PendingPromptEditState,
         body: str,
     ) -> None:
+        if pending.target == "instructions":
+            db.replace_pending_instruction_events(self._conn, body)
+            memory.write_user_instructions_new_body(self.cfg.researcher_root, "")
+            self._conn.commit()
+            return
         cleaned = body.strip()
         content = f"{pending.heading}\n\n"
         if cleaned:
@@ -2734,14 +2755,20 @@ class ResearchConsole(App[None]):
         if pending is None:
             self._pending_prompt_edit = None
             self._write_below_stream_box(
-                f"  [red]Usage:[/] {rich_escape('/edit [idea|prefs]')}"
+                f"  [red]Usage:[/] {rich_escape('/edit [idea|prefs|instructions]')}"
             )
             return
         self._pending_prompt_edit = pending
         self._load_prompt_text(self._read_pending_edit_body(pending))
-        label = "research idea" if pending.target == "idea" else "preferences"
+        if pending.target == "idea":
+            label = "research idea"
+        elif pending.target == "prefs":
+            label = "preferences"
+        else:
+            label = "user instructions (## New + queued)"
         self._write_below_stream_box(
-            f"  [yellow]Editing {label}.[/] The next non-command submission will overwrite [bold]{pending.path.name}[/]."
+            f"  [yellow]Editing {label}.[/] The next non-command submission updates the "
+            f"[bold]instruction queue[/] and clears [bold]{pending.path.name}[/] under [bold]## New[/]."
         )
 
     def _cmd_help(self) -> None:
@@ -2752,7 +2779,7 @@ class ResearchConsole(App[None]):
             "  [bold]/pause[/]        Pause after the current worker finishes\n"
             "  [bold]/stop[/]         Stop everything immediately (workers + /agent runs). Use [bold]/stop agent n[/] to stop a specific agent\n"
             "  [bold]/exit[/]         Stop agent and quit\n"
-            "  [bold]/edit[/]         /edit idea to edit the research idea; /edit prefs to edit the preferences.\n"
+            "  [bold]/edit[/]         /edit idea (main project idea) | /edit prefs (code style, etc) | edit instructions (recent prompts)\n"
             "  [bold]/plan[/]         Show the live roadmap checklist\n"
             "  [bold]/report[/]       Show the most recent Markdown file in [bold]reports/[/] (by modification time)\n"
             "  [bold]/diff[/]         Line-by-line diff on current cycle. [bold]/diff n[/] = diff in cycle n; [bold]/diff n m[/] = diff in cycle range (inclusive)\n"

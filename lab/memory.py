@@ -684,12 +684,25 @@ def write_user_instruction_new_section(researcher_root: Path, text: str) -> None
     helpers.write_text(path, "\n".join(out) + "\n")
 
 
-def user_instructions_new_has_pending(researcher_root: Path) -> bool:
-    """True when ``user_instructions.md`` has non-empty ``- `` bullets under ``## New``."""
+def compose_instruction_edit_buffer(researcher_root: Path, pending_payloads: list[str]) -> str:
+    """Merge ``## New`` body with pending (not yet ingested) instruction payloads for one editor view."""
+    parts: list[str] = []
+    file_body = read_user_instructions_new_body(researcher_root).strip()
+    if file_body:
+        parts.append(file_body)
+    for raw in pending_payloads:
+        t = (raw or "").strip()
+        if t:
+            parts.append(t)
+    return "\n\n".join(parts)
+
+
+def read_user_instructions_new_body(researcher_root: Path) -> str:
+    """Return markdown under ``## New`` until the next top-level ``##`` heading (exclusive)."""
     path = state_dir(researcher_root) / "user_instructions.md"
     body = helpers.read_text(path, default="")
     if "## New" not in body:
-        return False
+        return ""
     remainder = body.split("## New", 1)[1]
     section_lines: list[str] = []
     for line in remainder.splitlines():
@@ -697,7 +710,49 @@ def user_instructions_new_has_pending(researcher_root: Path) -> bool:
         if st.startswith("## ") and not st.startswith("###"):
             break
         section_lines.append(line)
-    section = "\n".join(section_lines)
+    while section_lines and not section_lines[0].strip():
+        section_lines.pop(0)
+    while section_lines and not section_lines[-1].strip():
+        section_lines.pop()
+    return "\n".join(section_lines)
+
+
+def write_user_instructions_new_body(researcher_root: Path, body: str) -> None:
+    """Replace the ``## New`` section body (until the next top-level ``##`` heading)."""
+    path = state_dir(researcher_root) / "user_instructions.md"
+    content = helpers.read_text(path, default="")
+    if "## New" not in content:
+        content = (
+            "# User instructions\n\n"
+            "## New\n\n"
+            "## In progress\n\n"
+            "## Completed\n\n"
+        )
+    before, after = content.split("## New", 1)
+    lines = after.splitlines()
+    i = 0
+    while i < len(lines) and not lines[i].strip():
+        i += 1
+    j = i
+    while j < len(lines):
+        st = lines[j].strip()
+        if st.startswith("## ") and not st.startswith("###"):
+            break
+        j += 1
+    suffix_lines = lines[j:]
+    inner = body.strip("\n").strip()
+    middle = f"\n\n{inner}\n\n" if inner else "\n\n"
+    suffix = "\n".join(suffix_lines)
+    prefix = before.rstrip()
+    if prefix:
+        prefix = f"{prefix}\n"
+    rebuilt = f"{prefix}## New{middle}{suffix}"
+    helpers.write_text(path, rebuilt.rstrip() + "\n")
+
+
+def user_instructions_new_has_pending(researcher_root: Path) -> bool:
+    """True when ``user_instructions.md`` has non-empty ``- `` bullets under ``## New``."""
+    section = read_user_instructions_new_body(researcher_root)
     for line in section.splitlines():
         line = line.strip()
         if line.startswith("- "):

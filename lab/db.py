@@ -161,6 +161,31 @@ def fetch_pending_events(conn: sqlite3.Connection, limit: int = 50) -> list[sqli
     return list(cur.fetchall())
 
 
+def pending_instruction_payloads(conn: sqlite3.Connection) -> list[str]:
+    """Payloads for unconsumed ``instruction`` control events, oldest-first."""
+    rows = conn.execute(
+        "SELECT payload FROM control_events WHERE consumed = 0 AND kind = 'instruction' ORDER BY id ASC"
+    ).fetchall()
+    return [str(r["payload"] or "") for r in rows]
+
+
+def has_pending_instruction_control_events(conn: sqlite3.Connection) -> bool:
+    """True when at least one unconsumed instruction event has non-empty payload."""
+    row = conn.execute(
+        "SELECT 1 FROM control_events WHERE consumed = 0 AND kind = 'instruction' "
+        "AND trim(coalesce(payload, '')) != '' LIMIT 1"
+    ).fetchone()
+    return row is not None
+
+
+def replace_pending_instruction_events(conn: sqlite3.Connection, payload: str | None) -> None:
+    """Drop unconsumed instruction events; enqueue a single replacement when ``payload`` is non-empty."""
+    conn.execute("DELETE FROM control_events WHERE consumed = 0 AND kind = 'instruction'")
+    text = (payload or "").strip()
+    if text:
+        enqueue_event(conn, "instruction", text)
+
+
 def mark_events_consumed(conn: sqlite3.Connection, ids: list[int]) -> None:
     """Mark events as consumed."""
     if not ids:

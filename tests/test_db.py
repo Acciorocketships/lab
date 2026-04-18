@@ -19,6 +19,25 @@ def test_enqueue_and_consume(tmp_path: Path) -> None:
     assert len(evs2) == 1
 
 
+def test_replace_pending_instruction_events_collapses_queue(tmp_path: Path) -> None:
+    p = tmp_path / "t.db"
+    conn = db.connect_db(p)
+    db.enqueue_event(conn, "pause", None)
+    db.enqueue_event(conn, "instruction", "first")
+    db.enqueue_event(conn, "instruction", "second")
+    assert db.pending_instruction_payloads(conn) == ["first", "second"]
+    assert db.has_pending_instruction_control_events(conn) is True
+    db.replace_pending_instruction_events(conn, "combined")
+    conn.commit()
+    assert db.pending_instruction_payloads(conn) == ["combined"]
+    evs = db.fetch_pending_events(conn)
+    assert [e["kind"] for e in evs] == ["pause", "instruction"]
+    db.replace_pending_instruction_events(conn, "")
+    conn.commit()
+    assert db.pending_instruction_payloads(conn) == []
+    assert db.has_pending_instruction_control_events(conn) is False
+
+
 def test_system_state_row(tmp_path: Path) -> None:
     """system_state initializes."""
     p = tmp_path / "t.db"

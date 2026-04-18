@@ -71,14 +71,14 @@ Graph workers:
 | **implementer**  | Product code and tests: small, reviewable changes, iterative baselines before polish.                                                                                                                   |
 | **debugger**     | Root-cause analysis: hypotheses, instrumentation, evidence, localized fixes.                                                                                                                            |
 | **experimenter** | Owns **running** experiments end-to-end (launch, monitor, analyze, interpret)—not merely writing experiment code.                                                                                       |
-| **critic**       | Challenges direction, assumptions, and completion claims; persona chosen by the orchestrator (`engineer`, `data_scientist`, `theoretical_scientist`, `researcher`, `reviewer`, `manager`).              |
-| **reviewer**     | Code-quality and preference gate after substantive implementation work; expects memory and docs to stay consistent with changes.                                                                        |
+| **critic**       | Broader-picture challenge pass with slight routing priority: judges overall direction, infrastructure, and real outputs by running the product or artifacts and evaluating them like a human, using a persona chosen by the orchestrator (`engineer`, `data_scientist`, `theoretical_scientist`, `researcher`, `reviewer`, `manager`). |
+| **reviewer**     | Code-and-logic review: inspects implementation details, runs focused and full-system tests, and suggests refactors or code changes to improve correctness, flexibility, and maintainability. |
 | **reporter**     | User-facing reports, plots, demos, and summaries from current memory and artifacts.                                                                                                                     |
 | **skill_writer** | Captures reusable procedures under `.lab/memory/skills/` and keeps `skills_index.md` aligned.                                                                                                           |
 | **done**         | Not a CLI worker: orchestrator-only signal that the brief and roadmap support stopping the loop.                                                                                                        |
 
 
-Routing hints live in the orchestrator system prompt in `lab/orchestrator.py` (e.g. when to prefer `query` vs `researcher`, when to follow code work with `reviewer`, when to run `critic` before `done`).
+Routing hints live in the orchestrator system prompt in `lab/orchestrator.py` (e.g. when to prefer `query` vs `researcher`, how `reviewer` and `critic` split code-vs-output evaluation, when `critic` gets slight priority after substantive work, when to run `critic` before `done`).
 
 ## Memory and context management
 
@@ -174,4 +174,3 @@ pytest -q
 - **Tier A** under `.lab/state/` holds the durable brief, roadmap, and rolling summary.
 - `**/undo`** / `**/redo**` use git checkpoints over the project tree plus lab runtime state.
 - `**/reset**` clears lab runtime and most memory while preserving `research_idea.md` and `preferences.md`.
-

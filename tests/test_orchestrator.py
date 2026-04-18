@@ -37,21 +37,31 @@ def test_query_worker_is_valid_route() -> None:
     assert dec.worker == "query"
 
 
-def test_orchestrator_prompt_biases_toward_post_implementation_review() -> None:
-    """Routing prompt should encourage reviewer/critic after implementation."""
+def test_orchestrator_prompt_splits_reviewer_and_critic_responsibilities() -> None:
+    """Routing prompt should keep reviewer and critic distinct, with slight weight to critic."""
     assert (
-        "`reviewer` should be prioritised as a follow-up after non-trivial code-producing work"
+        "keep both `reviewer` and `critic` in the validation loop"
         in _ORCH_JSON_SYSTEM
     )
-    assert "`critic` should be prioritised as a follow-up" in _ORCH_JSON_SYSTEM
+    assert "`reviewer` owns code internals" in _ORCH_JSON_SYSTEM
+    assert "`critic` owns broader evaluation" in _ORCH_JSON_SYSTEM
+    assert "Give `critic` a slight edge when choosing only one immediate follow-up" in _ORCH_JSON_SYSTEM
+    assert "its `task` should read like a broader evaluation brief" in _ORCH_JSON_SYSTEM
+    assert "running the product, demo, script, or artifact and judging the results as a human would" in _ORCH_JSON_SYSTEM
+    assert "`critic` should not drill into function-level logic, bug lists, or refactor nits" in _ORCH_JSON_SYSTEM
+    assert "reserve vulnerability hunting, race-condition checks" in _ORCH_JSON_SYSTEM
     assert "prefer independent validation" in _ORCH_JSON_SYSTEM
 
 
 def test_reviewer_and_critic_prompts_require_hands_on_validation() -> None:
     """Reviewer and critic should stress actual interaction, not only inspection."""
-    assert "stress test" in reviewer.SYSTEM_PROMPT
-    assert "like a real user" in reviewer.SYSTEM_PROMPT
-    assert "interact with it like a human" in critic.SYSTEM_PROMPT
+    assert "code review authority" in reviewer.SYSTEM_PROMPT
+    assert "internal logic" in reviewer.SYSTEM_PROMPT
+    assert "small-scale or full-system validation" in reviewer.SYSTEM_PROMPT
+    assert "broader-product and infrastructure critic" in critic.SYSTEM_PROMPT
+    assert "human observer would" in critic.SYSTEM_PROMPT
+    assert "actual outputs rather than automated pass/fail checks" in critic.SYSTEM_PROMPT
+    assert "architecture boundaries" in critic.critic_prompt("engineer")
     assert "recommend the missing demo surface, harness, or artifact" in critic.critic_prompt("engineer")
 
 
@@ -84,4 +94,5 @@ def test_shared_and_planner_prompts_require_modular_incremental_checklists() -> 
     assert "**`context_summary.md`** — **Orchestrator-owned only.**" in shared_prompt.MEMORY_AND_TIER_A
     assert "The orchestrator overwrites this file" in shared_prompt.MEMORY_AND_TIER_A
     assert "including implementation, testing, experiments, debugging, review, or reporting" in planner.SYSTEM_PROMPT
+    assert "usually leave room for both `reviewer` and `critic`" in planner.SYSTEM_PROMPT
     assert "Prefer checklists that track modular components and validation points" in planner.SYSTEM_PROMPT

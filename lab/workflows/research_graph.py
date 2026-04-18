@@ -95,6 +95,7 @@ def choose_action(
     conn = _conn(db_path)
     try:
         forced = db.get_forced_run(conn)
+        pending_queued_instructions = db.has_pending_instruction_control_events(conn)
     finally:
         conn.close()
 
@@ -138,7 +139,10 @@ def choose_action(
         )
     if (
         not forced_worker
-        and memory.user_instructions_new_has_pending(researcher_root)
+        and (
+            memory.user_instructions_new_has_pending(researcher_root)
+            or pending_queued_instructions
+        )
         and dec.worker != "planner"
     ):
         dec = dec.model_copy(
@@ -150,7 +154,8 @@ def choose_action(
                     "Address the substance immediately."
                 ),
                 "reason": (
-                    "Pending user instructions under ## New in user_instructions.md; planner must integrate and clear."
+                    "Pending user instructions under ## New in user_instructions.md and/or queued console "
+                    "instructions not yet written to Tier A; planner must integrate and clear."
                 ),
             }
         )

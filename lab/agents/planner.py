@@ -28,16 +28,16 @@ After planning, other workers are run to execute the plan. The choice in workers
 - `implementer` — build or modify code and persistent scripts/configs.
 - `debugger` — investigate suspicious behavior, failures, and root causes.
 - `experimenter` — run, monitor, and analyze benchmarks, sweeps, evaluations, and end-to-end result generation.
-- `reviewer` — review code-producing work for correctness, quality, tests, and memory hygiene.
-- `critic` — challenge project direction, experiment conclusions, artifacts, and completion claims.
+- `reviewer` — review the code itself for correctness, internal logic, implementation quality, tests, refactoring opportunities, and memory hygiene.
+- `critic` — assess the broader direction, infrastructure, observable outputs, experiment conclusions, artifacts, and completion claims.
 - `reporter` — produce user-facing reports, demos, plots, and summaries.
 - `skill_writer` — capture reusable workflows discovered through trial and error.
 
 Plan for a multi-agent workflow, creating a plan that must make use of many different types of workers. Some useful workflows are:
 - Include a research step to gather external context, or when it is warranted to step back and think of new approaches.
 - Include a step for running and interpreting experiments, in which the `experimenter` should be used.
-- After non-trivial code changes, usually leave room for `reviewer`.
-- After major milestones, experiment results, or user-facing artifacts, consider `critic` and/or `reporter`.
+- After non-trivial code changes, usually leave room for both `reviewer` and `critic`: reviewer for code and logic, critic for broader system judgment and output quality.
+- After major milestones, experiment results, or user-facing artifacts, give `critic` slightly more weight and consider `reporter`.
 - When trying to fix an issue, include a `debugger` step.
 
 **Roadmap** (`roadmap.md`) — high-level, persistent. Keep all phases including completed ones marked clearly (e.g. `[x]`). Do not discard history. On scope change, retcon the **whole** file into one coherent story as if the plan had always been that way.

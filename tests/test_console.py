@@ -455,6 +455,99 @@ def test_slash_command_during_pending_edit_does_not_save_file(tmp_path: Path) ->
     console._conn.close()
 
 
+def test_cmd_edit_instructions_prefills_prompt_with_new_section_only(tmp_path: Path) -> None:
+    db_path = tmp_path / "runtime.db"
+    cfg = _cfg(tmp_path)
+    console = ResearchConsole(db_path, cfg)
+    prompt = _FakePrompt()
+    writes: list[str] = []
+    console.query_one = _console_query_with_prompt_stub(writes, prompt)  # type: ignore[method-assign]
+
+    state_dir = memory.state_dir(cfg.researcher_root)
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / "user_instructions.md").write_text(
+        "# User instructions\n\n"
+        "## New\n\n"
+        "- queue me\n"
+        "- and me\n\n"
+        "## In progress\n\n"
+        "- keep this\n\n"
+        "## Completed\n\n",
+        encoding="utf-8",
+    )
+
+    console._submit_prompt_text("/edit instructions")
+
+    assert prompt.text == "- queue me\n- and me"
+    assert console._pending_prompt_edit is not None
+    assert console._pending_prompt_edit.target == "instructions"
+
+    console._conn.close()
+
+
+def test_submit_prompt_text_after_edit_instructions_rewrites_new_section_only(tmp_path: Path) -> None:
+    db_path = tmp_path / "runtime.db"
+    cfg = _cfg(tmp_path)
+    console = ResearchConsole(db_path, cfg)
+    prompt = _FakePrompt()
+    writes: list[str] = []
+    console.query_one = _console_query_with_prompt_stub(writes, prompt)  # type: ignore[method-assign]
+
+    state_dir = memory.state_dir(cfg.researcher_root)
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / "user_instructions.md").write_text(
+        "# User instructions\n\n"
+        "## New\n\n"
+        "- old\n\n"
+        "## In progress\n\n"
+        "**unchanged**\n\n"
+        "## Completed\n\n",
+        encoding="utf-8",
+    )
+
+    console._submit_prompt_text("/edit instruction")
+    console._submit_prompt_text("- fresh")
+
+    text = (state_dir / "user_instructions.md").read_text(encoding="utf-8")
+    assert memory.read_user_instructions_new_body(cfg.researcher_root) == ""
+    assert "## New\n\n## In progress" in text
+    assert "**unchanged**" in text
+    assert "old" not in text
+    assert db.pending_instruction_payloads(console._conn) == ["- fresh"]
+    assert console._pending_prompt_edit is None
+
+    console._conn.close()
+
+
+def test_cmd_edit_instructions_prefills_merges_file_and_queued_events(tmp_path: Path) -> None:
+    db_path = tmp_path / "runtime.db"
+    cfg = _cfg(tmp_path)
+    console = ResearchConsole(db_path, cfg)
+    prompt = _FakePrompt()
+    writes: list[str] = []
+    console.query_one = _console_query_with_prompt_stub(writes, prompt)  # type: ignore[method-assign]
+
+    state_dir = memory.state_dir(cfg.researcher_root)
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / "user_instructions.md").write_text(
+        "# User instructions\n\n"
+        "## New\n\n"
+        "- from file\n\n"
+        "## In progress\n\n"
+        "## Completed\n\n",
+        encoding="utf-8",
+    )
+    db.enqueue_event(console._conn, "instruction", "from queue a")
+    db.enqueue_event(console._conn, "instruction", "from queue b")
+    console._conn.commit()
+
+    console._submit_prompt_text("/edit instructions")
+
+    assert prompt.text == "- from file\n\nfrom queue a\n\nfrom queue b"
+
+    console._conn.close()
+
+
 def test_cmd_edit_invalid_usage_shows_helpful_message(tmp_path: Path) -> None:
     db_path = tmp_path / "runtime.db"
     cfg = _cfg(tmp_path)
@@ -465,7 +558,9 @@ def test_cmd_edit_invalid_usage_shows_helpful_message(tmp_path: Path) -> None:
 
     console._submit_prompt_text("/edit roadmap")
 
-    assert any("Usage:" in message and "/edit [idea|prefs]" in message for message in writes)
+    assert any(
+        "Usage:" in message and "/edit [idea|prefs|instructions]" in message for message in writes
+    )
     assert console._pending_prompt_edit is None
 
     console._conn.close()

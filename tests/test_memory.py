@@ -74,6 +74,26 @@ def test_user_instructions_new_has_pending(tmp_path: Path) -> None:
     assert memory.user_instructions_new_has_pending(tmp_path)
 
 
+def test_compose_instruction_edit_buffer_merges_file_and_payloads(tmp_path: Path) -> None:
+    memory.ensure_memory_layout(tmp_path)
+    memory.write_user_instructions_new_body(tmp_path, "- a")
+    merged = memory.compose_instruction_edit_buffer(tmp_path, ["b", "", "c"])
+    assert merged == "- a\n\nb\n\nc"
+
+
+def test_read_write_user_instructions_new_body_roundtrip(tmp_path: Path) -> None:
+    memory.ensure_memory_layout(tmp_path)
+    assert memory.read_user_instructions_new_body(tmp_path) == ""
+    memory.write_user_instructions_new_body(tmp_path, "- one\n- two")
+    assert memory.read_user_instructions_new_body(tmp_path) == "- one\n- two"
+    memory.write_user_instructions_new_body(tmp_path, "- replaced")
+    body = (memory.state_dir(tmp_path) / "user_instructions.md").read_text(encoding="utf-8")
+    assert "## In progress" in body
+    assert "## Completed" in body
+    assert memory.read_user_instructions_new_body(tmp_path) == "- replaced"
+    assert "two" not in body
+
+
 def test_tier_a_total_chars_excludes_system_files_by_default(tmp_path: Path) -> None:
     memory.ensure_memory_layout(tmp_path)
     (memory.state_dir(tmp_path) / "roadmap.md").write_text("abc", encoding="utf-8")
