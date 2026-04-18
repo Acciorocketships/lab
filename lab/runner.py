@@ -29,6 +29,36 @@ class LabConfigError(RuntimeError):
 
 
 DEFAULT_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
+_SETUP_DIALOG_WIDTH = 96
+
+_SETUP_STYLE_OVERRIDES = {
+    "dialog": "bg:#0b0e11",
+    "dialog.body": "bg:#11161b #e5eaef",
+    "dialog shadow": "bg:#06080a",
+    "dialog.body shadow": "bg:#0a0d10",
+    "frame.border": "#33404c",
+    "dialog frame.label": "bold #c8dcff",
+    "frame.border shadow": "#06080a",
+    "setup-badge": "bg:#202b36 #a9bed6 bold",
+    "setup-section": "bold #f5f7fa",
+    "setup-copy": "#9fb0bf",
+    "setup-hint": "#738596",
+    "setup-radio-list": "bg:#11161b",
+    "setup-radio": "#d6dee6",
+    "setup-radio-selected": "bg:#1c2630 #f5f7fa",
+    "setup-radio-checked": "bold #8fb9ff",
+    "setup-input-shell": "bg:#0f1419",
+    "setup-input": "bg:#0f1419 #f5f7fa",
+    "setup-input.cursor-line": "bg:#16202a",
+    "setup-input.selection": "bg:#24415f",
+    "dialog.body text-area": "bg:#0f1419 #f5f7fa",
+    "dialog.body text-area cursor-line": "bg:#16202a",
+    "dialog.body text-area last-line": "nounderline",
+    "validation-toolbar": "bg:#3a2020 #ffd7d7",
+    "button": "bg:#151b21 #98a9b8",
+    "button.focused": "bg:#b7d3ff #091019 bold",
+    "button.arrow": "bold",
+}
 
 
 def _global_oauth_looks_logged_in() -> bool:
@@ -47,6 +77,141 @@ def _global_oauth_looks_logged_in() -> bool:
         or data.get("refresh_token")
         or data.get("id_token")
     )
+
+
+def _setup_dialog_intro(title: str, text: str, hint: str) -> list[tuple[str, str]]:
+    """Shared formatted header copy for setup dialogs."""
+    return [
+        ("class:setup-section", f"{title.upper()}\n"),
+        ("class:setup-copy", f"{text.strip()}\n"),
+        ("class:setup-hint", hint),
+    ]
+
+
+def _setup_dialog_style():
+    """Shared prompt_toolkit style for setup screens."""
+    from prompt_toolkit.styles import Style, merge_styles
+    from prompt_toolkit.styles.defaults import default_ui_style
+
+    return merge_styles(
+        [
+            default_ui_style(),
+            Style.from_dict(_SETUP_STYLE_OVERRIDES),
+        ]
+    )
+
+
+def _prompt_text_dialog(
+    title: str,
+    text: str,
+    *,
+    default: str = "",
+    password: bool = False,
+) -> str:
+    """Read a single-line text value in the styled setup dialog when possible."""
+    if sys.stdin.isatty() and sys.stdout.isatty():
+        try:
+            from prompt_toolkit.application import Application, get_app
+            from prompt_toolkit.filters import has_focus
+            from prompt_toolkit.key_binding import KeyBindings, merge_key_bindings
+            from prompt_toolkit.key_binding.bindings.focus import focus_next, focus_previous
+            from prompt_toolkit.key_binding.defaults import load_key_bindings
+            from prompt_toolkit.layout import Layout
+            from prompt_toolkit.layout.containers import HSplit, Window
+            from prompt_toolkit.widgets import Button, Dialog, Label, TextArea
+        except ImportError:
+            Application = None  # type: ignore[misc, assignment]
+        else:
+            def ok_handler() -> None:
+                get_app().exit(result=textfield.text)
+
+            def cancel_handler() -> None:
+                get_app().exit(result=None)
+
+            ok_button = Button(
+                text="OK",
+                handler=ok_handler,
+                width=10,
+                left_symbol="[",
+                right_symbol="]",
+            )
+            cancel_button = Button(
+                text="CANCEL",
+                handler=cancel_handler,
+                width=14,
+                left_symbol="[",
+                right_symbol="]",
+            )
+
+            def accept(_) -> bool:
+                get_app().layout.focus(ok_button)
+                return True
+
+            textfield = TextArea(
+                text=default,
+                multiline=False,
+                password=password,
+                accept_handler=accept,
+                wrap_lines=False,
+                style="class:setup-input",
+                dont_extend_height=True,
+                height=1,
+                name="setup-input",
+            )
+
+            dialog = Dialog(
+                title="LAB SETUP",
+                body=HSplit(
+                    [
+                        Label(
+                            text=_setup_dialog_intro(
+                                title,
+                                text,
+                                "TYPE TO EDIT    DOWN for OK and CANCEL",
+                            ),
+                            dont_extend_height=True,
+                        ),
+                        Window(height=1, style="class:setup-input-shell"),
+                        textfield,
+                    ],
+                    padding=1,
+                ),
+                buttons=[ok_button, cancel_button],
+                with_background=True,
+                width=_SETUP_DIALOG_WIDTH,
+            )
+
+            bindings = KeyBindings()
+            bindings.add("tab")(focus_next)
+            bindings.add("s-tab")(focus_previous)
+
+            @bindings.add("down", filter=has_focus(textfield))
+            def _focus_ok(event) -> None:
+                event.app.layout.focus(ok_button)
+
+            @bindings.add("up", filter=has_focus(ok_button))
+            @bindings.add("up", filter=has_focus(cancel_button))
+            def _focus_text(event) -> None:
+                event.app.layout.focus(textfield)
+
+            @bindings.add("escape")
+            def _cancel_dialog(event) -> None:
+                cancel_handler()
+
+            result = Application(
+                layout=Layout(dialog, focused_element=textfield),
+                key_bindings=merge_key_bindings([load_key_bindings(), bindings]),
+                mouse_support=True,
+                style=_setup_dialog_style(),
+                full_screen=True,
+            ).run()
+            if result is None:
+                raise KeyboardInterrupt
+            return str(result)
+
+    import click
+
+    return click.prompt(text or title, default=default, hide_input=password, show_default=not password)
 
 
 def _prompt_choice_radiolist(
@@ -69,8 +234,6 @@ def _prompt_choice_radiolist(
             from prompt_toolkit.key_binding.defaults import load_key_bindings
             from prompt_toolkit.layout import Layout
             from prompt_toolkit.layout.containers import HSplit
-            from prompt_toolkit.styles import Style, merge_styles
-            from prompt_toolkit.styles.defaults import default_ui_style
             from prompt_toolkit.widgets import Button, Dialog, Label, RadioList
         except ImportError:
             Application = None  # type: ignore[misc, assignment]
@@ -109,56 +272,25 @@ def _prompt_choice_radiolist(
                 right_symbol="]",
             )
 
-            intro = [
-                ("class:setup-badge", " LAB SETUP "),
-                ("", "\n"),
-                ("class:setup-section", f"{title.upper()}\n"),
-                ("class:setup-copy", f"{text.strip()}\n"),
-                (
-                    "class:setup-hint",
-                    "ARROWS choose options  LEFT/RIGHT reach actions  ENTER confirms",
-                ),
-            ]
             dialog = Dialog(
                 title="LAB SETUP",
                 body=HSplit(
                     [
-                        Label(text=intro, dont_extend_height=True),
+                        Label(
+                            text=_setup_dialog_intro(
+                                title,
+                                text,
+                                "UP / DOWN choose option    ENTER select option    LEFT / RIGHT for OK and CANCEL",
+                            ),
+                            dont_extend_height=True,
+                        ),
                         radio_list,
                     ],
                     padding=1,
                 ),
                 buttons=[ok_button, cancel_button],
                 with_background=True,
-                width=74,
-            )
-
-            style = merge_styles(
-                [
-                    default_ui_style(),
-                    Style.from_dict(
-                        {
-                            "dialog": "bg:#0b0e11",
-                            "dialog.body": "bg:#11161b #e5eaef",
-                            "dialog shadow": "bg:#06080a",
-                            "dialog.body shadow": "bg:#0a0d10",
-                            "frame.border": "#33404c",
-                            "dialog frame.label": "bold #c8dcff",
-                            "setup-badge": "bg:#202b36 #a9bed6 bold",
-                            "setup-section": "bold #f5f7fa",
-                            "setup-copy": "#9fb0bf",
-                            "setup-hint": "#738596",
-                            "setup-radio-list": "bg:#11161b",
-                            "setup-radio": "#d6dee6",
-                            "setup-radio-selected": "bg:#1c2630 #f5f7fa",
-                            "setup-radio-checked": "bold #8fb9ff",
-                            "button": "bg:#151b21 #98a9b8",
-                            "button.focused": "bg:#b7d3ff #091019 bold",
-                            "button.arrow": "bold",
-                            "frame.border shadow": "#06080a",
-                        }
-                    ),
-                ]
+                width=_SETUP_DIALOG_WIDTH,
             )
 
             bindings = KeyBindings()
@@ -192,7 +324,7 @@ def _prompt_choice_radiolist(
                 layout=Layout(dialog),
                 key_bindings=merge_key_bindings([load_key_bindings(), bindings]),
                 mouse_support=True,
-                style=style,
+                style=_setup_dialog_style(),
                 full_screen=True,
             ).run()
             if result is None:
@@ -472,7 +604,7 @@ def run_interactive_global_setup() -> Path:
     default_provider = (previous.provider if previous else "openrouter") or "openrouter"
     provider = _prompt_choice_radiolist(
         "Model provider",
-        "Choose the backend that should power planning and routing.",
+        "Choose which backend should power orchestration.",
         [
             ("openai", "OpenAI"),
             ("openrouter", "OpenRouter"),
@@ -489,7 +621,11 @@ def run_interactive_global_setup() -> Path:
     model_default = defaults.get(provider, "")
     if previous and previous.provider == provider and (previous.model_name or "").strip():
         model_default = previous.model_name
-    model_name = click.prompt("Model name", default=model_default)
+    model_name = _prompt_text_dialog(
+        "Model name",
+        "Enter the model identifier lab should use for orchestration.",
+        default=model_default,
+    )
     base_url = ""
     if provider == "local":
         bu_default = (
@@ -497,7 +633,11 @@ def run_interactive_global_setup() -> Path:
             if previous and previous.provider == "local" and (previous.base_url or "").strip()
             else "http://127.0.0.1:11434/v1"
         )
-        base_url = click.prompt("Base URL", default=bu_default)
+        base_url = _prompt_text_dialog(
+            "Base URL",
+            "Enter the OpenAI-compatible endpoint for your local or self-hosted model.",
+            default=bu_default,
+        )
 
     api_key = ""
     oauth_client_id = (
@@ -531,7 +671,12 @@ def run_interactive_global_setup() -> Path:
                     api_key = prev_ai
                     click.echo("Keeping OpenAI API key from ~/.lab/config.toml.")
                 else:
-                    api_key = click.prompt("OpenAI API key", hide_input=True, default="")
+                    api_key = _prompt_text_dialog(
+                        "OpenAI API key",
+                        "Paste the API key lab should store for OpenAI requests.",
+                        default="",
+                        password=True,
+                    )
     elif provider == "openrouter":
         prev_or = (
             (previous.api_key or "").strip()
@@ -548,19 +693,28 @@ def run_interactive_global_setup() -> Path:
                 "Using OPENROUTER_API_KEY from the environment (not written to config.toml)."
             )
         else:
-            api_key = click.prompt("OpenRouter API key", hide_input=True, default="")
+            api_key = _prompt_text_dialog(
+                "OpenRouter API key",
+                "Paste the API key lab should store for OpenRouter requests.",
+                default="",
+                password=True,
+            )
     elif provider == "local":
         loc_default = (
             previous.api_key
             if previous and previous.provider == "local" and (previous.api_key or "").strip()
             else "ollama"
         )
-        api_key = click.prompt("API key (blank for Ollama default)", default=loc_default)
+        api_key = _prompt_text_dialog(
+            "Local API key",
+            "Enter the API key for your local endpoint, or keep the default for Ollama.",
+            default=loc_default,
+        )
 
     wb_default = (previous.worker_backend if previous else "cursor") or "cursor"
     worker_backend = _prompt_choice_radiolist(
         "Default worker backend",
-        "Choose which coding agent lab should launch by default.",
+        "Choose which backend to use for the worker agents.",
         [
             ("cursor", "Cursor agent CLI"),
             ("claude", "Claude Code"),
@@ -574,8 +728,9 @@ def run_interactive_global_setup() -> Path:
             if previous and (previous.cursor_agent_model or "").strip()
             else "auto"
         )
-        cursor_agent_model = click.prompt(
-            "Cursor agent CLI model (--model)",
+        cursor_agent_model = _prompt_text_dialog(
+            "Cursor agent CLI model",
+            "Enter the LLM model used by cursor (run `agent models` to see available models).",
             default=cm_default,
         )
 

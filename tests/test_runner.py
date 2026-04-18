@@ -10,6 +10,7 @@ from lab import db, memory
 from lab.runner import (
     LabConfigError,
     _prompt_choice_radiolist,
+    _prompt_text_dialog,
     bootstrap_bench_project,
     ensure_console_ready,
     init_project_at,
@@ -187,4 +188,52 @@ def test_prompt_choice_radiolist_can_reach_cancel_via_arrow_keys(monkeypatch) ->
                     "Choose which coding agent lab should launch by default.",
                     [("cursor", "Cursor agent CLI"), ("claude", "Claude Code")],
                     default="cursor",
+                )
+
+
+def test_prompt_text_dialog_accepts_typed_value(monkeypatch) -> None:
+    pytest.importorskip("prompt_toolkit")
+    from prompt_toolkit.application import create_app_session
+    from prompt_toolkit.input.defaults import create_pipe_input
+    from prompt_toolkit.output import DummyOutput
+
+    class _TTY:
+        def isatty(self) -> bool:
+            return True
+
+    monkeypatch.setattr("lab.runner.sys.stdin", _TTY())
+    monkeypatch.setattr("lab.runner.sys.stdout", _TTY())
+
+    with create_pipe_input() as pipe_input:
+        with create_app_session(input=pipe_input, output=DummyOutput()):
+            pipe_input.send_text("gpt-5-mini\r\r")
+            result = _prompt_text_dialog(
+                "Model name",
+                "Enter the model identifier lab should use for orchestration.",
+            )
+
+    assert result == "gpt-5-mini"
+
+
+def test_prompt_text_dialog_can_cancel(monkeypatch) -> None:
+    pytest.importorskip("prompt_toolkit")
+    from prompt_toolkit.application import create_app_session
+    from prompt_toolkit.input.defaults import create_pipe_input
+    from prompt_toolkit.output import DummyOutput
+
+    class _TTY:
+        def isatty(self) -> bool:
+            return True
+
+    monkeypatch.setattr("lab.runner.sys.stdin", _TTY())
+    monkeypatch.setattr("lab.runner.sys.stdout", _TTY())
+
+    with create_pipe_input() as pipe_input:
+        with create_app_session(input=pipe_input, output=DummyOutput()):
+            pipe_input.send_text("\x1b")
+            with pytest.raises(KeyboardInterrupt):
+                _prompt_text_dialog(
+                    "Base URL",
+                    "Enter the OpenAI-compatible endpoint for your local or self-hosted model.",
+                    default="http://127.0.0.1:11434/v1",
                 )
